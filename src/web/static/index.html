@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Release Management</title>
+
+    <!-- Tabler CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+    <div class="page" x-data="app" x-cloak>
+        <!-- Navigation -->
+        <header class="navbar navbar-expand-md d-print-none" x-data="{ mobileMenuOpen: false }">
+            <div class="container-xl">
+                <button class="navbar-toggler" type="button" @click="mobileMenuOpen = !mobileMenuOpen">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+
+                <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-horizontal pe-0 pe-md-3">
+                    <a href="#/">
+                        <i class="ti ti-package me-2"></i>
+                        Simple Release Management
+                    </a>
+                </h1>
+
+                <div class="navbar-nav flex-row order-md-last">
+                    <!-- Keyboard shortcuts hint -->
+                    <div class="nav-item d-none d-md-flex me-3">
+                        <div class="kbd-hint">
+                            <kbd>g</kbd><kbd>h</kbd> Dashboard
+                            <span class="mx-2">·</span>
+                            <kbd>g</kbd><kbd>b</kbd> Bundles
+                        </div>
+                    </div>
+                    <!-- User info -->
+                    <div class="nav-item">
+                        <span class="badge bg-blue-lt">v0.1.0</span>
+                    </div>
+                </div>
+
+                <div class="collapse navbar-collapse" :class="{ 'show': mobileMenuOpen }">
+                    <ul class="navbar-nav">
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/" :class="{ 'active': currentRoute === '/' }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-home"></i>
+                                </span>
+                                <span class="nav-link-title">Dashboard</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/tenants" :class="{ 'active': currentRoute.startsWith('/tenants') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-building"></i>
+                                </span>
+                                <span class="nav-link-title">Tenants</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/registries" :class="{ 'active': currentRoute.startsWith('/registries') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-database"></i>
+                                </span>
+                                <span class="nav-link-title">Registries</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/bundles" :class="{ 'active': currentRoute.startsWith('/bundles') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-package"></i>
+                                </span>
+                                <span class="nav-link-title">Bundles</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/releases" :class="{ 'active': currentRoute.startsWith('/releases') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-rocket"></i>
+                                </span>
+                                <span class="nav-link-title">Releases</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
+                            <a class="nav-link" href="#/copy-jobs" :class="{ 'active': currentRoute.startsWith('/copy-jobs') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-copy"></i>
+                                </span>
+                                <span class="nav-link-title">Copy Jobs</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </header>
+
+        <!-- Page content -->
+        <div class="page-wrapper">
+            <!-- Page header -->
+            <div class="page-header d-print-none" x-show="pageHeader.show">
+                <div class="container-xl">
+                    <div class="row g-2 align-items-center">
+                        <div class="col">
+                            <div class="page-pretitle" x-text="pageHeader.pretitle"></div>
+                            <h2 class="page-title" x-text="pageHeader.title"></h2>
+                        </div>
+
+                        <!-- Page actions -->
+                        <div class="col-auto ms-auto d-print-none" x-show="pageHeader.actions">
+                            <div class="btn-list" x-html="pageHeader.actions"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page body -->
+            <div class="page-body">
+                <div class="container-xl">
+                    <!-- Router outlet -->
+                    <div id="app-content">
+                        <!-- Content will be loaded here by router -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast notifications container -->
+        <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 9999;">
+            <template x-for="toast in toasts" :key="toast.id">
+                <div class="toast show"
+                     role="alert"
+                     :class="'bg-' + toast.type"
+                     x-transition:enter="transition ease-out duration-300"
+                     x-transition:enter-start="opacity-0 transform translate-y-2"
+                     x-transition:enter-end="opacity-100 transform translate-y-0"
+                     x-transition:leave="transition ease-in duration-200"
+                     x-transition:leave-start="opacity-100"
+                     x-transition:leave-end="opacity-0">
+                    <div class="toast-header">
+                        <i class="ti me-2" :class="{
+                            'ti-check': toast.type === 'success',
+                            'ti-alert-circle': toast.type === 'danger',
+                            'ti-alert-triangle': toast.type === 'warning',
+                            'ti-info-circle': toast.type === 'info'
+                        }"></i>
+                        <strong class="me-auto" x-text="toast.title"></strong>
+                        <button type="button" class="btn-close" @click="removeToast(toast.id)"></button>
+                    </div>
+                    <div class="toast-body" x-text="toast.message"></div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Loading overlay -->
+        <div class="modal modal-blur fade"
+             :class="{ 'show': loading }"
+             :style="loading ? 'display: block' : 'display: none'"
+             x-show="loading">
+            <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-body text-center py-4">
+                        <div class="spinner-border text-blue mb-3" role="status"></div>
+                        <h3>Loading...</h3>
+                        <div class="text-secondary" x-text="loadingMessage"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- Application scripts -->
+    <script src="/js/api.js"></script>
+    <script src="/js/router.js"></script>
+    <script src="/js/components/forms.js"></script>
+    <script src="/js/components/bundle-wizard.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

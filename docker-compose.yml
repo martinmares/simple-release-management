@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: release-mgmt-db
+    environment:
+      POSTGRES_USER: release_mgmt
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: release_mgmt
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U release_mgmt"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Uncomment when app is ready to run in Docker
+  # app:
+  #   build: .
+  #   container_name: release-mgmt-app
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   environment:
+  #     DATABASE_URL: postgresql://release_mgmt:secret@postgres:5432/release_mgmt
+  #     HOST: 0.0.0.0
+  #     PORT: 3000
+  #     RUST_LOG: simple_release_management=info,sqlx=warn
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     # Mount registry credentials
+  #     - ./secrets:/run/secrets/registry-auth:ro
+  #   restart: unless-stopped
+
+volumes:
+  postgres_data:
