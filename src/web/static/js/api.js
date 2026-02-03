@@ -173,25 +173,25 @@ class ApiClient {
         return this.get(`/bundles/${bundleId}/versions/${version}`);
     }
 
-    async createBundleVersion(bundleId) {
-        return this.post(`/bundles/${bundleId}/versions`, {});
+    async createBundleVersion(bundleId, data = {}) {
+        return this.post(`/bundles/${bundleId}/versions`, data);
     }
 
     // Image mappings
     async getImageMappings(bundleId, version) {
-        return this.get(`/bundles/${bundleId}/versions/${version}/mappings`);
+        return this.get(`/bundles/${bundleId}/versions/${version}/images`);
     }
 
     async addImageMapping(bundleId, version, data) {
-        return this.post(`/bundles/${bundleId}/versions/${version}/mappings`, data);
+        return this.post(`/bundles/${bundleId}/versions/${version}/images`, data);
     }
 
     async updateImageMapping(bundleId, version, mappingId, data) {
-        return this.put(`/bundles/${bundleId}/versions/${version}/mappings/${mappingId}`, data);
+        return this.put(`/bundles/${bundleId}/versions/${version}/images/${mappingId}`, data);
     }
 
     async deleteImageMapping(bundleId, version, mappingId) {
-        return this.delete(`/bundles/${bundleId}/versions/${version}/mappings/${mappingId}`);
+        return this.delete(`/bundles/${bundleId}/versions/${version}/images/${mappingId}`);
     }
 
     // ==================== COPY OPERATIONS ====================
