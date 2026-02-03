@@ -128,11 +128,11 @@ pub struct ImageMapping {
     // Source
     pub source_image: String,
     pub source_tag: String,
-    pub source_sha256: String,
+    pub source_sha256: Option<String>,
 
     // Target
     pub target_image: String,
-    pub target_tag_template: String,
+    pub target_tag_template: Option<String>,
     pub target_sha256: Option<String>,
 
     // Status
