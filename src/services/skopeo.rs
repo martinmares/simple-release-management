@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
 /// Skopeo credentials pro autentizaci
@@ -122,7 +123,8 @@ impl SkopeoService {
         info!("Copying image from {} to {}", source_url, target_url);
 
         let mut cmd = Command::new(&self.skopeo_path);
-        cmd.arg("copy");
+        cmd.arg("copy")
+            .arg("--debug"); // Enable debug output to see what's happening
 
         // Add source credentials if provided
         if let (Some(user), Some(pass)) = (&creds.source_username, &creds.source_password) {
@@ -139,23 +141,9 @@ impl SkopeoService {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to spawn skopeo copy")?;
+        let output = cmd.output().await.context("Failed to execute skopeo copy")?;
 
-        // Číst stderr pro progress (skopeo píše progress do stderr)
-        let stderr = child.stderr.take().context("Failed to get stderr")?;
-        let mut reader = BufReader::new(stderr).lines();
-
-        // Číst output v pozadí
-        tokio::spawn(async move {
-            while let Ok(Some(line)) = reader.next_line().await {
-                debug!("Skopeo: {}", line);
-            }
-        });
-
-        // Počkat na dokončení
-        let status = child.wait().await.context("Failed to wait for skopeo")?;
-
-        if status.success() {
+        if output.status.success() {
             info!(
                 "Successfully copied image from {} to {}",
                 source_url, target_url
@@ -167,10 +155,128 @@ impl SkopeoService {
                 total_bytes: None,
             })
         } else {
-            warn!("Failed to copy image from {} to {}", source_url, target_url);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+
+            warn!(
+                "Failed to copy image from {} to {}\nStatus: {}\nStderr: {}\nStdout: {}",
+                source_url, target_url, output.status, stderr, stdout
+            );
+
             Ok(CopyProgress {
                 status: CopyStatus::Failed,
-                message: format!("Copy failed with status: {}", status),
+                message: format!("Copy failed: {}", stderr.trim()),
+                bytes_copied: None,
+                total_bytes: None,
+            })
+        }
+    }
+
+    /// Zkopíruje image ze source do target a streamuje logy
+    pub async fn copy_image_streaming(
+        &self,
+        source_url: &str,
+        target_url: &str,
+        creds: &SkopeoCredentials,
+        log_tx: Option<&broadcast::Sender<String>>,
+    ) -> Result<CopyProgress> {
+        info!("Copying image from {} to {}", source_url, target_url);
+
+        let mut cmd = Command::new(&self.skopeo_path);
+        cmd.arg("copy")
+            .arg("--debug"); // Enable debug output to see what's happening
+
+        if let (Some(user), Some(pass)) = (&creds.source_username, &creds.source_password) {
+            cmd.arg("--src-creds").arg(format!("{}:{}", user, pass));
+        }
+
+        if let (Some(user), Some(pass)) = (&creds.target_username, &creds.target_password) {
+            cmd.arg("--dest-creds").arg(format!("{}:{}", user, pass));
+        }
+
+        cmd.arg(format!("docker://{}", source_url))
+            .arg(format!("docker://{}", target_url))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().context("Failed to execute skopeo copy")?;
+        let stdout = child.stdout.take().context("Failed to capture stdout")?;
+        let stderr = child.stderr.take().context("Failed to capture stderr")?;
+
+        let mut stdout_lines = BufReader::new(stdout).lines();
+        let mut stderr_lines = BufReader::new(stderr).lines();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let mut status: Option<std::process::ExitStatus> = None;
+        let mut last_err = String::new();
+
+        loop {
+            if stdout_done && stderr_done && status.is_some() {
+                break;
+            }
+
+            tokio::select! {
+                line = stdout_lines.next_line(), if !stdout_done => {
+                    match line {
+                        Ok(Some(line)) => {
+                            if let Some(tx) = log_tx { let _ = tx.send(line); }
+                        }
+                        Ok(None) => stdout_done = true,
+                        Err(err) => {
+                            if let Some(tx) = log_tx { let _ = tx.send(format!("stdout error: {}", err)); }
+                            stdout_done = true;
+                        }
+                    }
+                }
+                line = stderr_lines.next_line(), if !stderr_done => {
+                    match line {
+                        Ok(Some(line)) => {
+                            last_err = line.clone();
+                            if let Some(tx) = log_tx { let _ = tx.send(line); }
+                        }
+                        Ok(None) => stderr_done = true,
+                        Err(err) => {
+                            if let Some(tx) = log_tx { let _ = tx.send(format!("stderr error: {}", err)); }
+                            stderr_done = true;
+                        }
+                    }
+                }
+                exit = child.wait(), if status.is_none() => {
+                    match exit {
+                        Ok(s) => status = Some(s),
+                        Err(err) => {
+                            if let Some(tx) = log_tx { let _ = tx.send(format!("process error: {}", err)); }
+                            return Err(err.into());
+                        }
+                    }
+                }
+            }
+        }
+
+        let status = match status {
+            Some(status) => status,
+            None => {
+                return Err(anyhow::anyhow!("Skopeo copy finished without exit status"));
+            }
+        };
+
+        if status.success() {
+            Ok(CopyProgress {
+                status: CopyStatus::Success,
+                message: "Image copied successfully".to_string(),
+                bytes_copied: None,
+                total_bytes: None,
+            })
+        } else {
+            let message = if last_err.is_empty() {
+                format!("Copy failed: exit status {}", status)
+            } else {
+                format!("Copy failed: {}", last_err)
+            };
+
+            Ok(CopyProgress {
+                status: CopyStatus::Failed,
+                message,
                 bytes_copied: None,
                 total_bytes: None,
             })
@@ -185,13 +291,17 @@ impl SkopeoService {
         creds: &SkopeoCredentials,
         max_retries: u32,
         retry_delay_secs: u64,
+        log_tx: Option<&broadcast::Sender<String>>,
     ) -> Result<CopyProgress> {
         let mut attempts = 0;
 
         loop {
             attempts += 1;
 
-            match self.copy_image(source_url, target_url, creds).await {
+            match self
+                .copy_image_streaming(source_url, target_url, creds, log_tx)
+                .await
+            {
                 Ok(progress) if progress.status == CopyStatus::Success => {
                     return Ok(progress);
                 }
@@ -200,6 +310,12 @@ impl SkopeoService {
                 }
                 Ok(_) | Err(_) => {
                     if attempts < max_retries {
+                        if let Some(tx) = log_tx {
+                            let _ = tx.send(format!(
+                                "Copy attempt {} failed, retrying in {} seconds...",
+                                attempts, retry_delay_secs
+                            ));
+                        }
                         warn!(
                             "Copy attempt {} failed, retrying in {} seconds...",
                             attempts, retry_delay_secs

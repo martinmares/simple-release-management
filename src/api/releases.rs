@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::models::{Release, ImageMapping};
+use crate::db::models::{CopyJobImage, Release};
 
 /// Request pro vytvoření nového release
 #[derive(Debug, Deserialize)]
 pub struct CreateReleaseRequest {
-    pub bundle_version_id: Uuid,
+    pub copy_job_id: Uuid,
     pub release_id: String,
     pub notes: Option<String>,
     pub created_by: Option<String>,
@@ -42,7 +42,7 @@ pub struct ManifestImage {
     pub source_tag: String,
     pub source_sha256: Option<String>,
     pub target_image: String,
-    pub target_tag_template: Option<String>,
+    pub target_tag: String,
     pub target_sha256: Option<String>,
 }
 
@@ -55,7 +55,7 @@ pub struct ErrorResponse {
 /// Vytvoří router pro releases endpoints
 pub fn router(pool: PgPool) -> Router {
     Router::new()
-        .route("/releases", get(list_all_releases))
+        .route("/releases", get(list_all_releases).post(create_release_global))
         .route("/tenants/{tenant_id}/releases", get(list_releases).post(create_release))
         .route("/releases/{id}", get(get_release).put(update_release))
         .route("/releases/{id}/manifest", get(get_release_manifest))
@@ -96,7 +96,8 @@ async fn list_releases(
         r#"
         SELECT r.*
         FROM releases r
-        JOIN bundle_versions bv ON bv.id = r.bundle_version_id
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         JOIN bundles b ON b.id = bv.bundle_id
         WHERE b.tenant_id = $1
         ORDER BY r.created_at DESC
@@ -162,17 +163,18 @@ async fn create_release(
         ));
     }
 
-    // Zkontrolovat že bundle_version existuje a patří k tomuto tenantu
-    let bundle_version_valid = sqlx::query_scalar::<_, bool>(
+    // Zkontrolovat že copy_job existuje a patří k tomuto tenantu
+    let copy_job_valid = sqlx::query_scalar::<_, bool>(
         r#"
         SELECT EXISTS(
-            SELECT 1 FROM bundle_versions bv
+            SELECT 1 FROM copy_jobs cj
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
             JOIN bundles b ON b.id = bv.bundle_id
-            WHERE bv.id = $1 AND b.tenant_id = $2
+            WHERE cj.id = $1 AND b.tenant_id = $2
         )
         "#
     )
-    .bind(payload.bundle_version_id)
+    .bind(payload.copy_job_id)
     .bind(tenant_id)
     .fetch_one(&pool)
     .await
@@ -185,25 +187,22 @@ async fn create_release(
         )
     })?;
 
-    if !bundle_version_valid {
+    if !copy_job_valid {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Bundle version not found or doesn't belong to this tenant".to_string(),
+                error: "Copy job not found or doesn't belong to this tenant".to_string(),
             }),
         ));
     }
 
-    // Zkontrolovat že všechny image mappings byly zkopírované (mají status success)
-    let all_copied = sqlx::query_scalar::<_, bool>(
+    // Zkontrolovat že copy job je úspěšný
+    let job_success = sqlx::query_scalar::<_, bool>(
         r#"
-        SELECT NOT EXISTS(
-            SELECT 1 FROM image_mappings
-            WHERE bundle_version_id = $1 AND copy_status != 'success'
-        )
+        SELECT status = 'success' FROM copy_jobs WHERE id = $1
         "#
     )
-    .bind(payload.bundle_version_id)
+    .bind(payload.copy_job_id)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
@@ -215,22 +214,120 @@ async fn create_release(
         )
     })?;
 
-    if !all_copied {
+    if !job_success {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Cannot create release: not all images have been copied successfully".to_string(),
+                error: "Cannot create release: copy job is not successful".to_string(),
             }),
         ));
     }
 
     // Vytvoření release
     let release = sqlx::query_as::<_, Release>(
-        "INSERT INTO releases (bundle_version_id, release_id, status, notes, created_by)
+        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by)
          VALUES ($1, $2, 'draft', $3, $4)
-         RETURNING id, bundle_version_id, release_id, status, notes, created_by, created_at",
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
     )
-    .bind(payload.bundle_version_id)
+    .bind(payload.copy_job_id)
+    .bind(&payload.release_id)
+    .bind(&payload.notes)
+    .bind(&payload.created_by)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        if let Some(db_err) = e.as_database_error() {
+            if db_err.is_unique_violation() {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorResponse {
+                        error: format!("Release with ID '{}' already exists", payload.release_id),
+                    }),
+                );
+            }
+        }
+
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok((StatusCode::CREATED, Json(release)))
+}
+
+/// POST /api/v1/releases - Vytvoření nového release bez tenanta (tenant se odvodí z copy jobu)
+async fn create_release_global(
+    State(pool): State<PgPool>,
+    Json(payload): Json<CreateReleaseRequest>,
+) -> Result<(StatusCode, Json<Release>), (StatusCode, Json<ErrorResponse>)> {
+    if payload.release_id.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Release ID cannot be empty".to_string(),
+            }),
+        ));
+    }
+
+    // Zkontrolovat že copy_job existuje
+    let copy_job_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM copy_jobs WHERE id = $1)"
+    )
+    .bind(payload.copy_job_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if !copy_job_exists {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Copy job not found".to_string(),
+            }),
+        ));
+    }
+
+    // Zkontrolovat že copy job je úspěšný
+    let job_success = sqlx::query_scalar::<_, bool>(
+        "SELECT status = 'success' FROM copy_jobs WHERE id = $1"
+    )
+    .bind(payload.copy_job_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if !job_success {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Cannot create release: copy job is not successful".to_string(),
+            }),
+        ));
+    }
+
+    let release = sqlx::query_as::<_, Release>(
+        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by)
+         VALUES ($1, $2, 'draft', $3, $4)
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
+    )
+    .bind(payload.copy_job_id)
     .bind(&payload.release_id)
     .bind(&payload.notes)
     .bind(&payload.created_by)
@@ -280,7 +377,7 @@ async fn update_release(
         "UPDATE releases
          SET status = $1, notes = $2
          WHERE id = $3
-         RETURNING id, bundle_version_id, release_id, status, notes, created_by, created_at",
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
     )
     .bind(&payload.status)
     .bind(&payload.notes)
@@ -335,10 +432,10 @@ async fn get_release_manifest(
         })?;
 
     // Získat všechny image mappings pro tento release
-    let images = sqlx::query_as::<_, ImageMapping>(
-        "SELECT * FROM image_mappings WHERE bundle_version_id = $1 ORDER BY created_at"
+    let images = sqlx::query_as::<_, CopyJobImage>(
+        "SELECT * FROM copy_job_images WHERE copy_job_id = $1 ORDER BY created_at"
     )
-    .bind(release.bundle_version_id)
+    .bind(release.copy_job_id)
     .fetch_all(&pool)
     .await
     .map_err(|e| {
@@ -357,7 +454,7 @@ async fn get_release_manifest(
             source_tag: img.source_tag,
             source_sha256: img.source_sha256,
             target_image: img.target_image,
-            target_tag_template: img.target_tag_template,
+            target_tag: img.target_tag,
             target_sha256: img.target_sha256,
         })
         .collect();

@@ -10,6 +10,8 @@ use axum::{routing::get, Router};
 use clap::Parser;
 use config::{CliArgs, Config};
 use sqlx::postgres::PgPoolOptions;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -77,8 +79,8 @@ async fn main() -> Result<()> {
     let copy_state = api::copy::CopyApiState {
         pool: pool.clone(),
         skopeo: skopeo_service,
-        job_state: api::copy::CopyJobState::new(),
         encryption_secret: config.encryption_secret.clone(),
+        job_logs: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
 
     // Vytvoření copy API routeru

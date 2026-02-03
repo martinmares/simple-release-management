@@ -206,6 +206,14 @@ class ApiClient {
         return this.get(`/copy/jobs/${jobId}`);
     }
 
+    async getCopyJobImages(jobId) {
+        return this.get(`/copy/jobs/${jobId}/images`);
+    }
+
+    async getCopyJobs() {
+        return this.get('/copy/jobs');
+    }
+
     /**
      * Vytvoří SSE stream pro sledování copy job progress
      */
@@ -226,7 +234,7 @@ class ApiClient {
                 if (onMessage) onMessage(data);
 
                 // Zavřít stream když je job dokončený
-                if (data.status === 'completed' || data.status === 'completed_with_errors') {
+                if (data.status === 'success' || data.status === 'failed') {
                     eventSource.close();
                     if (onComplete) onComplete(data);
                 }

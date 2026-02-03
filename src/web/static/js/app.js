@@ -493,7 +493,7 @@ router.on('/', async () => {
                                                     </span>
                                                 </div>
                                                 <div class="col text-truncate">
-                                                    <div class="text-reset d-block">${release.name}</div>
+                                                    <div class="text-reset d-block">${release.release_id}</div>
                                                     <div class="text-secondary text-truncate mt-n1">
                                                         <small>${new Date(release.created_at).toLocaleString('cs-CZ')}</small>
                                                     </div>
@@ -566,27 +566,21 @@ router.on('/tenants', async () => {
                                 <th>Slug</th>
                                 <th>Description</th>
                                 <th>Created</th>
-                                <th class="w-1"></th>
                             </tr>
                         </thead>
                         <tbody>
                             ${tenants.length === 0 ? `
                                 <tr>
-                                    <td colspan="5" class="text-center text-secondary py-5">
+                                    <td colspan="4" class="text-center text-secondary py-5">
                                         No tenants found. Create your first tenant to get started.
                                     </td>
                                 </tr>
                             ` : tenants.map(tenant => `
-                                <tr onclick="router.navigate('/tenants/${tenant.id}')" style="cursor: pointer;">
-                                    <td><strong>${tenant.name}</strong></td>
+                                <tr>
+                                    <td><a href="#/tenants/${tenant.id}"><strong>${tenant.name}</strong></a></td>
                                     <td><span class="badge">${tenant.slug}</span></td>
                                     <td>${tenant.description || '-'}</td>
                                     <td>${new Date(tenant.created_at).toLocaleDateString('cs-CZ')}</td>
-                                    <td>
-                                        <a href="#/tenants/${tenant.id}" class="btn btn-sm btn-ghost-primary">
-                                            View
-                                        </a>
-                                    </td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -866,13 +860,12 @@ router.on('/registries', async () => {
                                 <th>Username</th>
                                 <th>Role</th>
                                 <th>Status</th>
-                                <th class="w-1"></th>
                             </tr>
                         </thead>
                         <tbody>
                             <template x-if="filteredRegistries.length === 0">
                                 <tr>
-                                    <td colspan="8" class="text-center text-secondary py-5">
+                                    <td colspan="7" class="text-center text-secondary py-5">
                                         <div>
                                             <i class="ti ti-database-off" style="font-size: 3rem; opacity: 0.3;"></i>
                                             <div class="mt-2">No registries found</div>
@@ -887,7 +880,7 @@ router.on('/registries', async () => {
                                             <span class="avatar avatar-sm me-2">
                                                 <i class="ti" :class="getRegistryTypeIcon(reg.registry_type)"></i>
                                             </span>
-                                            <strong x-text="reg.name"></strong>
+                                            <a :href="'#/registries/' + reg.id"><strong x-text="reg.name"></strong></a>
                                         </div>
                                     </td>
                                     <td>
@@ -907,11 +900,6 @@ router.on('/registries', async () => {
                                     </td>
                                     <td>
                                         <span class="badge" :class="reg.is_active ? 'bg-success text-success-fg' : 'bg-secondary text-secondary-fg'" x-text="reg.is_active ? 'Active' : 'Inactive'"></span>
-                                    </td>
-                                    <td>
-                                        <a :href="'#/registries/' + reg.id" class="btn btn-sm btn-ghost-primary">
-                                            View
-                                        </a>
                                     </td>
                                 </tr>
                             </template>
@@ -1102,7 +1090,17 @@ router.on('/bundles', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const bundles = await api.getBundles();
+        const [bundles, tenants, registries] = await Promise.all([
+            api.getBundles(),
+            api.getTenants(),
+            api.getRegistries()
+        ]);
+
+        // Create lookup maps
+        const tenantMap = {};
+        tenants.forEach(t => tenantMap[t.id] = t);
+        const registryMap = {};
+        registries.forEach(r => registryMap[r.id] = r);
 
         content.innerHTML = `
             <div class="card">
@@ -1120,11 +1118,11 @@ router.on('/bundles', async () => {
                         <thead>
                             <tr>
                                 <th>Name</th>
+                                <th>Tenant</th>
                                 <th>Description</th>
                                 <th>Current Version</th>
                                 <th>Images</th>
                                 <th>Created</th>
-                                <th class="w-1"></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -1134,20 +1132,35 @@ router.on('/bundles', async () => {
                                         No bundles found. Create your first bundle to get started.
                                     </td>
                                 </tr>
-                            ` : bundles.map(bundle => `
+                            ` : bundles.map(bundle => {
+                                const tenant = tenantMap[bundle.tenant_id];
+                                const sourceReg = registryMap[bundle.source_registry_id];
+                                const targetReg = registryMap[bundle.target_registry_id];
+
+                                return `
                                 <tr>
-                                    <td><strong>${bundle.name}</strong></td>
-                                    <td>${bundle.description || '-'}</td>
-                                    <td><span class="badge bg-blue text-blue-fg">v${bundle.current_version || 1}</span></td>
-                                    <td>${bundle.total_images || 0}</td>
-                                    <td>${new Date(bundle.created_at).toLocaleDateString('cs-CZ')}</td>
                                     <td>
-                                        <a href="#/bundles/${bundle.id}" class="btn btn-sm btn-ghost-primary">
-                                            View
-                                        </a>
+                                        <div><a href="#/bundles/${bundle.id}"><strong>${bundle.name}</strong></a></div>
+                                        <div class="small text-secondary" style="line-height: 1.2;">
+                                            <div class="mt-1">
+                                                <i class="ti ti-download" style="font-size: 0.8em;"></i>
+                                                <span style="font-size: 0.85em;">${sourceReg?.base_url || 'Unknown'}</span>
+                                            </div>
+                                            <div>
+                                                <i class="ti ti-upload" style="font-size: 0.8em;"></i>
+                                                <span style="font-size: 0.85em;">${targetReg?.base_url || 'Unknown'}</span>
+                                            </div>
+                                        </div>
                                     </td>
+                                    <td>
+                                        <span class="badge bg-blue text-blue-fg">${tenant?.name || 'Unknown'}</span>
+                                    </td>
+                                    <td>${bundle.description || '-'}</td>
+                                    <td><span class="badge bg-azure text-azure-fg">v${bundle.current_version || 1}</span></td>
+                                    <td>${bundle.image_count || 0}</td>
+                                    <td>${new Date(bundle.created_at).toLocaleDateString('cs-CZ')}</td>
                                 </tr>
-                            `).join('')}
+                            `}).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -1418,62 +1431,161 @@ router.on('/bundles/:id/versions/new', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
+        const versions = await api.getBundleVersions(params.id);
+        const latestVersion = versions.length > 0
+            ? Math.max(...versions.map(v => v.version))
+            : 1;
+        const initialMappings = await api.getImageMappings(params.id, latestVersion);
 
-        content.innerHTML = `
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Create New Version</h3>
-                    <div class="card-subtitle">Bundle: ${bundle.name}</div>
-                </div>
-                <form id="new-version-form">
+        const state = {
+            mappings: initialMappings.map(m => ({
+                source_image: m.source_image,
+                source_tag: m.source_tag,
+                target_image: m.target_image,
+            })),
+        };
+
+        const render = () => {
+            content.innerHTML = `
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Create New Version</h3>
+                        <div class="card-subtitle">Bundle: ${bundle.name}</div>
+                    </div>
                     <div class="card-body">
-                        <div class="alert alert-info">
-                            <i class="ti ti-info-circle"></i>
-                            Creating a new version will copy all image mappings from version ${bundle.current_version}.
-                            You can modify them after creation.
+                        <h3 class="mb-3">Image Mappings</h3>
+                        <p class="text-secondary mb-3">
+                            Start from the latest version and adjust the list as needed.
+                        </p>
+
+                        <div id="mappings-list" class="mb-3">
+                            ${state.mappings.map((mapping, index) => `
+                                <div class="card mb-2" data-mapping-index="${index}">
+                                    <div class="card-body">
+                                        <div class="row g-2">
+                                            <div class="col-md-5">
+                                                <label class="form-label">Source Image</label>
+                                                <input type="text" class="form-control form-control-sm mapping-source-image"
+                                                       value="${mapping.source_image}"
+                                                       placeholder="project/image">
+                                                <small class="form-hint">Path without registry hostname</small>
+                                            </div>
+                                            <div class="col-md-2">
+                                                <label class="form-label">Source Tag</label>
+                                                <input type="text" class="form-control form-control-sm mapping-source-tag"
+                                                       value="${mapping.source_tag}"
+                                                       placeholder="latest">
+                                            </div>
+                                            <div class="col-md-4">
+                                                <label class="form-label">Target Image</label>
+                                                <input type="text" class="form-control form-control-sm mapping-target-image"
+                                                       value="${mapping.target_image}"
+                                                       placeholder="project/image">
+                                                <small class="form-hint">Path without registry hostname</small>
+                                            </div>
+                                            <div class="col-md-1 d-flex align-items-end">
+                                                <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">
+                                                    <i class="ti ti-trash"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
                         </div>
 
+                        <button type="button" class="btn btn-primary" id="add-mapping-btn">
+                            <i class="ti ti-plus"></i>
+                            Add Image Mapping
+                        </button>
+
+                        ${state.mappings.length === 0 ? `
+                            <div class="alert alert-info mt-3">
+                                <i class="ti ti-info-circle"></i>
+                                Add at least one image mapping to continue
+                            </div>
+                        ` : ''}
+
+                        <hr class="my-4">
+
                         <div class="mb-3">
-                            <label class="form-label">Change Note</label>
-                            <textarea class="form-control" name="change_note" rows="3"
+                            <label class="form-label">Description</label>
+                            <textarea class="form-control" id="change-note" rows="3"
                                       placeholder="Describe what changed in this version (optional)"></textarea>
-                        </div>
-
-                        <div class="mb-3">
-                            <label class="form-label">Created By</label>
-                            <input type="text" class="form-control" name="created_by"
-                                   placeholder="Your name (optional)">
                         </div>
                     </div>
                     <div class="card-footer text-end">
                         <div class="d-flex">
                             <a href="#/bundles/${bundle.id}" class="btn btn-link">Cancel</a>
-                            <button type="submit" class="btn btn-primary ms-auto">
+                            <button type="button" class="btn btn-primary ms-auto" id="create-version-btn">
                                 <i class="ti ti-plus"></i>
                                 Create Version
                             </button>
                         </div>
                     </div>
-                </form>
-            </div>
-        `;
+                </div>
+            `;
 
-        document.getElementById('new-version-form').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const data = {
-                change_note: formData.get('change_note') || null,
-                created_by: formData.get('created_by') || null,
+            const collectMappings = () => {
+                const cards = document.querySelectorAll('[data-mapping-index]');
+                const mappings = [];
+                cards.forEach((card) => {
+                    const sourceImage = card.querySelector('.mapping-source-image')?.value || '';
+                    const sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+                    const targetImage = card.querySelector('.mapping-target-image')?.value || '';
+                    mappings.push({ source_image: sourceImage, source_tag: sourceTag, target_image: targetImage });
+                });
+                state.mappings = mappings;
             };
 
-            try {
-                const newVersion = await api.createBundleVersion(bundle.id, data);
-                getApp().showSuccess(`Version ${newVersion.version} created successfully`);
-                router.navigate(`/bundles/${bundle.id}/versions/${newVersion.version}`);
-            } catch (error) {
-                getApp().showError('Failed to create version: ' + error.message);
+            const addBtn = document.getElementById('add-mapping-btn');
+            if (addBtn) {
+                addBtn.addEventListener('click', () => {
+                    collectMappings();
+                    state.mappings.push({ source_image: '', source_tag: '', target_image: '' });
+                    render();
+                });
             }
-        });
+
+            document.querySelectorAll('.mapping-remove').forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    collectMappings();
+                    state.mappings.splice(index, 1);
+                    render();
+                });
+            });
+
+            const createBtn = document.getElementById('create-version-btn');
+            createBtn.addEventListener('click', async () => {
+                collectMappings();
+                const validMappings = state.mappings.filter(m => m.source_image && m.source_tag && m.target_image);
+                if (validMappings.length === 0) {
+                    getApp().showError('Please add at least one complete image mapping');
+                    return;
+                }
+
+                try {
+                    createBtn.disabled = true;
+                    createBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
+
+                    const changeNote = document.getElementById('change-note').value || null;
+                    const newVersion = await api.createBundleVersion(bundle.id, { change_note: changeNote });
+
+                    for (const mapping of validMappings) {
+                        await api.addImageMapping(bundle.id, newVersion.version, mapping);
+                    }
+
+                    getApp().showSuccess(`Version ${newVersion.version} created successfully`);
+                    router.navigate(`/bundles/${bundle.id}/versions/${newVersion.version}`);
+                } catch (error) {
+                    getApp().showError('Failed to create version: ' + error.message);
+                    createBtn.disabled = false;
+                    createBtn.innerHTML = '<i class="ti ti-plus"></i> Create Version';
+                }
+            });
+        };
+
+        render();
 
     } catch (error) {
         content.innerHTML = `
@@ -1495,10 +1607,6 @@ router.on('/bundles/:id/versions/:version', async (params) => {
             api.getBundleVersion(params.id, params.version),
             api.getImageMappings(params.id, params.version),
         ]);
-
-        const copiedCount = mappings.filter(m => m.copy_status === 'success').length;
-        const failedCount = mappings.filter(m => m.copy_status === 'failed').length;
-        const pendingCount = mappings.filter(m => !m.copy_status || m.copy_status === 'pending').length;
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -1522,25 +1630,7 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                 </div>
                 <div class="card-body">
                     <div class="row">
-                        <div class="col-md-3">
-                            <div class="text-center">
-                                <div class="h1 text-success">${copiedCount}</div>
-                                <div class="text-secondary">Copied</div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="text-center">
-                                <div class="h1 text-danger">${failedCount}</div>
-                                <div class="text-secondary">Failed</div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
-                            <div class="text-center">
-                                <div class="h1 text-warning">${pendingCount}</div>
-                                <div class="text-secondary">Pending</div>
-                            </div>
-                        </div>
-                        <div class="col-md-3">
+                        <div class="col-md-12">
                             <div class="text-center">
                                 <div class="h1">${mappings.length}</div>
                                 <div class="text-secondary">Total</div>
@@ -1555,37 +1645,28 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                     <h3 class="card-title">Image Mappings</h3>
                 </div>
                 <div class="table-responsive">
-                    <table class="table table-vcenter card-table table-sm">
+                    <table class="table table-vcenter card-table">
                         <thead>
                             <tr>
                                 <th>Source Image</th>
-                                <th>Source Tag</th>
-                                <th>→</th>
                                 <th>Target Image</th>
-                                <th>Status</th>
-                                <th>SHA256</th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${mappings.map(mapping => `
+                            ${mappings.map(mapping => {
+                                return `
                                 <tr>
-                                    <td><code class="small">${mapping.source_image}</code></td>
-                                    <td><span class="badge">${mapping.source_tag}</span></td>
-                                    <td class="text-center"><i class="ti ti-arrow-right"></i></td>
-                                    <td><code class="small">${mapping.target_image}</code></td>
                                     <td>
-                                        ${mapping.copy_status === 'success' ? '<span class="badge bg-success text-success-fg">Success</span>' :
-                                          mapping.copy_status === 'failed' ? '<span class="badge bg-danger text-danger-fg">Failed</span>' :
-                                          mapping.copy_status === 'in_progress' ? '<span class="badge bg-info text-info-fg">In Progress</span>' :
-                                          '<span class="badge bg-secondary text-secondary-fg">Pending</span>'}
+                                        <div><code class="small">${mapping.source_image}</code></div>
+                                        <div class="small text-secondary mt-1">
+                                            <span class="badge badge-sm bg-azure-lt">${mapping.source_tag}</span>
+                                        </div>
                                     </td>
                                     <td>
-                                        ${mapping.target_sha256 ?
-                                          `<code class="small">${mapping.target_sha256.substring(0, 12)}...</code>` :
-                                          '-'}
+                                        <div><code class="small">${mapping.target_image}</code></div>
                                     </td>
                                 </tr>
-                            `).join('')}
+                            `}).join('')}
                         </tbody>
                     </table>
                 </div>
@@ -1626,33 +1707,23 @@ router.on('/releases', async () => {
                     <table class="table table-vcenter card-table">
                         <thead>
                             <tr>
-                                <th>Name</th>
-                                <th>Bundle</th>
-                                <th>Version</th>
-                                <th>Images</th>
+                                <th>Release ID</th>
+                                <th>Status</th>
                                 <th>Created</th>
-                                <th class="w-1"></th>
                             </tr>
                         </thead>
                         <tbody>
                             ${releases.length === 0 ? `
                                 <tr>
-                                    <td colspan="6" class="text-center text-secondary py-5">
-                                        No releases yet. Create a release from a bundle version.
+                                    <td colspan="3" class="text-center text-secondary py-5">
+                                        No releases yet. Create a release from a copy job.
                                     </td>
                                 </tr>
                             ` : releases.map(release => `
                                 <tr>
-                                    <td><strong>${release.name}</strong></td>
-                                    <td>${release.bundle_name || '-'}</td>
-                                    <td><span class="badge bg-blue text-blue-fg">v${release.bundle_version}</span></td>
-                                    <td>${release.image_count || 0}</td>
+                                    <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
+                                    <td><span class="badge bg-blue text-blue-fg">${release.status}</span></td>
                                     <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
-                                    <td>
-                                        <a href="#/releases/${release.id}" class="btn btn-sm btn-ghost-primary">
-                                            View
-                                        </a>
-                                    </td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -1694,13 +1765,13 @@ router.on('/releases/:id', async (params) => {
                 <div class="card-header">
                     <h3 class="card-title">
                         <i class="ti ti-rocket me-2"></i>
-                        ${release.name}
+                        ${release.release_id}
                     </h3>
                 </div>
                 <div class="card-body">
                     <dl class="row mb-0">
-                        <dt class="col-4">Description:</dt>
-                        <dd class="col-8">${release.description || '-'}</dd>
+                        <dt class="col-4">Notes:</dt>
+                        <dd class="col-8">${release.notes || '-'}</dd>
 
                         <dt class="col-4">Created:</dt>
                         <dd class="col-8">${new Date(release.created_at).toLocaleString('cs-CZ')}</dd>
@@ -1750,8 +1821,6 @@ router.on('/releases/new', async (params, query) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const bundles = await api.getBundles();
-
         content.innerHTML = `
             <div class="card">
                 <div class="card-header">
@@ -1760,45 +1829,27 @@ router.on('/releases/new', async (params, query) => {
                 <form id="release-form">
                     <div class="card-body">
                         <div class="mb-3">
-                            <label class="form-label required">Release Name</label>
-                            <input type="text" class="form-control" name="name"
-                                   placeholder="Production Release 2026.02.02" required>
+                            <label class="form-label required">Release ID</label>
+                            <input type="text" class="form-control" name="release_id"
+                                   placeholder="RELEASE_TSM_R21.2026.01" required>
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">Description</label>
-                            <textarea class="form-control" name="description" rows="3"
-                                      placeholder="Optional description"></textarea>
+                            <label class="form-label">Notes</label>
+                            <textarea class="form-control" name="notes" rows="3"
+                                      placeholder="Optional notes"></textarea>
                         </div>
 
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label required">Bundle</label>
-                                    <select class="form-select" name="bundle_id" id="bundle-select" required>
-                                        <option value="">Select bundle...</option>
-                                        ${bundles.map(b => `
-                                            <option value="${b.id}" ${query.bundle_id === b.id ? 'selected' : ''}>
-                                                ${b.name}
-                                            </option>
-                                        `).join('')}
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div class="col-md-6">
-                                <div class="mb-3">
-                                    <label class="form-label required">Bundle Version</label>
-                                    <select class="form-select" name="bundle_version_id" id="version-select" required>
-                                        <option value="">Select bundle first...</option>
-                                    </select>
-                                </div>
-                            </div>
+                        <div class="mb-3">
+                            <label class="form-label required">Copy Job ID</label>
+                            <input type="text" class="form-control" name="copy_job_id"
+                                   placeholder="UUID of successful copy job" required>
+                            <small class="form-hint">Release is created from a specific successful copy job.</small>
                         </div>
 
                         <div class="alert alert-info">
                             <i class="ti ti-info-circle"></i>
-                            Only bundle versions with all images successfully copied can be released.
+                            Only successful copy jobs can be released.
                         </div>
                     </div>
                     <div class="card-footer text-end">
@@ -1813,32 +1864,6 @@ router.on('/releases/new', async (params, query) => {
                 </form>
             </div>
         `;
-
-        // Bundle selection handler
-        const bundleSelect = document.getElementById('bundle-select');
-        const versionSelect = document.getElementById('version-select');
-
-        bundleSelect.addEventListener('change', async () => {
-            const bundleId = bundleSelect.value;
-            if (!bundleId) {
-                versionSelect.innerHTML = '<option value="">Select bundle first...</option>';
-                return;
-            }
-
-            try {
-                const versions = await api.getBundleVersions(bundleId);
-                versionSelect.innerHTML = versions.map(v => `
-                    <option value="${v.id}">Version ${v.version}</option>
-                `).join('');
-            } catch (error) {
-                getApp().showError('Failed to load versions');
-            }
-        });
-
-        // Trigger if pre-selected
-        if (query.bundle_id) {
-            bundleSelect.dispatchEvent(new Event('change'));
-        }
 
         // Form submit
         document.getElementById('release-form').addEventListener('submit', async (e) => {
@@ -1963,19 +1988,42 @@ router.on('/copy-jobs/:jobId', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     let eventSource = null;
+    let logSource = null;
+    const logLines = [];
+    const apiBase = `${window.BASE_PATH || ''}/api/v1`;
 
     try {
-        // Initial status
-        const initialStatus = await api.getCopyJobStatus(params.jobId);
+        // Initial status + images
+        const [initialStatus, initialImages] = await Promise.all([
+            api.getCopyJobStatus(params.jobId),
+            api.getCopyJobImages(params.jobId),
+        ]);
 
-        const renderJobStatus = (status) => {
+        const renderLogs = () => {
+            const logEl = document.getElementById('copy-job-log');
+            if (!logEl) return;
+            logEl.textContent = logLines.join('\n');
+            logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        const renderJobStatus = (status, images = []) => {
             const progress = status.total_images > 0
                 ? ((status.copied_images + status.failed_images) / status.total_images * 100).toFixed(0)
                 : 0;
 
-            const isComplete = status.status === 'completed' || status.status === 'completed_with_errors';
+            const isComplete = status.status === 'success' || status.status === 'failed';
+            const failedImages = images.filter(img => img.copy_status === 'failed');
 
             content.innerHTML = `
+                <style>
+                    .terminal-shell { background: #0e0f12; border-radius: 10px; overflow: hidden; border: 1px solid #1f2430; }
+                    .terminal-header { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: #1b1f2a; }
+                    .terminal-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+                    .terminal-dot.red { background: #ff5f57; }
+                    .terminal-dot.yellow { background: #febc2e; }
+                    .terminal-dot.green { background: #28c840; }
+                    .terminal-body { max-height: 320px; overflow: auto; margin: 0; padding: 12px; color: #c9d1d9; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
+                </style>
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">Copy Job Monitor</h3>
@@ -2021,14 +2069,15 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         </div>
 
                         <div class="alert ${
-                            status.status === 'completed' ? 'alert-success' :
-                            status.status === 'completed_with_errors' ? 'alert-warning' :
+                            status.status === 'success' ? 'alert-success' :
+                            status.status === 'failed' ? 'alert-warning' :
                             status.status === 'in_progress' ? 'alert-info pulse' :
                             'alert-secondary'
                         }">
                             <div class="d-flex align-items-center">
                                 <i class="ti ${
-                                    status.status === 'completed' ? 'ti-check' :
+                                    status.status === 'success' ? 'ti-check' :
+                                    status.status === 'failed' ? 'ti-x' :
                                     status.status === 'in_progress' ? 'ti-loader' :
                                     'ti-info-circle'
                                 } me-2"></i>
@@ -2045,6 +2094,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
                         ${isComplete ? `
                             <div class="d-grid gap-2">
+                                <a href="#/copy-jobs" class="btn btn-outline-secondary">
+                                    <i class="ti ti-list"></i>
+                                    Back to Copy Jobs
+                                </a>
                                 <a href="#/bundles/${status.bundle_id}/versions/${status.version}" class="btn btn-primary">
                                     <i class="ti ti-arrow-left"></i>
                                     Back to Bundle Version
@@ -2053,28 +2106,107 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         ` : ''}
                     </div>
                 </div>
+
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h3 class="card-title">Live Logs</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="terminal-shell">
+                            <div class="terminal-header">
+                                <span class="terminal-dot red"></span>
+                                <span class="terminal-dot yellow"></span>
+                                <span class="terminal-dot green"></span>
+                            </div>
+                            <pre id="copy-job-log" class="terminal-body"></pre>
+                        </div>
+                    </div>
+                </div>
+
+                ${failedImages.length > 0 ? `
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h3 class="card-title">Failed Images</h3>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>Target</th>
+                                    <th>Error</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${failedImages.map(img => `
+                                    <tr>
+                                        <td>
+                                            <div><code class="small">${img.source_image}:${img.source_tag}</code></div>
+                                        </td>
+                                        <td>
+                                            <div><code class="small">${img.target_image}:${img.target_tag}</code></div>
+                                        </td>
+                                        <td>
+                                            <div class="text-danger small" style="max-width: 520px; white-space: normal;">
+                                                ${img.error_message || 'Unknown error'}
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                ` : ''}
             `;
+
+            renderLogs();
         };
 
         // Initial render
-        renderJobStatus(initialStatus);
+        renderJobStatus(initialStatus, initialImages);
+
+        // Start log stream
+        logSource = new EventSource(`${apiBase}/copy/jobs/${params.jobId}/logs`);
+        logSource.onmessage = (event) => {
+            if (!event.data) return;
+            logLines.push(event.data);
+            if (logLines.length > 1000) {
+                logLines.shift();
+            }
+            renderLogs();
+        };
+        logSource.addEventListener('log-end', (event) => {
+            if (event?.data) {
+                logLines.push(event.data);
+                renderLogs();
+            }
+            logSource.close();
+        });
+        logSource.onerror = (error) => {
+            console.error('Log SSE error:', error);
+        };
 
         // Start SSE stream if not complete
-        if (initialStatus.status !== 'completed' && initialStatus.status !== 'completed_with_errors') {
+        if (initialStatus.status !== 'success' && initialStatus.status !== 'failed') {
             eventSource = api.createCopyJobStream(
                 params.jobId,
                 (data) => {
-                    renderJobStatus(data);
+                    renderJobStatus(data, initialImages);
                 },
                 (error) => {
                     console.error('SSE error:', error);
                     getApp().showError('Connection lost');
                 },
                 (data) => {
-                    renderJobStatus(data);
-                    if (data.failed_images === 0) {
+                    api.getCopyJobImages(params.jobId).then((images) => {
+                        renderJobStatus(data, images);
+                    }).catch(() => {
+                        renderJobStatus(data, initialImages);
+                    });
+                    if (data.failed_images === 0 && data.status === 'success') {
                         getApp().showSuccess('Copy job completed successfully!');
-                    } else {
+                    } else if (data.status === 'failed') {
                         getApp().showWarning(`Copy job completed with ${data.failed_images} errors`);
                     }
                 }
@@ -2094,28 +2226,120 @@ router.on('/copy-jobs/:jobId', async (params) => {
         if (eventSource) {
             eventSource.close();
         }
+        if (logSource) {
+            logSource.close();
+        }
     }, { once: true });
 });
 
 // Copy Jobs List
 router.on('/copy-jobs', async () => {
-    document.getElementById('app-content').innerHTML = `
-        <div class="card">
-            <div class="card-header">
-                <h3 class="card-title">Copy Jobs</h3>
-            </div>
-            <div class="card-body">
-                <div class="alert alert-info">
-                    <i class="ti ti-info-circle"></i>
-                    Copy jobs are started from bundle versions. Visit a bundle version to start a new copy job.
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const jobs = await api.getCopyJobs();
+
+        const renderJobs = (rows) => `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Copy Jobs</h3>
+                    <div class="card-actions">
+                        <a href="#/bundles" class="btn btn-primary">
+                            <i class="ti ti-package"></i>
+                            New Copy Job
+                        </a>
+                    </div>
                 </div>
-                <a href="#/bundles" class="btn btn-primary">
-                    <i class="ti ti-package"></i>
-                    View Bundles
-                </a>
+                <div class="card-body">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-sm-4">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" id="copy-jobs-status">
+                                <option value="">All</option>
+                                <option value="in_progress">in_progress</option>
+                                <option value="pending">pending</option>
+                                <option value="success">success</option>
+                                <option value="failed">failed</option>
+                            </select>
+                        </div>
+                        <div class="col-sm-8">
+                            <label class="form-label">Search</label>
+                            <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id">
+                        </div>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <thead>
+                            <tr>
+                                <th>Job ID</th>
+                                <th>Bundle</th>
+                                <th>Version</th>
+                                <th>Target Tag</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows.length === 0 ? `
+                                <tr>
+                                    <td colspan="6" class="text-center text-secondary py-5">
+                                        No copy jobs yet. Start one from a bundle version.
+                                    </td>
+                                </tr>
+                            ` : rows.map(job => `
+                                <tr>
+                                    <td><a href="#/copy-jobs/${job.job_id}"><code class="small">${job.job_id}</code></a></td>
+                                    <td>
+                                        <div><a href="#/bundles/${job.bundle_id}">${job.bundle_name}</a></div>
+                                        <div class="text-secondary small"><code class="small">${job.bundle_id}</code></div>
+                                    </td>
+                                    <td><span class="badge bg-blue text-blue-fg">v${job.version}</span></td>
+                                    <td><span class="badge bg-azure-lt">${job.target_tag}</span></td>
+                                    <td>
+                                        <span class="badge ${
+                                            job.status === 'success' ? 'bg-success text-success-fg' :
+                                            job.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                            job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                            'bg-secondary text-secondary-fg'
+                                        }">${job.status}</span>
+                                    </td>
+                                    <td>${new Date(job.started_at).toLocaleString('cs-CZ')}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
             </div>
-        </div>
-    `;
+        `;
+
+        content.innerHTML = renderJobs(jobs);
+        const statusEl = document.getElementById('copy-jobs-status');
+        const searchEl = document.getElementById('copy-jobs-search');
+
+        const applyFilters = () => {
+            const status = statusEl.value;
+            const q = searchEl.value.trim().toLowerCase();
+            const filtered = jobs.filter(job => {
+                const statusOk = !status || job.status === status;
+                const searchOk = !q || job.bundle_name.toLowerCase().includes(q) || job.job_id.toLowerCase().includes(q);
+                return statusOk && searchOk;
+            });
+            content.innerHTML = renderJobs(filtered);
+            document.getElementById('copy-jobs-status').value = status;
+            document.getElementById('copy-jobs-search').value = q;
+        };
+
+        statusEl.addEventListener('change', applyFilters);
+        searchEl.addEventListener('input', applyFilters);
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load copy jobs: ${error.message}
+            </div>
+        `;
+    }
 });
 
 /**

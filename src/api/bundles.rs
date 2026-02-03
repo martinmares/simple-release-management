@@ -33,7 +33,6 @@ pub struct UpdateBundleRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreateBundleVersionRequest {
     pub change_note: Option<String>,
-    pub created_by: Option<String>,
 }
 
 /// BundleVersion s počtem images
@@ -53,9 +52,7 @@ pub struct BundleVersionWithCount {
 pub struct CreateImageMappingRequest {
     pub source_image: String,
     pub source_tag: String,
-    pub source_sha256: Option<String>,
     pub target_image: String,
-    pub target_tag_template: Option<String>,
 }
 
 /// Response s chybou
@@ -110,8 +107,13 @@ async fn list_all_bundles(
             COALESCE(
                 (SELECT COUNT(*)
                  FROM image_mappings im
-                 JOIN bundle_versions bv ON bv.id = im.bundle_version_id
-                 WHERE bv.bundle_id = b.id AND bv.version = b.current_version),
+                 WHERE im.bundle_version_id = (
+                     SELECT bv.id
+                     FROM bundle_versions bv
+                     WHERE bv.bundle_id = b.id
+                     ORDER BY bv.version DESC
+                     LIMIT 1
+                 )),
                 0
             ) as image_count
         FROM bundles b
@@ -144,8 +146,13 @@ async fn list_bundles(
             COALESCE(
                 (SELECT COUNT(*)
                  FROM image_mappings im
-                 JOIN bundle_versions bv ON bv.id = im.bundle_version_id
-                 WHERE bv.bundle_id = b.id AND bv.version = b.current_version),
+                 WHERE im.bundle_version_id = (
+                     SELECT bv.id
+                     FROM bundle_versions bv
+                     WHERE bv.bundle_id = b.id
+                     ORDER BY bv.version DESC
+                     LIMIT 1
+                 )),
                 0
             ) as image_count
         FROM bundles b
@@ -533,14 +540,13 @@ async fn create_bundle_version(
 
     // Vytvořit novou verzi
     let bundle_version = sqlx::query_as::<_, BundleVersion>(
-        "INSERT INTO bundle_versions (bundle_id, version, change_note, created_by)
-         VALUES ($1, $2, $3, $4)
+        "INSERT INTO bundle_versions (bundle_id, version, change_note)
+         VALUES ($1, $2, $3)
          RETURNING id, bundle_id, version, change_note, created_by, created_at"
     )
     .bind(bundle_id)
     .bind(new_version)
     .bind(&payload.change_note)
-    .bind(&payload.created_by)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -681,23 +687,17 @@ async fn create_image_mapping(
         )
     })?;
 
-    // Default target_tag_template to source_tag if not provided
-    let target_tag_template = payload.target_tag_template
-        .unwrap_or_else(|| payload.source_tag.clone());
-
     // Vytvořit image mapping
     let mapping = sqlx::query_as::<_, ImageMapping>(
         "INSERT INTO image_mappings
-         (bundle_version_id, source_image, source_tag, source_sha256, target_image, target_tag_template, copy_status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+         (bundle_version_id, source_image, source_tag, target_image)
+         VALUES ($1, $2, $3, $4)
          RETURNING *"
     )
     .bind(bundle_version_id)
     .bind(&payload.source_image)
     .bind(&payload.source_tag)
-    .bind(&payload.source_sha256)
     .bind(&payload.target_image)
-    .bind(&target_tag_template)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
@@ -717,27 +717,12 @@ async fn delete_image_mapping(
     State(pool): State<PgPool>,
     Path((_bundle_id, _version, mapping_id)): Path<(Uuid, i32, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    let result = sqlx::query("DELETE FROM image_mappings WHERE id = $1")
-        .bind(mapping_id)
-        .execute(&pool)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Database error: {}", e),
-                }),
-            )
-        })?;
-
-    if result.rows_affected() == 0 {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("Image mapping with id {} not found", mapping_id),
-            }),
-        ));
-    }
-
-    Ok(StatusCode::NO_CONTENT)
+    let _ = pool;
+    let _ = mapping_id;
+    Err((
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(ErrorResponse {
+            error: "Image mappings are immutable and cannot be deleted".to_string(),
+        }),
+    ))
 }

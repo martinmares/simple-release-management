@@ -128,18 +128,42 @@ pub struct ImageMapping {
     // Source
     pub source_image: String,
     pub source_tag: String,
-    pub source_sha256: Option<String>,
 
     // Target
     pub target_image: String,
-    pub target_tag_template: Option<String>,
+
+    pub created_at: DateTime<Utc>,
+}
+
+/// Copy job - konkrétní spuštění copy operace
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CopyJob {
+    pub id: Uuid,
+    pub bundle_version_id: Uuid,
+    pub target_tag: String,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Copy job image - snapshot + runtime výsledky
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CopyJobImage {
+    pub id: Uuid,
+    pub copy_job_id: Uuid,
+    pub image_mapping_id: Uuid,
+    pub source_image: String,
+    pub source_tag: String,
+    pub target_image: String,
+    pub target_tag: String,
+    pub source_sha256: Option<String>,
     pub target_sha256: Option<String>,
-
-    // Status
     pub copy_status: String,
-    pub copied_at: Option<DateTime<Utc>>,
     pub error_message: Option<String>,
-
+    pub copied_at: Option<DateTime<Utc>>,
+    pub bytes_copied: Option<i64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -166,7 +190,7 @@ impl std::fmt::Display for ReleaseStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Release {
     pub id: Uuid,
-    pub bundle_version_id: Uuid,
+    pub copy_job_id: Uuid,
     pub release_id: String,
     pub status: String,
     pub notes: Option<String>,
