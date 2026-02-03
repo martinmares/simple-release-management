@@ -4,6 +4,7 @@ use axum::{
     routing::{get, post, put, delete},
     Json, Router,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -13,7 +14,6 @@ use crate::db::models::{Bundle, BundleVersion, ImageMapping};
 /// Request pro vytvoření nového bundle
 #[derive(Debug, Deserialize)]
 pub struct CreateBundleRequest {
-    pub tenant_id: Uuid,
     pub source_registry_id: Uuid,
     pub target_registry_id: Uuid,
     pub name: String,
@@ -36,14 +36,26 @@ pub struct CreateBundleVersionRequest {
     pub created_by: Option<String>,
 }
 
+/// BundleVersion s počtem images
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BundleVersionWithCount {
+    pub id: Uuid,
+    pub bundle_id: Uuid,
+    pub version: i32,
+    pub change_note: Option<String>,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub image_count: i32,
+}
+
 /// Request pro přidání image mapping
 #[derive(Debug, Deserialize)]
 pub struct CreateImageMappingRequest {
     pub source_image: String,
     pub source_tag: String,
-    pub source_sha256: String,
+    pub source_sha256: Option<String>,
     pub target_image: String,
-    pub target_tag_template: String,
+    pub target_tag_template: Option<String>,
 }
 
 /// Response s chybou
@@ -422,9 +434,14 @@ async fn delete_bundle(
 async fn list_bundle_versions(
     State(pool): State<PgPool>,
     Path(bundle_id): Path<Uuid>,
-) -> Result<Json<Vec<BundleVersion>>, (StatusCode, Json<ErrorResponse>)> {
-    let versions = sqlx::query_as::<_, BundleVersion>(
-        "SELECT * FROM bundle_versions WHERE bundle_id = $1 ORDER BY version DESC"
+) -> Result<Json<Vec<BundleVersionWithCount>>, (StatusCode, Json<ErrorResponse>)> {
+    let versions = sqlx::query_as::<_, BundleVersionWithCount>(
+        "SELECT bv.*, COUNT(im.id)::int as image_count
+         FROM bundle_versions bv
+         LEFT JOIN image_mappings im ON im.bundle_version_id = bv.id
+         WHERE bv.bundle_id = $1
+         GROUP BY bv.id
+         ORDER BY bv.version DESC"
     )
     .bind(bundle_id)
     .fetch_all(&pool)
@@ -664,6 +681,10 @@ async fn create_image_mapping(
         )
     })?;
 
+    // Default target_tag_template to source_tag if not provided
+    let target_tag_template = payload.target_tag_template
+        .unwrap_or_else(|| payload.source_tag.clone());
+
     // Vytvořit image mapping
     let mapping = sqlx::query_as::<_, ImageMapping>(
         "INSERT INTO image_mappings
@@ -676,7 +697,7 @@ async fn create_image_mapping(
     .bind(&payload.source_tag)
     .bind(&payload.source_sha256)
     .bind(&payload.target_image)
-    .bind(&payload.target_tag_template)
+    .bind(&target_tag_template)
     .fetch_one(&pool)
     .await
     .map_err(|e| {
