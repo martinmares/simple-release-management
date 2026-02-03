@@ -8,6 +8,8 @@ use uuid::Uuid;
 pub struct Tenant {
     pub id: Uuid,
     pub name: String,
+    pub slug: String,
+    pub description: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -30,6 +32,27 @@ impl std::fmt::Display for RegistryRole {
     }
 }
 
+/// Registry authentication type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthType {
+    None,
+    Basic,   // username + password (Docker Hub, generic registries)
+    Token,   // username + token (Harbor robot accounts, Quay robot accounts)
+    Bearer,  // pure token (GCR, ECR service accounts)
+}
+
+impl std::fmt::Display for AuthType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthType::None => write!(f, "none"),
+            AuthType::Basic => write!(f, "basic"),
+            AuthType::Token => write!(f, "token"),
+            AuthType::Bearer => write!(f, "bearer"),
+        }
+    }
+}
+
 /// Registry - Docker/Harbor/Quay registry
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Registry {
@@ -38,8 +61,16 @@ pub struct Registry {
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
-    pub credentials_path: String,
+    pub auth_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(skip_serializing)]
+    pub password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub token_encrypted: Option<String>,
     pub role: String,
+    pub description: Option<String>,
+    pub is_active: bool,
     pub created_at: DateTime<Utc>,
 }
 

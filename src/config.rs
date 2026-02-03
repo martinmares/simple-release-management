@@ -23,8 +23,8 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub base_path: String,
-    pub registry_credentials_path: String,
     pub skopeo_path: String,
+    pub encryption_secret: String,
     pub max_concurrent_copy_jobs: usize,
     pub copy_timeout_seconds: u64,
     pub copy_max_retries: u32,
@@ -48,11 +48,11 @@ impl Config {
                 .trim_end_matches('/')
                 .to_string(),
 
-            registry_credentials_path: env::var("REGISTRY_CREDENTIALS_PATH")
-                .unwrap_or_else(|_| "/run/secrets/registry-auth".to_string()),
-
             skopeo_path: env::var("SKOPEO_PATH")
                 .unwrap_or_else(|_| "skopeo".to_string()),
+
+            encryption_secret: env::var("ENCRYPTION_SECRET")
+                .context("ENCRYPTION_SECRET must be set")?,
 
             max_concurrent_copy_jobs: env::var("MAX_CONCURRENT_COPY_JOBS")
                 .unwrap_or_else(|_| "3".to_string())

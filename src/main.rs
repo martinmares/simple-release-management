@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod crypto;
 mod db;
 mod registry;
 mod services;
@@ -56,10 +57,7 @@ async fn main() -> Result<()> {
     info!("Database migrations completed successfully");
 
     // Inicializace Skopeo service
-    let skopeo_service = services::SkopeoService::new(
-        config.skopeo_path.clone(),
-        config.registry_credentials_path.clone(),
-    );
+    let skopeo_service = services::SkopeoService::new(config.skopeo_path.clone());
 
     // Zkontrolovat že skopeo je dostupné
     match skopeo_service.check_available().await {
@@ -73,13 +71,14 @@ async fn main() -> Result<()> {
     }
 
     // Vytvoření API routeru
-    let api_router = api::create_api_router(pool.clone());
+    let api_router = api::create_api_router(pool.clone(), config.encryption_secret.clone());
 
     // Vytvoření copy API state
     let copy_state = api::copy::CopyApiState {
         pool: pool.clone(),
         skopeo: skopeo_service,
         job_state: api::copy::CopyJobState::new(),
+        encryption_secret: config.encryption_secret.clone(),
     };
 
     // Vytvoření copy API routeru

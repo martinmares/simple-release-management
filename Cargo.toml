@@ -45,3 +45,9 @@ dotenv = "0.15"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# Encryption
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.21"
+sha2 = "0.10"

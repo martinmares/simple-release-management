@@ -13,7 +13,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::db::models::{Bundle, ImageMapping};
+use crate::crypto;
+use crate::db::models::{Bundle, ImageMapping, Registry};
+use crate::services::skopeo::SkopeoCredentials;
 use crate::services::SkopeoService;
 
 /// Request pro spuštění copy operace
@@ -68,6 +70,74 @@ pub struct CopyApiState {
     pub pool: PgPool,
     pub skopeo: SkopeoService,
     pub job_state: CopyJobState,
+    pub encryption_secret: String,
+}
+
+impl CopyApiState {
+    /// Získá dešifrované credentials pro registry
+    async fn get_registry_credentials(
+        &self,
+        registry_id: Uuid,
+    ) -> Result<(Option<String>, Option<String>), anyhow::Error> {
+        let registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
+            .bind(registry_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let Some(registry) = registry else {
+            return Ok((None, None));
+        };
+
+        // Decrypt credentials based on auth_type
+        match registry.auth_type.as_str() {
+            "none" => Ok((None, None)),
+            "basic" => {
+                let username = registry.username.clone();
+                let password = if let Some(encrypted) = &registry.password_encrypted {
+                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
+                } else {
+                    None
+                };
+                Ok((username, password))
+            }
+            "token" => {
+                let username = registry.username.clone();
+                let token = if let Some(encrypted) = &registry.token_encrypted {
+                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
+                } else {
+                    None
+                };
+                Ok((username, token))
+            }
+            "bearer" => {
+                let token = if let Some(encrypted) = &registry.token_encrypted {
+                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
+                } else {
+                    None
+                };
+                // For bearer, username is empty
+                Ok((None, token))
+            }
+            _ => Ok((None, None)),
+        }
+    }
+
+    /// Vytvoří SkopeoCredentials pro copy operaci mezi source a target registry
+    async fn get_skopeo_credentials(
+        &self,
+        source_registry_id: Uuid,
+        target_registry_id: Uuid,
+    ) -> Result<SkopeoCredentials, anyhow::Error> {
+        let (source_username, source_password) = self.get_registry_credentials(source_registry_id).await?;
+        let (target_username, target_password) = self.get_registry_credentials(target_registry_id).await?;
+
+        Ok(SkopeoCredentials {
+            source_username,
+            source_password,
+            target_username,
+            target_password,
+        })
+    }
 }
 
 /// Vytvoří router pro copy endpoints
@@ -194,6 +264,19 @@ async fn copy_bundle_version(
     let source_base_url = source_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
     let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
 
+    // Získat credentials pro source a target registry
+    let credentials = match state.get_skopeo_credentials(bundle.source_registry_id, bundle.target_registry_id).await {
+        Ok(creds) => creds,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get registry credentials: {}", e),
+                }),
+            ));
+        }
+    };
+
     // Vytvořit job ID
     let job_id = Uuid::new_v4();
 
@@ -216,6 +299,7 @@ async fn copy_bundle_version(
     let skopeo_clone = state.skopeo.clone();
     let job_state_clone = state.job_state.clone();
     let target_tag = payload.target_tag.clone();
+    let credentials_clone = credentials.clone();
 
     tokio::spawn(async move {
         let mut copied = 0;
@@ -239,10 +323,14 @@ async fn copy_bundle_version(
                 .await;
 
             // Zkopírovat image
-            match skopeo_clone.copy_image_with_retry(&source_url, &target_url, 3, 10).await {
+            match skopeo_clone.copy_image_with_retry(&source_url, &target_url, &credentials_clone, 3, 10).await {
                 Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
                     // Získat target SHA
-                    let target_sha = match skopeo_clone.inspect_image(&target_url).await {
+                    let target_sha = match skopeo_clone.inspect_image(
+                        &target_url,
+                        credentials_clone.target_username.as_deref(),
+                        credentials_clone.target_password.as_deref(),
+                    ).await {
                         Ok(info) => Some(info.digest),
                         Err(_) => None,
                     };

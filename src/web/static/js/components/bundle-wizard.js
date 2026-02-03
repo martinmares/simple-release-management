@@ -171,7 +171,8 @@ class BundleWizard {
                                     <label class="form-label">Source Image</label>
                                     <input type="text" class="form-control form-control-sm mapping-source-image"
                                            value="${mapping.source_image}"
-                                           placeholder="registry.example.com/project/image">
+                                           placeholder="project/image">
+                                    <small class="form-hint">Path without registry hostname</small>
                                 </div>
                                 <div class="col-md-2">
                                     <label class="form-label">Source Tag</label>
@@ -184,6 +185,7 @@ class BundleWizard {
                                     <input type="text" class="form-control form-control-sm mapping-target-image"
                                            value="${mapping.target_image}"
                                            placeholder="project/image">
+                                    <small class="form-hint">Path without registry hostname</small>
                                 </div>
                                 <div class="col-md-1 d-flex align-items-end">
                                     <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">

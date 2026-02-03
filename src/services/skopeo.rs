@@ -5,11 +5,19 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
+/// Skopeo credentials pro autentizaci
+#[derive(Debug, Clone)]
+pub struct SkopeoCredentials {
+    pub source_username: Option<String>,
+    pub source_password: Option<String>,
+    pub target_username: Option<String>,
+    pub target_password: Option<String>,
+}
+
 /// Skopeo service pro práci s container images
 #[derive(Clone)]
 pub struct SkopeoService {
     pub skopeo_path: String,
-    pub credentials_path: String,
 }
 
 /// Informace o image z skopeo inspect
@@ -40,11 +48,8 @@ pub enum CopyStatus {
 }
 
 impl SkopeoService {
-    pub fn new(skopeo_path: String, credentials_path: String) -> Self {
-        Self {
-            skopeo_path,
-            credentials_path,
-        }
+    pub fn new(skopeo_path: String) -> Self {
+        Self { skopeo_path }
     }
 
     /// Zkontroluje že skopeo je dostupné
@@ -59,14 +64,25 @@ impl SkopeoService {
     }
 
     /// Získá informace o image včetně SHA256 digestu
-    pub async fn inspect_image(&self, image_url: &str) -> Result<ImageInfo> {
+    pub async fn inspect_image(
+        &self,
+        image_url: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<ImageInfo> {
         info!("Inspecting image: {}", image_url);
 
-        let output = Command::new(&self.skopeo_path)
-            .arg("inspect")
-            .arg("--authfile")
-            .arg(&self.credentials_path)
-            .arg(format!("docker://{}", image_url))
+        let mut cmd = Command::new(&self.skopeo_path);
+        cmd.arg("inspect");
+
+        // Add credentials if provided
+        if let (Some(user), Some(pass)) = (username, password) {
+            cmd.arg("--creds").arg(format!("{}:{}", user, pass));
+        }
+
+        cmd.arg(format!("docker://{}", image_url));
+
+        let output = cmd
             .output()
             .await
             .context("Failed to execute skopeo inspect")?;
@@ -101,19 +117,29 @@ impl SkopeoService {
         &self,
         source_url: &str,
         target_url: &str,
+        creds: &SkopeoCredentials,
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
 
-        let mut child = Command::new(&self.skopeo_path)
-            .arg("copy")
-            .arg("--authfile")
-            .arg(&self.credentials_path)
-            .arg(format!("docker://{}", source_url))
+        let mut cmd = Command::new(&self.skopeo_path);
+        cmd.arg("copy");
+
+        // Add source credentials if provided
+        if let (Some(user), Some(pass)) = (&creds.source_username, &creds.source_password) {
+            cmd.arg("--src-creds").arg(format!("{}:{}", user, pass));
+        }
+
+        // Add target credentials if provided
+        if let (Some(user), Some(pass)) = (&creds.target_username, &creds.target_password) {
+            cmd.arg("--dest-creds").arg(format!("{}:{}", user, pass));
+        }
+
+        cmd.arg(format!("docker://{}", source_url))
             .arg(format!("docker://{}", target_url))
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn skopeo copy")?;
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().context("Failed to spawn skopeo copy")?;
 
         // Číst stderr pro progress (skopeo píše progress do stderr)
         let stderr = child.stderr.take().context("Failed to get stderr")?;
@@ -130,7 +156,10 @@ impl SkopeoService {
         let status = child.wait().await.context("Failed to wait for skopeo")?;
 
         if status.success() {
-            info!("Successfully copied image from {} to {}", source_url, target_url);
+            info!(
+                "Successfully copied image from {} to {}",
+                source_url, target_url
+            );
             Ok(CopyProgress {
                 status: CopyStatus::Success,
                 message: "Image copied successfully".to_string(),
@@ -153,6 +182,7 @@ impl SkopeoService {
         &self,
         source_url: &str,
         target_url: &str,
+        creds: &SkopeoCredentials,
         max_retries: u32,
         retry_delay_secs: u64,
     ) -> Result<CopyProgress> {
@@ -161,7 +191,7 @@ impl SkopeoService {
         loop {
             attempts += 1;
 
-            match self.copy_image(source_url, target_url).await {
+            match self.copy_image(source_url, target_url, creds).await {
                 Ok(progress) if progress.status == CopyStatus::Success => {
                     return Ok(progress);
                 }
@@ -196,7 +226,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Vyžaduje funkční skopeo v PATH
     async fn test_skopeo_available() {
-        let service = SkopeoService::new("skopeo".to_string(), "/tmp/auth.json".to_string());
+        let service = SkopeoService::new("skopeo".to_string());
         let available = service.check_available().await.unwrap();
         assert!(available);
     }
