@@ -85,8 +85,14 @@ class BundleWizard {
      * Step 1: Základní informace
      */
     renderStep1(tenants, registries) {
-        const sourceRegistries = registries.filter(r => r.role === 'source' || r.role === 'both');
-        const targetRegistries = registries.filter(r => r.role === 'target' || r.role === 'both');
+        // Filter registries by selected tenant (show none if no tenant selected)
+        const selectedTenantId = this.data.bundle.tenant_id;
+        const filteredRegistries = selectedTenantId
+            ? registries.filter(r => r.tenant_id === selectedTenantId)
+            : [];
+
+        const sourceRegistries = filteredRegistries.filter(r => r.role === 'source' || r.role === 'both');
+        const targetRegistries = filteredRegistries.filter(r => r.role === 'target' || r.role === 'both');
 
         return `
             <h3 class="mb-3">Bundle Information</h3>
@@ -101,6 +107,7 @@ class BundleWizard {
                         </option>
                     `).join('')}
                 </select>
+                <small class="form-hint">Selecting a tenant will filter available registries</small>
             </div>
 
             <div class="mb-3">
@@ -290,29 +297,44 @@ class BundleWizard {
     }
 
     /**
+     * Uloží aktuální data z Step 2 formulářů (bez validace)
+     */
+    collectStep2Data() {
+        const mappingCards = document.querySelectorAll('[data-mapping-index]');
+        const mappings = [];
+
+        mappingCards.forEach((card) => {
+            const sourceImage = card.querySelector('.mapping-source-image')?.value || '';
+            const sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+            const targetImage = card.querySelector('.mapping-target-image')?.value || '';
+
+            mappings.push({
+                source_image: sourceImage,
+                source_tag: sourceTag,
+                target_image: targetImage
+            });
+        });
+
+        this.data.imageMappings = mappings;
+    }
+
+    /**
      * Validuje a uloží data z Step 2
      */
     saveStep2() {
-        const mappingCards = document.querySelectorAll('[data-mapping-index]');
-        this.data.imageMappings = [];
+        this.collectStep2Data();
 
-        mappingCards.forEach((card) => {
-            const sourceImage = card.querySelector('.mapping-source-image').value;
-            const sourceTag = card.querySelector('.mapping-source-tag').value;
-            const targetImage = card.querySelector('.mapping-target-image').value;
+        // Validate that we have at least one complete mapping
+        const validMappings = this.data.imageMappings.filter(m =>
+            m.source_image && m.source_tag && m.target_image
+        );
 
-            if (sourceImage && sourceTag && targetImage) {
-                this.data.imageMappings.push({
-                    source_image: sourceImage,
-                    source_tag: sourceTag,
-                    target_image: targetImage
-                });
-            }
-        });
-
-        if (this.data.imageMappings.length === 0) {
-            throw new Error('Please add at least one image mapping');
+        if (validMappings.length === 0) {
+            throw new Error('Please add at least one complete image mapping');
         }
+
+        // Keep only valid mappings
+        this.data.imageMappings = validMappings;
     }
 
     /**

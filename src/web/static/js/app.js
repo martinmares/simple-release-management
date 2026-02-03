@@ -1187,6 +1187,18 @@ router.on('/bundles/new', async (params, query) => {
         };
 
         const attachWizardHandlers = () => {
+            // Tenant change - re-render to filter registries
+            const tenantSelect = document.getElementById('bundle-tenant');
+            if (tenantSelect) {
+                tenantSelect.addEventListener('change', () => {
+                    wizard.data.bundle.tenant_id = tenantSelect.value;
+                    // Clear registry selections when tenant changes
+                    wizard.data.bundle.source_registry_id = '';
+                    wizard.data.bundle.target_registry_id = '';
+                    renderWizard();
+                });
+            }
+
             // Next button
             const nextBtn = document.getElementById('wizard-next');
             if (nextBtn) {
@@ -1211,6 +1223,10 @@ router.on('/bundles/new', async (params, query) => {
             const prevBtn = document.getElementById('wizard-prev');
             if (prevBtn) {
                 prevBtn.addEventListener('click', () => {
+                    // Save current step data before going back
+                    if (wizard.currentStep === 2) {
+                        wizard.collectStep2Data();
+                    }
                     wizard.currentStep--;
                     renderWizard();
                 });
@@ -1240,6 +1256,8 @@ router.on('/bundles/new', async (params, query) => {
             const addMappingBtn = document.getElementById('add-mapping-btn');
             if (addMappingBtn) {
                 addMappingBtn.addEventListener('click', () => {
+                    // IMPORTANT: Collect current form data before adding new mapping
+                    wizard.collectStep2Data();
                     wizard.addMapping();
                     renderWizard();
                 });
@@ -1248,6 +1266,8 @@ router.on('/bundles/new', async (params, query) => {
             // Remove mapping buttons
             document.querySelectorAll('.mapping-remove').forEach((btn, index) => {
                 btn.addEventListener('click', () => {
+                    // Collect data before removing
+                    wizard.collectStep2Data();
                     wizard.removeMapping(index);
                     renderWizard();
                 });
@@ -1379,6 +1399,79 @@ router.on('/bundles/:id', async (params) => {
                 } catch (error) {
                     getApp().showError(error.message);
                 }
+            }
+        });
+
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load bundle: ${error.message}
+            </div>
+        `;
+    }
+});
+
+// New Bundle Version (must be before the generic version route)
+router.on('/bundles/:id/versions/new', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const bundle = await api.getBundle(params.id);
+
+        content.innerHTML = `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Create New Version</h3>
+                    <div class="card-subtitle">Bundle: ${bundle.name}</div>
+                </div>
+                <form id="new-version-form">
+                    <div class="card-body">
+                        <div class="alert alert-info">
+                            <i class="ti ti-info-circle"></i>
+                            Creating a new version will copy all image mappings from version ${bundle.current_version}.
+                            You can modify them after creation.
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Change Note</label>
+                            <textarea class="form-control" name="change_note" rows="3"
+                                      placeholder="Describe what changed in this version (optional)"></textarea>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Created By</label>
+                            <input type="text" class="form-control" name="created_by"
+                                   placeholder="Your name (optional)">
+                        </div>
+                    </div>
+                    <div class="card-footer text-end">
+                        <div class="d-flex">
+                            <a href="#/bundles/${bundle.id}" class="btn btn-link">Cancel</a>
+                            <button type="submit" class="btn btn-primary ms-auto">
+                                <i class="ti ti-plus"></i>
+                                Create Version
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        `;
+
+        document.getElementById('new-version-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = {
+                change_note: formData.get('change_note') || null,
+                created_by: formData.get('created_by') || null,
+            };
+
+            try {
+                const newVersion = await api.createBundleVersion(bundle.id, data);
+                getApp().showSuccess(`Version ${newVersion.version} created successfully`);
+                router.navigate(`/bundles/${bundle.id}/versions/${newVersion.version}`);
+            } catch (error) {
+                getApp().showError('Failed to create version: ' + error.message);
             }
         });
 
