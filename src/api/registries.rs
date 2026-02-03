@@ -1,35 +1,138 @@
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post, put, delete},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::crypto;
 use crate::db::models::Registry;
+use crate::services::skopeo::SkopeoCredentials;
+
+#[derive(Clone)]
+pub struct RegistryApiState {
+    pub pool: PgPool,
+    pub encryption_secret: String,
+}
+
+impl RegistryApiState {
+    /// Získá dešifrované credentials pro registry
+    pub async fn get_registry_credentials(
+        &self,
+        registry_id: Uuid,
+    ) -> Result<Option<(String, String)>, anyhow::Error> {
+        let registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
+            .bind(registry_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        let Some(registry) = registry else {
+            return Ok(None);
+        };
+
+        // Decrypt credentials based on auth_type
+        match registry.auth_type.as_str() {
+            "none" => Ok(None),
+            "basic" => {
+                let username = registry.username.clone().unwrap_or_default();
+                let password = if let Some(encrypted) = &registry.password_encrypted {
+                    crypto::decrypt(encrypted, &self.encryption_secret)?
+                } else {
+                    String::new()
+                };
+                Ok(Some((username, password)))
+            }
+            "token" => {
+                let username = registry.username.clone().unwrap_or_default();
+                let token = if let Some(encrypted) = &registry.token_encrypted {
+                    crypto::decrypt(encrypted, &self.encryption_secret)?
+                } else {
+                    String::new()
+                };
+                Ok(Some((username, token)))
+            }
+            "bearer" => {
+                let token = if let Some(encrypted) = &registry.token_encrypted {
+                    crypto::decrypt(encrypted, &self.encryption_secret)?
+                } else {
+                    String::new()
+                };
+                // For bearer, username is empty but password contains the token
+                Ok(Some((String::new(), token)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Vytvoří SkopeoCredentials pro copy operaci mezi source a target registry
+    pub async fn get_skopeo_credentials(
+        &self,
+        source_registry_id: Uuid,
+        target_registry_id: Uuid,
+    ) -> Result<SkopeoCredentials, anyhow::Error> {
+        let source_creds = self.get_registry_credentials(source_registry_id).await?;
+        let target_creds = self.get_registry_credentials(target_registry_id).await?;
+
+        let (source_username, source_password) = source_creds.unwrap_or_default();
+        let (target_username, target_password) = target_creds.unwrap_or_default();
+
+        Ok(SkopeoCredentials {
+            source_username: if source_username.is_empty() {
+                None
+            } else {
+                Some(source_username)
+            },
+            source_password: if source_password.is_empty() {
+                None
+            } else {
+                Some(source_password)
+            },
+            target_username: if target_username.is_empty() {
+                None
+            } else {
+                Some(target_username)
+            },
+            target_password: if target_password.is_empty() {
+                None
+            } else {
+                Some(target_password)
+            },
+        })
+    }
+}
 
 /// Request pro vytvoření nové registry
 #[derive(Debug, Deserialize)]
 pub struct CreateRegistryRequest {
-    pub tenant_id: Uuid,
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
-    pub credentials_path: String,
+    pub auth_type: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
     pub role: String,
+    pub description: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 /// Request pro update registry
 #[derive(Debug, Deserialize)]
 pub struct UpdateRegistryRequest {
+    pub tenant_id: Uuid,
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
-    pub credentials_path: String,
+    pub auth_type: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
     pub role: String,
+    pub description: Option<String>,
+    pub is_active: Option<bool>,
 }
 
 /// Response s chybou
@@ -39,45 +142,49 @@ pub struct ErrorResponse {
 }
 
 /// Vytvoří router pro registries endpoints
-pub fn router(pool: PgPool) -> Router {
+pub fn router(state: RegistryApiState) -> Router {
     Router::new()
         .route("/registries", get(list_all_registries))
-        .route("/tenants/{tenant_id}/registries", get(list_registries).post(create_registry))
-        .route("/registries/{id}", get(get_registry).put(update_registry).delete(delete_registry))
-        .with_state(pool)
+        .route(
+            "/tenants/{tenant_id}/registries",
+            get(list_registries).post(create_registry),
+        )
+        .route(
+            "/registries/{id}",
+            get(get_registry).put(update_registry).delete(delete_registry),
+        )
+        .with_state(state)
 }
 
 /// GET /api/v1/registries - Seznam všech registries
 async fn list_all_registries(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
 ) -> Result<Json<Vec<Registry>>, (StatusCode, Json<ErrorResponse>)> {
-    let registries = sqlx::query_as::<_, Registry>(
-        "SELECT * FROM registries ORDER BY created_at DESC"
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Database error: {}", e),
-            }),
-        )
-    })?;
+    let registries = sqlx::query_as::<_, Registry>("SELECT * FROM registries ORDER BY created_at DESC")
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
 
     Ok(Json(registries))
 }
 
 /// GET /api/v1/tenants/{tenant_id}/registries - Seznam registries pro tenanta
 async fn list_registries(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
     Path(tenant_id): Path<Uuid>,
 ) -> Result<Json<Vec<Registry>>, (StatusCode, Json<ErrorResponse>)> {
     let registries = sqlx::query_as::<_, Registry>(
-        "SELECT * FROM registries WHERE tenant_id = $1 ORDER BY created_at DESC"
+        "SELECT * FROM registries WHERE tenant_id = $1 ORDER BY created_at DESC",
     )
     .bind(tenant_id)
-    .fetch_all(&pool)
+    .fetch_all(&state.pool)
     .await
     .map_err(|e| {
         (
@@ -93,12 +200,12 @@ async fn list_registries(
 
 /// GET /api/v1/registries/{id} - Detail registry
 async fn get_registry(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Registry>, (StatusCode, Json<ErrorResponse>)> {
     let registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
         .bind(id)
-        .fetch_optional(&pool)
+        .fetch_optional(&state.pool)
         .await
         .map_err(|e| {
             (
@@ -122,7 +229,7 @@ async fn get_registry(
 
 /// POST /api/v1/tenants/{tenant_id}/registries - Vytvoření nové registry
 async fn create_registry(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
     Path(tenant_id): Path<Uuid>,
     Json(payload): Json<CreateRegistryRequest>,
 ) -> Result<(StatusCode, Json<Registry>), (StatusCode, Json<ErrorResponse>)> {
@@ -151,9 +258,61 @@ async fn create_registry(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("Invalid registry_type. Must be one of: {}", valid_types.join(", ")),
+                error: format!(
+                    "Invalid registry_type. Must be one of: {}",
+                    valid_types.join(", ")
+                ),
             }),
         ));
+    }
+
+    // Validace auth_type
+    let valid_auth_types = ["none", "basic", "token", "bearer"];
+    if !valid_auth_types.contains(&payload.auth_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Invalid auth_type. Must be one of: {}",
+                    valid_auth_types.join(", ")
+                ),
+            }),
+        ));
+    }
+
+    // Validace auth credentials
+    match payload.auth_type.as_str() {
+        "basic" => {
+            if payload.username.is_none() || payload.password.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'basic' requires username and password".to_string(),
+                    }),
+                ));
+            }
+        }
+        "token" => {
+            if payload.username.is_none() || payload.token.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'token' requires username and token".to_string(),
+                    }),
+                ));
+            }
+        }
+        "bearer" => {
+            if payload.token.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'bearer' requires token".to_string(),
+                    }),
+                ));
+            }
+        }
+        _ => {}
     }
 
     // Validace role
@@ -168,18 +327,19 @@ async fn create_registry(
     }
 
     // Zkontrolovat že tenant existuje
-    let tenant_exists = sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1)")
-        .bind(tenant_id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Database error: {}", e),
-                }),
-            )
-        })?;
+    let tenant_exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM tenants WHERE id = $1)")
+            .bind(tenant_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
 
     if !tenant_exists {
         return Err((
@@ -190,19 +350,52 @@ async fn create_registry(
         ));
     }
 
+    // Encrypt password if provided
+    let password_encrypted = if let Some(password) = &payload.password {
+        Some(crypto::encrypt(password, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Encryption error: {}", e),
+                }),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    // Encrypt token if provided
+    let token_encrypted = if let Some(token) = &payload.token {
+        Some(crypto::encrypt(token, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Encryption error: {}", e),
+                }),
+            )
+        })?)
+    } else {
+        None
+    };
+
     // Vytvoření registry
     let registry = sqlx::query_as::<_, Registry>(
-        "INSERT INTO registries (tenant_id, name, registry_type, base_url, credentials_path, role)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, tenant_id, name, registry_type, base_url, credentials_path, role, created_at",
+        "INSERT INTO registries (tenant_id, name, registry_type, base_url, auth_type, username, password_encrypted, token_encrypted, role, description, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING *",
     )
     .bind(tenant_id)
     .bind(&payload.name)
     .bind(&payload.registry_type)
     .bind(&payload.base_url)
-    .bind(&payload.credentials_path)
+    .bind(&payload.auth_type)
+    .bind(&payload.username)
+    .bind(&password_encrypted)
+    .bind(&token_encrypted)
     .bind(&payload.role)
-    .fetch_one(&pool)
+    .bind(&payload.description)
+    .bind(payload.is_active.unwrap_or(true))
+    .fetch_one(&state.pool)
     .await
     .map_err(|e| {
         // Zkontrolovat unique constraint violation
@@ -211,7 +404,10 @@ async fn create_registry(
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
-                        error: format!("Registry with name '{}' already exists in this tenant", payload.name),
+                        error: format!(
+                            "Registry with name '{}' already exists in this tenant",
+                            payload.name
+                        ),
                     }),
                 );
             }
@@ -230,7 +426,7 @@ async fn create_registry(
 
 /// PUT /api/v1/registries/{id} - Update registry
 async fn update_registry(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateRegistryRequest>,
 ) -> Result<Json<Registry>, (StatusCode, Json<ErrorResponse>)> {
@@ -259,9 +455,61 @@ async fn update_registry(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: format!("Invalid registry_type. Must be one of: {}", valid_types.join(", ")),
+                error: format!(
+                    "Invalid registry_type. Must be one of: {}",
+                    valid_types.join(", ")
+                ),
             }),
         ));
+    }
+
+    // Validace auth_type
+    let valid_auth_types = ["none", "basic", "token", "bearer"];
+    if !valid_auth_types.contains(&payload.auth_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Invalid auth_type. Must be one of: {}",
+                    valid_auth_types.join(", ")
+                ),
+            }),
+        ));
+    }
+
+    // Validace auth credentials
+    match payload.auth_type.as_str() {
+        "basic" => {
+            if payload.username.is_none() || payload.password.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'basic' requires username and password".to_string(),
+                    }),
+                ));
+            }
+        }
+        "token" => {
+            if payload.username.is_none() || payload.token.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'token' requires username and token".to_string(),
+                    }),
+                ));
+            }
+        }
+        "bearer" => {
+            if payload.token.is_none() {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: "auth_type 'bearer' requires token".to_string(),
+                    }),
+                ));
+            }
+        }
+        _ => {}
     }
 
     // Validace role
@@ -275,20 +523,55 @@ async fn update_registry(
         ));
     }
 
+    // Encrypt password if provided
+    let password_encrypted = if let Some(password) = &payload.password {
+        Some(crypto::encrypt(password, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Encryption error: {}", e),
+                }),
+            )
+        })?)
+    } else {
+        None
+    };
+
+    // Encrypt token if provided
+    let token_encrypted = if let Some(token) = &payload.token {
+        Some(crypto::encrypt(token, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Encryption error: {}", e),
+                }),
+            )
+        })?)
+    } else {
+        None
+    };
+
     // Update registry
     let registry = sqlx::query_as::<_, Registry>(
         "UPDATE registries
-         SET name = $1, registry_type = $2, base_url = $3, credentials_path = $4, role = $5
-         WHERE id = $6
-         RETURNING id, tenant_id, name, registry_type, base_url, credentials_path, role, created_at",
+         SET tenant_id = $1, name = $2, registry_type = $3, base_url = $4, auth_type = $5, username = $6,
+             password_encrypted = $7, token_encrypted = $8, role = $9, description = $10, is_active = $11
+         WHERE id = $12
+         RETURNING *",
     )
+    .bind(&payload.tenant_id)
     .bind(&payload.name)
     .bind(&payload.registry_type)
     .bind(&payload.base_url)
-    .bind(&payload.credentials_path)
+    .bind(&payload.auth_type)
+    .bind(&payload.username)
+    .bind(&password_encrypted)
+    .bind(&token_encrypted)
     .bind(&payload.role)
+    .bind(&payload.description)
+    .bind(payload.is_active.unwrap_or(true))
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
         // Zkontrolovat unique constraint violation
@@ -297,7 +580,10 @@ async fn update_registry(
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
-                        error: format!("Registry with name '{}' already exists in this tenant", payload.name),
+                        error: format!(
+                            "Registry with name '{}' already exists in this tenant",
+                            payload.name
+                        ),
                     }),
                 );
             }
@@ -324,12 +610,12 @@ async fn update_registry(
 
 /// DELETE /api/v1/registries/{id} - Smazání registry
 async fn delete_registry(
-    State(pool): State<PgPool>,
+    State(state): State<RegistryApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let result = sqlx::query("DELETE FROM registries WHERE id = $1")
         .bind(id)
-        .execute(&pool)
+        .execute(&state.pool)
         .await
         .map_err(|e| {
             (

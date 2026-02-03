@@ -121,16 +121,24 @@ function createTenantForm(tenant = null) {
                     <small class="form-hint">Friendly name for this tenant</small>
                 </div>
 
-                <div class="mb-3">
-                    <label class="form-label required">Slug</label>
-                    <input type="text" class="form-control" name="slug" id="tenant-slug"
-                           value="${tenant?.slug || ''}"
-                           placeholder="production"
-                           pattern="^[a-z0-9-]+$"
-                           ${isEdit ? 'readonly' : ''}
-                           required>
-                    <small class="form-hint">Lowercase alphanumeric and dashes only${isEdit ? ' (cannot be changed)' : ''}</small>
-                </div>
+                ${isEdit ? `
+                    <div class="mb-3">
+                        <label class="form-label">Slug</label>
+                        <div class="form-control-plaintext">
+                            <code>${tenant.slug}</code>
+                        </div>
+                        <small class="form-hint text-muted">Slug cannot be changed after creation</small>
+                    </div>
+                ` : `
+                    <div class="mb-3">
+                        <label class="form-label required">Slug</label>
+                        <input type="text" class="form-control" name="slug" id="tenant-slug"
+                               placeholder="production"
+                               pattern="[a-z0-9\\-]+"
+                               required>
+                        <small class="form-hint">Lowercase alphanumeric and dashes only</small>
+                    </div>
+                `}
 
                 <div class="mb-3">
                     <label class="form-label">Description</label>
@@ -173,23 +181,30 @@ function createRegistryForm(registry = null, tenants = []) {
         { value: 'both', label: 'Both (Pull & Push)' },
     ];
 
+    const authTypes = [
+        { value: 'none', label: 'None (Public registry)' },
+        { value: 'basic', label: 'Basic Auth (Username + Password)' },
+        { value: 'token', label: 'Token Auth (Robot accounts)' },
+        { value: 'bearer', label: 'Bearer Token (Service accounts)' },
+    ];
+
     return `
-        <form id="registry-form" class="card">
+        <form id="registry-form" class="card" x-data="{ authType: '${registry?.auth_type || 'none'}' }">
             <div class="card-header">
                 <h3 class="card-title">${isEdit ? 'Edit Registry' : 'New Registry'}</h3>
             </div>
             <div class="card-body">
-                ${!isEdit ? `
-                    <div class="mb-3">
-                        <label class="form-label required">Tenant</label>
-                        <select class="form-select" name="tenant_id" required>
-                            <option value="">Select tenant...</option>
-                            ${tenants.map(t => `
-                                <option value="${t.id}">${t.name}</option>
-                            `).join('')}
-                        </select>
-                    </div>
-                ` : ''}
+                <div class="mb-3">
+                    <label class="form-label required">Tenant</label>
+                    <select class="form-select" name="tenant_id" required>
+                        <option value="">Select tenant...</option>
+                        ${tenants.map(t => `
+                            <option value="${t.id}" ${isEdit && registry.tenant_id === t.id ? 'selected' : ''}>
+                                ${t.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
 
                 <div class="mb-3">
                     <label class="form-label required">Name</label>
@@ -236,6 +251,54 @@ function createRegistryForm(registry = null, tenants = []) {
                     </div>
                 </div>
 
+                <hr class="my-4">
+                <h4>Authentication</h4>
+
+                <div class="mb-3">
+                    <label class="form-label required">Auth Type</label>
+                    <select class="form-select" name="auth_type" x-model="authType" required>
+                        ${authTypes.map(type => `
+                            <option value="${type.value}" ${registry?.auth_type === type.value ? 'selected' : ''}>
+                                ${type.label}
+                            </option>
+                        `).join('')}
+                    </select>
+                    <small class="form-hint">
+                        Basic: Docker Hub, generic registries (user:pass) |
+                        Token: Harbor/Quay robots (user:token) |
+                        Bearer: GCR/ECR (pure token)
+                    </small>
+                </div>
+
+                <!-- Username field (shown for basic and token) -->
+                <div class="mb-3" x-show="authType === 'basic' || authType === 'token'">
+                    <label class="form-label">Username</label>
+                    <input type="text" class="form-control" name="username"
+                           value="${registry?.username || ''}"
+                           placeholder="username or robot-account-name"
+                           :required="authType === 'basic' || authType === 'token'">
+                </div>
+
+                <!-- Password field (shown for basic) -->
+                <div class="mb-3" x-show="authType === 'basic'">
+                    <label class="form-label">Password</label>
+                    <input type="password" class="form-control" name="password"
+                           placeholder="${isEdit ? 'Leave empty to keep current password' : 'Enter password'}"
+                           :required="authType === 'basic' && ${!isEdit}">
+                    ${isEdit ? '<small class="form-hint">Leave empty to keep current password</small>' : ''}
+                </div>
+
+                <!-- Token field (shown for token and bearer) -->
+                <div class="mb-3" x-show="authType === 'token' || authType === 'bearer'">
+                    <label class="form-label">Token</label>
+                    <input type="password" class="form-control" name="token"
+                           placeholder="${isEdit ? 'Leave empty to keep current token' : 'Enter token'}"
+                           :required="(authType === 'token' || authType === 'bearer') && ${!isEdit}">
+                    ${isEdit ? '<small class="form-hint">Leave empty to keep current token</small>' : ''}
+                </div>
+
+                <hr class="my-4">
+
                 <div class="mb-3">
                     <label class="form-label">Description</label>
                     <textarea class="form-control" name="description" rows="2"
@@ -274,13 +337,23 @@ async function handleFormSubmit(event, submitHandler) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
 
-    // Debug log
-    console.log('Form data:', data);
-
     // Convert checkbox values
     if (data.is_active !== undefined) {
         data.is_active = formData.get('is_active') === 'on';
     }
+
+    // Clean up empty optional fields (convert empty strings to null or remove them)
+    Object.keys(data).forEach(key => {
+        if (typeof data[key] === 'string' && data[key].trim() === '') {
+            // For optional fields like password, token, description - set to null
+            if (['password', 'token', 'description'].includes(key)) {
+                data[key] = null;
+            }
+        }
+    });
+
+    // Debug log
+    console.log('Form data (cleaned):', data);
 
     // Disable form during submission
     const submitBtn = form.querySelector('button[type="submit"]');
