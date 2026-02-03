@@ -37,9 +37,26 @@
                             <kbd>g</kbd><kbd>b</kbd> Bundles
                         </div>
                     </div>
+                    <!-- Theme toggle -->
+                    <div class="nav-item d-none d-md-flex me-3" style="position: relative;">
+                        <a href="#" class="nav-link px-0" id="theme-toggle" tabindex="-1" aria-label="Přepnout theme">
+                            <i class="ti ti-sun"></i>
+                        </a>
+                        <div id="theme-menu" class="dropdown-menu dropdown-menu-end dropdown-menu-arrow" style="display: none; position: absolute; right: 0; top: 100%;">
+                            <a href="#" class="dropdown-item" data-theme="light">
+                                <i class="ti ti-sun me-2"></i> Světlý
+                            </a>
+                            <a href="#" class="dropdown-item" data-theme="dark">
+                                <i class="ti ti-moon me-2"></i> Tmavý
+                            </a>
+                            <a href="#" class="dropdown-item" data-theme="auto">
+                                <i class="ti ti-device-desktop me-2"></i> Auto
+                            </a>
+                        </div>
+                    </div>
                     <!-- User info -->
                     <div class="nav-item">
-                        <span class="badge bg-blue-lt">v0.1.0</span>
+                        <span class="badge bg-blue text-blue-fg">v0.1.0</span>
                     </div>
                 </div>
 
@@ -179,6 +196,66 @@
 
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <!-- Theme initialization -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Custom theme toggle without Alpine.js
+            const themeToggle = document.getElementById('theme-toggle');
+            const themeMenu = document.getElementById('theme-menu');
+            const themeButtons = document.querySelectorAll('[data-theme]');
+
+            // Toggle menu visibility
+            themeToggle.addEventListener('click', function(e) {
+                e.preventDefault();
+                const isVisible = themeMenu.style.display === 'block';
+                themeMenu.style.display = isVisible ? 'none' : 'block';
+            });
+
+            // Close menu when clicking outside
+            document.addEventListener('click', function(e) {
+                if (!themeToggle.contains(e.target) && !themeMenu.contains(e.target)) {
+                    themeMenu.style.display = 'none';
+                }
+            });
+
+            // Theme button clicks
+            themeButtons.forEach(button => {
+                button.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const theme = this.getAttribute('data-theme');
+                    console.log('Theme selected:', theme);
+
+                    localStorage.setItem('theme', theme);
+                    applyTheme(theme);
+
+                    // Close menu
+                    themeMenu.style.display = 'none';
+                });
+            });
+
+            // Load saved theme
+            const savedTheme = localStorage.getItem('theme') || 'auto';
+
+            function applyTheme(theme) {
+                if (theme === 'auto') {
+                    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+                    document.documentElement.setAttribute('data-bs-theme', prefersDark ? 'dark' : 'light');
+                } else {
+                    document.documentElement.setAttribute('data-bs-theme', theme);
+                }
+            }
+
+            applyTheme(savedTheme);
+
+            // Listen for OS theme changes when in auto mode
+            if (savedTheme === 'auto') {
+                window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+                    document.documentElement.setAttribute('data-bs-theme', e.matches ? 'dark' : 'light');
+                });
+            }
+        });
+    </script>
 
     <!-- Application scripts -->
     <script src="/js/api.js"></script>

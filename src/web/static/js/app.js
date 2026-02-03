@@ -188,11 +188,11 @@ document.addEventListener('alpine:init', () => {
 
         getRegistryRoleBadge(role) {
             const badgeMap = {
-                'source': 'bg-blue-lt',
-                'target': 'bg-green-lt',
-                'both': 'bg-purple-lt',
+                'source': 'bg-blue text-blue-fg',
+                'target': 'bg-green text-green-fg',
+                'both': 'bg-purple text-purple-fg',
             };
-            return badgeMap[role] || 'bg-secondary-lt';
+            return badgeMap[role] || 'bg-secondary text-secondary-fg';
         },
 
         // ==================== API HELPERS ====================
@@ -457,7 +457,7 @@ router.on('/', async () => {
                                                     </div>
                                                 </div>
                                                 <div class="col-auto">
-                                                    <div class="badge bg-blue-lt">${bundle.current_version || 'v1'}</div>
+                                                    <div class="badge bg-blue text-blue-fg">${bundle.current_version || 'v1'}</div>
                                                 </div>
                                             </div>
                                         </a>
@@ -499,7 +499,7 @@ router.on('/', async () => {
                                                     </div>
                                                 </div>
                                                 <div class="col-auto">
-                                                    <span class="badge bg-success">Released</span>
+                                                    <span class="badge bg-success text-success-fg">Released</span>
                                                 </div>
                                             </div>
                                         </a>
@@ -681,7 +681,7 @@ router.on('/tenants/:id', async (params) => {
                                             <div class="text-secondary small">${bundle.description || ''}</div>
                                         </div>
                                         <div class="col-auto">
-                                            <span class="badge bg-blue">${bundle.current_version || 'v1'}</span>
+                                            <span class="badge bg-blue text-blue-fg">${bundle.current_version || 'v1'}</span>
                                         </div>
                                     </div>
                                 </a>
@@ -716,7 +716,7 @@ router.on('/tenants/:id', async (params) => {
                                             <div>${reg.name}</div>
                                             <div class="text-secondary small">${reg.registry_type}</div>
                                         </div>
-                                        <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary'}">${reg.role}</span>
+                                        <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
                                     </div>
                                 </a>
                             `).join('')}
@@ -805,10 +805,20 @@ router.on('/registries', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const registries = await api.getRegistries();
+        const [registries, tenants] = await Promise.all([
+            api.getRegistries(),
+            api.getTenants()
+        ]);
+
+        // Create tenant lookup map
+        const tenantMap = {};
+        tenants.forEach(t => tenantMap[t.id] = t);
+
+        // Store data globally for Alpine to pick up
+        window._registryListData = { registries, tenantMap };
 
         content.innerHTML = `
-            <div class="card">
+            <div class="card" x-data="registryList()">
                 <div class="card-header">
                     <h3 class="card-title">Registries</h3>
                     <div class="card-actions">
@@ -818,50 +828,93 @@ router.on('/registries', async () => {
                         </a>
                     </div>
                 </div>
+
+                <!-- Filters -->
+                <div class="card-body border-bottom py-3">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="ti ti-search"></i>
+                                </span>
+                                <input type="text" class="form-control" placeholder="Search by name..."
+                                       x-model="searchQuery">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <select class="form-select" x-model="selectedTenant">
+                                <option value="">All Tenants</option>
+                                ${tenants.map(t => `
+                                    <option value="${t.id}">${t.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-auto ms-auto">
+                            <span class="text-secondary" x-text="filteredRegistries.length + ' registries'"></span>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table">
                         <thead>
                             <tr>
                                 <th>Name</th>
+                                <th>Tenant</th>
                                 <th>Type</th>
                                 <th>Base URL</th>
+                                <th>Username</th>
                                 <th>Role</th>
                                 <th>Status</th>
                                 <th class="w-1"></th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${registries.length === 0 ? `
+                            <template x-if="filteredRegistries.length === 0">
                                 <tr>
-                                    <td colspan="6" class="text-center text-secondary py-5">
-                                        No registries found. Add your first registry to get started.
+                                    <td colspan="8" class="text-center text-secondary py-5">
+                                        <div>
+                                            <i class="ti ti-database-off" style="font-size: 3rem; opacity: 0.3;"></i>
+                                            <div class="mt-2">No registries found</div>
+                                        </div>
                                     </td>
                                 </tr>
-                            ` : registries.map(reg => `
+                            </template>
+                            <template x-for="reg in filteredRegistries" :key="reg.id">
                                 <tr>
                                     <td>
                                         <div class="d-flex align-items-center">
                                             <span class="avatar avatar-sm me-2">
-                                                <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
+                                                <i class="ti" :class="getRegistryTypeIcon(reg.registry_type)"></i>
                                             </span>
-                                            <strong>${reg.name}</strong>
+                                            <strong x-text="reg.name"></strong>
                                         </div>
                                     </td>
-                                    <td><span class="badge bg-azure-lt">${reg.registry_type}</span></td>
-                                    <td><code class="small">${reg.base_url}</code></td>
-                                    <td><span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary'}">${reg.role}</span></td>
                                     <td>
-                                        ${reg.is_active !== false ?
-                                            '<span class="badge bg-success">Active</span>' :
-                                            '<span class="badge bg-secondary">Inactive</span>'}
+                                        <span class="badge bg-blue text-blue-fg" x-text="tenantMap[reg.tenant_id]?.name || 'Unknown'"></span>
                                     </td>
                                     <td>
-                                        <a href="#/registries/${reg.id}" class="btn btn-sm btn-ghost-primary">
+                                        <span class="badge bg-azure text-azure-fg" x-text="reg.registry_type"></span>
+                                    </td>
+                                    <td>
+                                        <code class="small" x-text="reg.base_url"></code>
+                                    </td>
+                                    <td>
+                                        <span class="text-secondary" x-text="reg.username || '-'"></span>
+                                    </td>
+                                    <td>
+                                        <span class="badge" :class="getRegistryRoleBadge(reg.role)" x-text="reg.role"></span>
+                                    </td>
+                                    <td>
+                                        <span class="badge" :class="reg.is_active ? 'bg-success text-success-fg' : 'bg-secondary text-secondary-fg'" x-text="reg.is_active ? 'Active' : 'Inactive'"></span>
+                                    </td>
+                                    <td>
+                                        <a :href="'#/registries/' + reg.id" class="btn btn-sm btn-ghost-primary">
                                             View
                                         </a>
                                     </td>
                                 </tr>
-                            `).join('')}
+                            </template>
                         </tbody>
                     </table>
                 </div>
@@ -923,19 +976,19 @@ router.on('/registries/:id', async (params) => {
                             </div>
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Registry Type</div>
-                                <span class="badge bg-azure-lt">${registry.registry_type}</span>
+                                <span class="badge bg-azure text-azure-fg">${registry.registry_type}</span>
                             </div>
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Role</div>
-                                <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(registry.role) || 'bg-secondary'}">${registry.role}</span>
+                                <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(registry.role) || 'bg-secondary text-secondary-fg'}">${registry.role}</span>
                             </div>
                         </div>
                         <div class="col-md-6">
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Status</div>
                                 ${registry.is_active !== false ?
-                                    '<span class="badge bg-success">Active</span>' :
-                                    '<span class="badge bg-secondary">Inactive</span>'}
+                                    '<span class="badge bg-success text-success-fg">Active</span>' :
+                                    '<span class="badge bg-secondary text-secondary-fg">Inactive</span>'}
                             </div>
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Description</div>
@@ -1019,8 +1072,11 @@ router.on('/registries/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const registry = await api.getRegistry(params.id);
-        content.innerHTML = createRegistryForm(registry);
+        const [registry, tenants] = await Promise.all([
+            api.getRegistry(params.id),
+            api.getTenants(),
+        ]);
+        content.innerHTML = createRegistryForm(registry, tenants);
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -1082,7 +1138,7 @@ router.on('/bundles', async () => {
                                 <tr>
                                     <td><strong>${bundle.name}</strong></td>
                                     <td>${bundle.description || '-'}</td>
-                                    <td><span class="badge bg-blue">v${bundle.current_version || 1}</span></td>
+                                    <td><span class="badge bg-blue text-blue-fg">v${bundle.current_version || 1}</span></td>
                                     <td>${bundle.total_images || 0}</td>
                                     <td>${new Date(bundle.created_at).toLocaleDateString('cs-CZ')}</td>
                                     <td>
@@ -1250,7 +1306,7 @@ router.on('/bundles/:id', async (params) => {
                                 <dd class="col-8">${bundle.description || '-'}</dd>
 
                                 <dt class="col-4">Current Version:</dt>
-                                <dd class="col-8"><span class="badge bg-blue">v${bundle.current_version || 1}</span></dd>
+                                <dd class="col-8"><span class="badge bg-blue text-blue-fg">v${bundle.current_version || 1}</span></dd>
 
                                 <dt class="col-4">Created:</dt>
                                 <dd class="col-8">${new Date(bundle.created_at).toLocaleString('cs-CZ')}</dd>
@@ -1267,7 +1323,7 @@ router.on('/bundles/:id', async (params) => {
                                 <a href="#/bundles/${bundle.id}/versions/${version.version}" class="list-group-item list-group-item-action">
                                     <div class="row align-items-center">
                                         <div class="col-auto">
-                                            <span class="badge bg-blue">v${version.version}</span>
+                                            <span class="badge bg-blue text-blue-fg">v${version.version}</span>
                                         </div>
                                         <div class="col">
                                             <div class="text-secondary small">
@@ -1425,10 +1481,10 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                     <td class="text-center"><i class="ti ti-arrow-right"></i></td>
                                     <td><code class="small">${mapping.target_image}</code></td>
                                     <td>
-                                        ${mapping.copy_status === 'success' ? '<span class="badge bg-success">Success</span>' :
-                                          mapping.copy_status === 'failed' ? '<span class="badge bg-danger">Failed</span>' :
-                                          mapping.copy_status === 'in_progress' ? '<span class="badge bg-info">In Progress</span>' :
-                                          '<span class="badge bg-secondary">Pending</span>'}
+                                        ${mapping.copy_status === 'success' ? '<span class="badge bg-success text-success-fg">Success</span>' :
+                                          mapping.copy_status === 'failed' ? '<span class="badge bg-danger text-danger-fg">Failed</span>' :
+                                          mapping.copy_status === 'in_progress' ? '<span class="badge bg-info text-info-fg">In Progress</span>' :
+                                          '<span class="badge bg-secondary text-secondary-fg">Pending</span>'}
                                     </td>
                                     <td>
                                         ${mapping.target_sha256 ?
@@ -1496,7 +1552,7 @@ router.on('/releases', async () => {
                                 <tr>
                                     <td><strong>${release.name}</strong></td>
                                     <td>${release.bundle_name || '-'}</td>
-                                    <td><span class="badge bg-blue">v${release.bundle_version}</span></td>
+                                    <td><span class="badge bg-blue text-blue-fg">v${release.bundle_version}</span></td>
                                     <td>${release.image_count || 0}</td>
                                     <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
                                     <td>
@@ -1968,5 +2024,61 @@ router.on('/copy-jobs', async () => {
         </div>
     `;
 });
+
+/**
+ * Registry list component with filtering
+ */
+function registryList() {
+    const data = window._registryListData || { registries: [], tenantMap: {} };
+
+    return {
+        registries: data.registries,
+        tenantMap: data.tenantMap,
+        searchQuery: '',
+        selectedTenant: '',
+
+        get filteredRegistries() {
+            return this.registries.filter(reg => {
+                // Filter by search query
+                if (this.searchQuery) {
+                    const query = this.searchQuery.toLowerCase();
+                    if (!reg.name.toLowerCase().includes(query) &&
+                        !reg.base_url.toLowerCase().includes(query)) {
+                        return false;
+                    }
+                }
+
+                // Filter by tenant
+                if (this.selectedTenant && reg.tenant_id !== this.selectedTenant) {
+                    return false;
+                }
+
+                return true;
+            });
+        },
+
+        getRegistryTypeIcon(type) {
+            const icons = {
+                'harbor': 'ti-anchor',
+                'docker': 'ti-brand-docker',
+                'quay': 'ti-box',
+                'gcr': 'ti-brand-google',
+                'ecr': 'ti-cloud',
+                'acr': 'ti-cloud',
+                'generic': 'ti-database'
+            };
+            return icons[type] || 'ti-database';
+        },
+
+        getRegistryRoleBadge(role) {
+            const badges = {
+                'source': 'bg-info text-info-fg',
+                'target': 'bg-warning text-warning-fg',
+                'both': 'bg-success text-success-fg'
+            };
+            return badges[role] || 'bg-secondary text-secondary-fg';
+        }
+    };
+}
 
 console.log('App.js loaded');
