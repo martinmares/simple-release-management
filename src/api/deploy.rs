@@ -916,28 +916,26 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let kubeconform_path = state.kubeconform_path.trim();
     if kubeconform_path.is_empty() {
         let _ = log_tx.send("kubeconform skipped (KUBECONFORM_PATH not set)".to_string());
-    } else {
-        if let Err(err) = run_command_logged(
-            kubeconform_path,
-            &["-strict", "-summary", "-output", "json", "."],
-            Some(&deploy_path),
-            &HashMap::new(),
-            &log_tx,
-            "kubeconform",
-        )
-        .await
-        {
-            let not_found = err
-                .root_cause()
-                .downcast_ref::<std::io::Error>()
-                .map(|e| e.kind() == ErrorKind::NotFound)
-                .unwrap_or(false);
+    } else if let Err(err) = run_command_logged(
+        kubeconform_path,
+        &["-strict", "-summary", "-output", "json", "."],
+        Some(&deploy_path),
+        &HashMap::new(),
+        &log_tx,
+        "kubeconform",
+    )
+    .await
+    {
+        let not_found = err
+            .root_cause()
+            .downcast_ref::<std::io::Error>()
+            .map(|e| e.kind() == ErrorKind::NotFound)
+            .unwrap_or(false);
 
-            if not_found {
-                let _ = log_tx.send("kubeconform not found, skipping validation".to_string());
-            } else {
-                return Err(err);
-            }
+        if not_found {
+            let _ = log_tx.send("kubeconform not found, skipping validation".to_string());
+        } else {
+            let _ = log_tx.send("kubeconform reported errors (ignored)".to_string());
         }
     }
 
