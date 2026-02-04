@@ -2504,47 +2504,130 @@ router.on('/releases', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const releases = await api.getReleases();
+        const [releases, tenants, bundles] = await Promise.all([
+            api.getReleases(),
+            api.getTenants(),
+            api.getBundles(),
+        ]);
 
-        content.innerHTML = `
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Releases</h3>
-                    <div class="card-actions">
-                        <a href="#/releases/new" class="btn btn-primary">
-                            <i class="ti ti-plus"></i>
-                            New Release
-                        </a>
+        const renderReleases = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '') => {
+            const filteredBundles = bundles.filter(b => !selectedTenant || b.tenant_id === selectedTenant);
+            return `
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Releases</h3>
+                        <div class="card-actions">
+                            <a href="#/releases/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Release
+                            </a>
+                        </div>
+                    </div>
+                    <div class="card-body border-bottom">
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <input class="form-control" id="releases-search" placeholder="Search release id" value="${searchQuery}">
+                            </div>
+                            <div class="col-md-4">
+                                <select class="form-select" id="releases-tenant">
+                                    <option value="">All tenants</option>
+                                    ${tenants.map(t => `
+                                        <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <select class="form-select" id="releases-bundle">
+                                    <option value="">All bundles</option>
+                                    ${filteredBundles.map(b => `
+                                        <option value="${b.id}" ${b.id === selectedBundle ? 'selected' : ''}>${b.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Release ID</th>
+                                    <th>Tenant</th>
+                                    <th>Bundle</th>
+                                    <th>
+                                        Deploy Jobs
+                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of deploy jobs (success/failed/running/pending). Release stays draft until first successful deploy."></i>
+                                    </th>
+                                    <th>Created</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${rows.length === 0 ? `
+                                    <tr>
+                                        <td colspan="5" class="text-center text-secondary py-5">
+                                            No releases yet. Create a release from a copy job.
+                                        </td>
+                                    </tr>
+                                ` : rows.map(release => {
+                                    const total = Number(release.deploy_total || 0);
+                                    const parts = [];
+                                    if (release.deploy_success) parts.push(`<span class="badge bg-success-lt text-success-fg">success ${release.deploy_success}</span>`);
+                                    if (release.deploy_failed) parts.push(`<span class="badge bg-danger-lt text-danger-fg">failed ${release.deploy_failed}</span>`);
+                                    if (release.deploy_in_progress) parts.push(`<span class="badge bg-info-lt text-info-fg">running ${release.deploy_in_progress}</span>`);
+                                    if (release.deploy_pending) parts.push(`<span class="badge bg-secondary-lt text-secondary-fg">pending ${release.deploy_pending}</span>`);
+                                    const summary = total === 0
+                                        ? `<span class="text-secondary">No deploys</span>`
+                                        : `<span class="badge bg-azure-lt text-azure-fg me-1">total ${total}</span> ${parts.join(' ')}`;
+                                    return `
+                                        <tr>
+                                            <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
+                                            <td><span class="badge bg-blue-lt text-blue-fg">${release.tenant_name || 'Unknown'}</span></td>
+                                            <td>${release.bundle_name || '-'}</td>
+                                            <td>${summary}</td>
+                                            <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
                     </div>
                 </div>
-                <div class="table-responsive">
-                    <table class="table table-vcenter card-table">
-                        <thead>
-                            <tr>
-                                <th>Release ID</th>
-                                <th>Status</th>
-                                <th>Created</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${releases.length === 0 ? `
-                                <tr>
-                                    <td colspan="3" class="text-center text-secondary py-5">
-                                        No releases yet. Create a release from a copy job.
-                                    </td>
-                                </tr>
-                            ` : releases.map(release => `
-                                <tr>
-                                    <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
-                                    <td><span class="badge bg-blue text-blue-fg">${release.status}</span></td>
-                                    <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        `;
+            `;
+        };
+
+        content.innerHTML = renderReleases(releases);
+
+        const applyFilters = () => {
+            const searchEl = document.getElementById('releases-search');
+            const tenantEl = document.getElementById('releases-tenant');
+            const bundleEl = document.getElementById('releases-bundle');
+
+            const q = searchEl.value.trim().toLowerCase();
+            const tenantId = tenantEl.value;
+            let bundleId = bundleEl.value;
+
+            if (tenantId) {
+                const validBundles = new Set(bundles.filter(b => b.tenant_id === tenantId).map(b => b.id));
+                if (bundleId && !validBundles.has(bundleId)) {
+                    bundleId = '';
+                }
+            }
+
+            const filtered = releases.filter(r => {
+                const nameOk = !q || r.release_id.toLowerCase().includes(q);
+                const tenantOk = !tenantId || r.tenant_id === tenantId;
+                const bundleOk = !bundleId || r.bundle_id === bundleId;
+                return nameOk && tenantOk && bundleOk;
+            });
+
+            content.innerHTML = renderReleases(filtered, q, tenantId, bundleId);
+            document.getElementById('releases-search').addEventListener('input', applyFilters);
+            document.getElementById('releases-tenant').addEventListener('change', applyFilters);
+            document.getElementById('releases-bundle').addEventListener('change', applyFilters);
+        };
+
+        document.getElementById('releases-search').addEventListener('input', applyFilters);
+        document.getElementById('releases-tenant').addEventListener('change', applyFilters);
+        document.getElementById('releases-bundle').addEventListener('change', applyFilters);
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">

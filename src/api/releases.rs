@@ -27,6 +27,23 @@ pub struct UpdateReleaseRequest {
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ReleaseSummary {
+    pub id: Uuid,
+    pub release_id: String,
+    pub status: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub tenant_id: Uuid,
+    pub tenant_name: String,
+    pub bundle_id: Uuid,
+    pub bundle_name: String,
+    pub deploy_total: i64,
+    pub deploy_success: i64,
+    pub deploy_failed: i64,
+    pub deploy_in_progress: i64,
+    pub deploy_pending: i64,
+}
+
 /// Response s chybou
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
@@ -46,11 +63,30 @@ pub fn router(pool: PgPool) -> Router {
 /// GET /api/v1/releases - Seznam všech releases
 async fn list_all_releases(
     State(pool): State<PgPool>,
-) -> Result<Json<Vec<Release>>, (StatusCode, Json<ErrorResponse>)> {
-    let releases = sqlx::query_as::<_, Release>(
+) -> Result<Json<Vec<ReleaseSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let releases = sqlx::query_as::<_, ReleaseSummary>(
         r#"
-        SELECT r.*
+        SELECT
+            r.id,
+            r.release_id,
+            r.status,
+            r.created_at,
+            t.id AS tenant_id,
+            t.name AS tenant_name,
+            b.id AS bundle_id,
+            b.name AS bundle_name,
+            COALESCE(COUNT(dj.id), 0) AS deploy_total,
+            COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
+            COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
+            COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
+            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending
         FROM releases r
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        JOIN tenants t ON t.id = b.tenant_id
+        LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
+        GROUP BY r.id, t.id, b.id
         ORDER BY r.created_at DESC
         "#
     )
@@ -72,15 +108,31 @@ async fn list_all_releases(
 async fn list_releases(
     State(pool): State<PgPool>,
     Path(tenant_id): Path<Uuid>,
-) -> Result<Json<Vec<Release>>, (StatusCode, Json<ErrorResponse>)> {
-    let releases = sqlx::query_as::<_, Release>(
+) -> Result<Json<Vec<ReleaseSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let releases = sqlx::query_as::<_, ReleaseSummary>(
         r#"
-        SELECT r.*
+        SELECT
+            r.id,
+            r.release_id,
+            r.status,
+            r.created_at,
+            t.id AS tenant_id,
+            t.name AS tenant_name,
+            b.id AS bundle_id,
+            b.name AS bundle_name,
+            COALESCE(COUNT(dj.id), 0) AS deploy_total,
+            COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
+            COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
+            COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
+            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         JOIN bundles b ON b.id = bv.bundle_id
+        JOIN tenants t ON t.id = b.tenant_id
+        LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
         WHERE b.tenant_id = $1
+        GROUP BY r.id, t.id, b.id
         ORDER BY r.created_at DESC
         "#
     )
