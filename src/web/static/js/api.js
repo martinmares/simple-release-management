@@ -248,6 +248,10 @@ class ApiClient {
         return this.get(`/copy/jobs/${jobId}/images`);
     }
 
+    async cancelCopyJob(jobId) {
+        return this.post(`/copy/jobs/${jobId}/cancel`, {});
+    }
+
     async getCopyJobLogHistory(jobId) {
         const url = `${this.baseUrl}/copy/jobs/${jobId}/logs/history`;
         const response = await fetch(url);

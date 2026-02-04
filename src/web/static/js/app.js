@@ -3074,7 +3074,8 @@ router.on('/releases/new', async (params, query) => {
                     getApp().showError('Please select target registry');
                     return;
                 }
-                if (!state.releaseId.trim()) {
+                const releaseId = state.releaseId.trim();
+                if (!releaseId) {
                     getApp().showError('Release ID cannot be empty');
                     return;
                 }
@@ -3082,7 +3083,7 @@ router.on('/releases/new', async (params, query) => {
                 const payload = {
                     source_copy_job_id: job.job_id,
                     target_registry_id: state.targetRegistryId,
-                    release_id: state.releaseId,
+                    release_id: releaseId,
                     notes: state.notes || null,
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
@@ -3107,8 +3108,9 @@ router.on('/releases/new', async (params, query) => {
                 const renamed = applyRules(sourcePath);
                 const override = state.overrides[idx]?.override_name || '';
                 const finalPath = applyOverride(renamed, override);
+                const releaseId = state.releaseId.trim();
                 const targetFull = targetBase
-                    ? `${targetBase}/${finalPath}:${state.releaseId || '<release_id>'}`
+                    ? `${targetBase}/${finalPath}:${releaseId || '<release_id>'}`
                     : '-';
                 el.textContent = targetFull;
             });
@@ -3337,7 +3339,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 ? ((status.copied_images + status.failed_images) / status.total_images * 100).toFixed(0)
                 : 0;
 
-            const isComplete = status.status === 'success' || status.status === 'failed';
+            const isComplete = status.status === 'success' || status.status === 'failed' || status.status === 'cancelled';
             const failedImages = images.filter(img => img.copy_status === 'failed');
             const skippedImages = images.filter(img => img.copy_status === 'success' && img.bytes_copied === 0);
 
@@ -3425,6 +3427,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         <div class="alert ${
                             status.status === 'success' ? 'alert-success' :
                             status.status === 'failed' ? 'alert-warning' :
+                            status.status === 'cancelled' ? 'alert-warning' :
                             status.status === 'in_progress' ? 'alert-info pulse' :
                             'alert-secondary'
                         }">
@@ -3432,6 +3435,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 <i class="ti ${
                                     status.status === 'success' ? 'ti-check' :
                                     status.status === 'failed' ? 'ti-x' :
+                                    status.status === 'cancelled' ? 'ti-ban' :
                                     status.status === 'in_progress' ? 'ti-loader' :
                                     'ti-info-circle'
                                 } me-2"></i>
@@ -3469,10 +3473,21 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                     <i class="ti ti-play"></i>
                                     Start Copy Job
                                 </button>
+                                <button class="btn btn-outline-danger" id="cancel-copy-job">
+                                    <i class="ti ti-x"></i>
+                                    Cancel Copy Job
+                                </button>
                                 <a href="#/copy-jobs" class="btn btn-outline-secondary">
                                     <i class="ti ti-list"></i>
                                     Back to Copy Jobs
                                 </a>
+                            </div>
+                        ` : status.status === 'in_progress' ? `
+                            <div class="d-grid gap-2">
+                                <button class="btn btn-outline-danger" id="cancel-copy-job">
+                                    <i class="ti ti-x"></i>
+                                    Cancel Copy Job
+                                </button>
                             </div>
                         ` : ''}
                     </div>
@@ -3562,6 +3577,30 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 </div>
                 ` : ''}
             `;
+
+            const cancelBtn = document.getElementById('cancel-copy-job');
+            if (cancelBtn) {
+                cancelBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog(
+                        'Cancel Copy Job?',
+                        'This will stop further copies for this job.',
+                        'Cancel Job',
+                        'Keep Running'
+                    );
+                    if (!confirmed) return;
+                    try {
+                        await api.cancelCopyJob(params.jobId);
+                        getApp().showSuccess('Cancel requested');
+                        const [newStatus, newImages] = await Promise.all([
+                            api.getCopyJobStatus(params.jobId),
+                            api.getCopyJobImages(params.jobId),
+                        ]);
+                        renderJobStatus(newStatus, newImages);
+                    } catch (error) {
+                        getApp().showError(error.message);
+                    }
+                });
+            }
 
             renderLogs();
         };

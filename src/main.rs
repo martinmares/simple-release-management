@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
         skopeo: skopeo_service,
         encryption_secret: config.encryption_secret.clone(),
         job_logs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        cancel_flags: Arc::new(RwLock::new(std::collections::HashSet::new())),
     };
 
     // Vytvoření copy API routeru

@@ -8,6 +8,7 @@ use axum::{
 use futures::stream::{self, BoxStream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
@@ -111,6 +112,7 @@ pub struct CopyApiState {
     pub skopeo: SkopeoService,
     pub encryption_secret: String,
     pub job_logs: Arc<RwLock<std::collections::HashMap<Uuid, broadcast::Sender<String>>>>,
+    pub cancel_flags: Arc<RwLock<HashSet<Uuid>>>,
 }
 
 impl CopyApiState {
@@ -194,6 +196,7 @@ pub fn router(state: CopyApiState) -> Router {
         .route("/copy/jobs", get(list_copy_jobs))
         .route("/copy/jobs/release", post(start_release_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
+        .route("/copy/jobs/{job_id}/cancel", post(cancel_copy_job))
         .route("/copy/jobs/{job_id}", get(get_copy_job_status))
         .route("/copy/jobs/{job_id}/images", get(get_copy_job_images))
         .route("/copy/jobs/{job_id}/logs", get(copy_job_logs_sse))
@@ -399,6 +402,7 @@ async fn copy_bundle_version(
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
     let log_state_clone = state.job_logs.clone();
+    let cancel_flags = state.cancel_flags.clone();
     let target_tag = payload.target_tag.clone();
     let credentials_clone = credentials.clone();
 
@@ -435,14 +439,26 @@ async fn copy_bundle_version(
 
     tokio::spawn(async move {
         let mut failed = 0;
+        let mut cancelled = false;
 
         emit_log(&log_tx, format!("Starting copy job {} ({} images)", job_id, mapping_count));
-        let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
-            .bind(job_id)
-            .execute(&pool_clone)
-            .await;
+        if cancel_flags.read().await.contains(&job_id) {
+            cancelled = true;
+            emit_log(&log_tx, "Cancel requested, stopping job".to_string());
+        }
+        if !cancelled {
+            let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
+                .bind(job_id)
+                .execute(&pool_clone)
+                .await;
+        }
 
         for (copy_job_image_id, mapping) in job_images {
+            if cancel_flags.read().await.contains(&job_id) {
+                cancelled = true;
+                emit_log(&log_tx, "Cancel requested, stopping job".to_string());
+                break;
+            }
             // Sestavit URL
             let source_url = format!("{}/{}:{}", source_base_url, mapping.source_image, mapping.source_tag);
             let target_url = format!("{}/{}:{}", target_base_url, mapping.target_image, &target_tag);
@@ -571,19 +587,38 @@ async fn copy_bundle_version(
 
         }
 
-        // Finalizovat job
-        let _ = sqlx::query(
-            "UPDATE copy_jobs
-             SET status = $1, completed_at = NOW()
-             WHERE id = $2"
-        )
-        .bind(if failed == 0 { "success" } else { "failed" })
-        .bind(job_id)
-        .execute(&pool_clone)
-        .await;
+        if cancelled {
+            let _ = sqlx::query(
+                "UPDATE copy_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
+            )
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
+
+            let _ = sqlx::query(
+                "UPDATE copy_job_images
+                 SET copy_status = 'cancelled', error_message = 'Cancelled'
+                 WHERE copy_job_id = $1 AND copy_status IN ('pending', 'in_progress')",
+            )
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
+        } else {
+            // Finalizovat job
+            let _ = sqlx::query(
+                "UPDATE copy_jobs
+                 SET status = $1, completed_at = NOW()
+                 WHERE id = $2"
+            )
+            .bind(if failed == 0 { "success" } else { "failed" })
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
+        }
 
         emit_log(&log_tx, "Copy job finished".to_string());
         log_state_clone.write().await.remove(&job_id);
+        cancel_flags.write().await.remove(&job_id);
     });
 
     Ok((
@@ -743,7 +778,8 @@ async fn start_release_copy_job(
     State(state): State<CopyApiState>,
     Json(payload): Json<ReleaseCopyRequest>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    if payload.release_id.trim().is_empty() {
+    let release_id = payload.release_id.trim().to_string();
+    if release_id.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -752,11 +788,16 @@ async fn start_release_copy_job(
         ));
     }
 
+    let payload = ReleaseCopyRequest {
+        release_id: release_id.clone(),
+        ..payload
+    };
+
     // Release ID musí být unikátní
     let release_exists = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM releases WHERE release_id = $1)"
     )
-    .bind(&payload.release_id)
+    .bind(&release_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -772,7 +813,7 @@ async fn start_release_copy_job(
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorResponse {
-                error: format!("Release with ID '{}' already exists", payload.release_id),
+                error: format!("Release with ID '{}' already exists", release_id),
             }),
         ));
     }
@@ -877,10 +918,10 @@ async fn start_release_copy_job(
     )
     .bind(job_id)
     .bind(bundle_version_id)
-    .bind(&payload.release_id)
+    .bind(&release_id)
     .bind(source_registry_id)
     .bind(payload.target_registry_id)
-    .bind(&payload.release_id)
+    .bind(&release_id)
     .bind(&payload.notes)
     .execute(&state.pool)
     .await
@@ -895,8 +936,9 @@ async fn start_release_copy_job(
 
     // Snapshot pro nový job
     let mut job_images: Vec<(Uuid, String, String, String)> = Vec::with_capacity(source_images.len());
+    let rename_rules = &payload.rename_rules;
     for img in &source_images {
-        let mut target_path = apply_rename_rules(img.target_image.clone(), &payload.rename_rules);
+        let mut target_path = apply_rename_rules(img.target_image.clone(), rename_rules);
         if let Some(override_name) = overrides.get(&img.id) {
             target_path = apply_override_name(&target_path, override_name);
         }
@@ -912,7 +954,7 @@ async fn start_release_copy_job(
         .bind(&img.target_image)
         .bind(&img.target_tag)
         .bind(&target_path)
-        .bind(&payload.release_id)
+        .bind(&release_id)
         .fetch_one(&state.pool)
         .await
         .map_err(|e| {
@@ -1117,7 +1159,13 @@ async fn start_copy_job(
 
     tokio::spawn(async move {
         let mut failed = 0;
+        let mut cancelled = false;
         emit_log(&log_tx, format!("Starting copy job {} ({} images)", job_id, images.len()));
+
+        if cancel_flags.read().await.contains(&job_id) {
+            cancelled = true;
+            emit_log(&log_tx, "Cancel requested, stopping job".to_string());
+        }
 
         let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
             .bind(job_id)
@@ -1125,6 +1173,11 @@ async fn start_copy_job(
             .await;
 
         for img in images {
+            if cancel_flags.read().await.contains(&job_id) {
+                cancelled = true;
+                emit_log(&log_tx, "Cancel requested, stopping job".to_string());
+                break;
+            }
             let source_url = format!("{}/{}:{}", source_base_url, img.source_image, img.source_tag);
             let target_url = format!("{}/{}:{}", target_base_url, img.target_image, &target_tag);
 
@@ -1247,17 +1300,35 @@ async fn start_copy_job(
             }
         }
 
-        let _ = sqlx::query(
-            "UPDATE copy_jobs
-             SET status = $1, completed_at = NOW()
-             WHERE id = $2"
-        )
-        .bind(if failed == 0 { "success" } else { "failed" })
-        .bind(job_id)
-        .execute(&pool_clone)
-        .await;
+        if cancelled {
+            let _ = sqlx::query(
+                "UPDATE copy_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
+            )
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
 
-        if failed == 0 && is_release_job {
+            let _ = sqlx::query(
+                "UPDATE copy_job_images
+                 SET copy_status = 'cancelled', error_message = 'Cancelled'
+                 WHERE copy_job_id = $1 AND copy_status IN ('pending', 'in_progress')",
+            )
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
+        } else {
+            let _ = sqlx::query(
+                "UPDATE copy_jobs
+                 SET status = $1, completed_at = NOW()
+                 WHERE id = $2"
+            )
+            .bind(if failed == 0 { "success" } else { "failed" })
+            .bind(job_id)
+            .execute(&pool_clone)
+            .await;
+        }
+
+        if !cancelled && failed == 0 && is_release_job {
             if let Some(release_id) = release_id {
                 let _ = sqlx::query(
                     "INSERT INTO releases (copy_job_id, release_id, status, notes)
@@ -1273,6 +1344,7 @@ async fn start_copy_job(
 
         emit_log(&log_tx, "Copy job finished".to_string());
         log_state_clone.write().await.remove(&job_id);
+        cancel_flags.write().await.remove(&job_id);
     });
 
     Ok((
@@ -1280,6 +1352,74 @@ async fn start_copy_job(
         Json(CopyJobResponse {
             job_id,
             message: "Copy job started".to_string(),
+        }),
+    ))
+}
+
+/// POST /api/v1/copy/jobs/{job_id}/cancel - Zruší copy job
+async fn cancel_copy_job(
+    State(state): State<CopyApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let status = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM copy_jobs WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let Some(status) = status else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Copy job with id {} not found", job_id),
+            }),
+        ));
+    };
+
+    if status == "success" || status == "failed" || status == "cancelled" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Copy job is already finished".to_string(),
+            }),
+        ));
+    }
+
+    let _ = sqlx::query(
+        "UPDATE copy_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
+    )
+    .bind(job_id)
+    .execute(&state.pool)
+    .await;
+
+    let _ = sqlx::query(
+        "UPDATE copy_job_images
+         SET copy_status = 'cancelled', error_message = 'Cancelled'
+         WHERE copy_job_id = $1 AND copy_status IN ('pending', 'in_progress')",
+    )
+    .bind(job_id)
+    .execute(&state.pool)
+    .await;
+
+    state.cancel_flags.write().await.insert(job_id);
+    if let Some(sender) = state.job_logs.read().await.get(&job_id) {
+        let _ = sender.send("Cancel requested".to_string());
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CopyJobResponse {
+            job_id,
+            message: "Cancel requested".to_string(),
         }),
     ))
 }
