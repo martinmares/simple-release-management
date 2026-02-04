@@ -942,17 +942,17 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
 
     let diff_info = collect_deploy_diff(&deploy_repo_path, deploy_rel_path, &log_tx).await?;
 
-    run_git_commit_and_push(
-        &deploy_repo_path,
-        deploy_rel_path,
-        &release.release_id,
-        &target.deploy_repo_url,
-        &git_env,
-        &log_tx,
-    )
-    .await?;
-
     if let Some(diff) = diff_info {
+        run_git_commit_and_push(
+            &deploy_repo_path,
+            deploy_rel_path,
+            &release.release_id,
+            &target.deploy_repo_url,
+            &git_env,
+            &log_tx,
+        )
+        .await?;
+
         let _ = sqlx::query(
             "INSERT INTO deploy_job_diffs (deploy_job_id, files_changed, diff_patch) VALUES ($1, $2, $3)",
         )
@@ -961,6 +961,8 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .bind(diff.diff_patch)
         .execute(&state.pool)
         .await;
+    } else {
+        let _ = log_tx.send("No deploy changes detected; skipping git commit/push/tag".to_string());
     }
 
     let commit_sha = get_git_head_sha(&deploy_repo_path, &git_env).await.ok();
