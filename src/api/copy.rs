@@ -1156,6 +1156,7 @@ async fn start_copy_job(
     let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
     let release_id = release_id.clone();
     let release_notes = release_notes.clone();
+    let cancel_flags = state.cancel_flags.clone();
 
     tokio::spawn(async move {
         let mut failed = 0;
