@@ -27,6 +27,7 @@ pub struct Config {
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
+    pub kubeconform_path: String,
     pub encryption_secret: String,
     pub max_concurrent_copy_jobs: usize,
     pub copy_timeout_seconds: u64,
@@ -62,6 +63,9 @@ impl Config {
 
             encjson_path: env::var("ENCJSON_PATH")
                 .unwrap_or_else(|_| "encjson".to_string()),
+
+            kubeconform_path: env::var("KUBECONFORM_PATH")
+                .unwrap_or_else(|_| "kubeconform".to_string()),
 
             encryption_secret: env::var("ENCRYPTION_SECRET")
                 .context("ENCRYPTION_SECRET must be set")?,

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::{
     collections::HashMap,
+    io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
     time::Duration,
@@ -26,7 +27,7 @@ use walkdir::WalkDir;
 
 use crate::{
     crypto,
-    db::models::{DeployJob, DeployTarget, DeployTargetEncjsonKey, Release},
+    db::models::{DeployJob, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, Release},
     services::release_manifest::build_release_manifest,
 };
 
@@ -37,6 +38,7 @@ pub struct DeployApiState {
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
+    pub kubeconform_path: String,
     pub job_logs: Arc<RwLock<HashMap<Uuid, broadcast::Sender<String>>>>,
 }
 
@@ -138,6 +140,7 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy/jobs", post(create_deploy_job))
         .route("/deploy/jobs/{id}", get(get_deploy_job))
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
+        .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
         .with_state(state)
 }
 
@@ -683,6 +686,20 @@ async fn create_deploy_job(
     state.job_logs.write().await.insert(job_id, log_tx.clone());
 
     let state_clone = state.clone();
+    let log_persist_state = state.clone();
+    let mut log_rx = log_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = log_rx.recv().await {
+            let _ = sqlx::query(
+                "INSERT INTO deploy_job_logs (deploy_job_id, log_line) VALUES ($1, $2)",
+            )
+            .bind(job_id)
+            .bind(line)
+            .execute(&log_persist_state.pool)
+            .await;
+        }
+    });
+
     tokio::spawn(async move {
         if let Err(e) = run_deploy_job(state_clone.clone(), job_id, log_tx.clone()).await {
             let _ = log_tx.send(format!("Deploy job failed: {}", e));
@@ -881,10 +898,48 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     )
     .await?;
 
+    run_command_logged(
+        &state.kube_build_app_path,
+        &["-e", &target.env_name, "-s"],
+        Some(&env_repo_path),
+        &kube_build_env,
+        &log_tx,
+        "kube_build_app -s",
+    )
+    .await?;
+
     let env_file_path = temp_dir.path().join("release.env");
     build_env_file(&state, &target, &env_repo_path, &env_file_path, &release, &log_tx, temp_dir.path()).await?;
 
     apply_env_to_outputs(&state, &deploy_path, &env_file_path, &log_tx).await?;
+
+    let kubeconform_path = state.kubeconform_path.trim();
+    if kubeconform_path.is_empty() {
+        let _ = log_tx.send("kubeconform skipped (KUBECONFORM_PATH not set)".to_string());
+    } else {
+        if let Err(err) = run_command_logged(
+            kubeconform_path,
+            &["-strict", "-summary", "-output", "json", "."],
+            Some(&deploy_path),
+            &HashMap::new(),
+            &log_tx,
+            "kubeconform",
+        )
+        .await
+        {
+            let not_found = err
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(|e| e.kind() == ErrorKind::NotFound)
+                .unwrap_or(false);
+
+            if not_found {
+                let _ = log_tx.send("kubeconform not found, skipping validation".to_string());
+            } else {
+                return Err(err);
+            }
+        }
+    }
 
     run_git_commit_and_push(
         &deploy_repo_path,
@@ -1335,4 +1390,27 @@ async fn deploy_job_logs_sse(
     Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(10)))
         .into_response()
+}
+
+async fn deploy_job_logs_history(
+    State(state): State<DeployApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
+    let rows = sqlx::query_as::<_, DeployJobLog>(
+        "SELECT * FROM deploy_job_logs WHERE deploy_job_id = $1 ORDER BY created_at",
+    )
+    .bind(job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load deploy job logs: {}", e),
+            }),
+        )
+    })?;
+
+    let lines = rows.into_iter().map(|row| row.log_line).collect();
+    Ok(Json(lines))
 }
