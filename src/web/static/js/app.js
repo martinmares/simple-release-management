@@ -2741,6 +2741,7 @@ router.on('/deploy-jobs/:id', async (params) => {
 
     try {
         const job = await api.getDeployJob(params.id);
+        const logHistory = await api.getDeployJobLogHistory(params.id);
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -2783,7 +2784,7 @@ router.on('/deploy-jobs/:id', async (params) => {
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Live Logs</h3>
+                    <h3 class="card-title">${job.status === 'in_progress' ? 'Live Logs' : 'Audit Logs'}</h3>
                 </div>
                 <div class="card-body">
                     <div class="terminal" id="deploy-log-terminal">
@@ -2805,13 +2806,20 @@ router.on('/deploy-jobs/:id', async (params) => {
             logOutput.scrollTop = logOutput.scrollHeight;
         };
 
-        api.createDeployJobStream(params.id, (msg) => {
-            deployLines.push(msg);
+        if (Array.isArray(logHistory) && logHistory.length > 0) {
+            deployLines.push(...logHistory);
             renderDeployLogs();
-        }, (err) => {
-            deployLines.push(`[Log stream error] ${err}`);
-            renderDeployLogs();
-        });
+        }
+
+        if (job.status === 'in_progress') {
+            api.createDeployJobStream(params.id, (msg) => {
+                deployLines.push(msg);
+                renderDeployLogs();
+            }, (err) => {
+                deployLines.push(`[Log stream error] ${err}`);
+                renderDeployLogs();
+            });
+        }
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">

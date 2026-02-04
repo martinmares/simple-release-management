@@ -266,3 +266,11 @@ pub struct DeployJob {
     pub tag_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct DeployJobLog {
+    pub id: Uuid,
+    pub deploy_job_id: Uuid,
+    pub log_line: String,
+    pub created_at: DateTime<Utc>,
+}

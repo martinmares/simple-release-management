@@ -408,6 +408,18 @@ class ApiClient {
     createDeployJobStream(jobId, onMessage, onError) {
         return this.createEventSource(`/deploy/jobs/${jobId}/logs`, onMessage, onError);
     }
+
+    async getDeployJobLogHistory(jobId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/deploy/jobs/${jobId}/logs/history`);
+            if (!response.ok) return [];
+            const text = await response.text();
+            if (!text) return [];
+            return JSON.parse(text);
+        } catch (e) {
+            return [];
+        }
+    }
 }
 
 /**
