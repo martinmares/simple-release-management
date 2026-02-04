@@ -703,7 +703,76 @@ router.on('/tenants/:id', async (params) => {
                         </div>
                     </div>
 
-                    <div class="card mb-3">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">Registries</h3>
+                                    <div class="card-actions">
+                                        <a href="#/registries/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            Add
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${registries.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No registries yet
+                                        </div>
+                                    ` : registries.map(reg => `
+                                        <a href="#/registries/${reg.id}" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center">
+                                                <span class="avatar avatar-sm me-2">
+                                                    <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
+                                                </span>
+                                                <div class="flex-fill">
+                                                    <div>${reg.name}</div>
+                                                    <div class="text-secondary small">${reg.registry_type}</div>
+                                                </div>
+                                                <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">Deploy Targets</h3>
+                                    <div class="card-actions">
+                                        <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            Add
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${deployTargets.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No deploy targets yet
+                                        </div>
+                                    ` : deployTargets.map(target => `
+                                        <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center">
+                                                <div class="flex-fill">
+                                                    <div>${target.name}</div>
+                                                    <div class="text-secondary small">${target.env_name}</div>
+                                                </div>
+                                                <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                                    ${target.is_active ? 'active' : 'inactive'}
+                                                </span>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
                         <div class="card-header">
                             <h3 class="card-title">Bundles</h3>
                             <div class="card-actions">
@@ -728,71 +797,6 @@ router.on('/tenants/:id', async (params) => {
                                         <div class="col-auto">
                                             <span class="badge bg-blue text-blue-fg">${bundle.current_version || 'v1'}</span>
                                         </div>
-                                    </div>
-                                </a>
-                            `).join('')}
-                        </div>
-                    </div>
-                </div>
-
-                <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">Registries</h3>
-                            <div class="card-actions">
-                                <a href="#/registries/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-plus"></i>
-                                    Add
-                                </a>
-                            </div>
-                        </div>
-                        <div class="list-group list-group-flush">
-                            ${registries.length === 0 ? `
-                                <div class="list-group-item text-center text-secondary py-4">
-                                    No registries yet
-                                </div>
-                            ` : registries.map(reg => `
-                                <a href="#/registries/${reg.id}" class="list-group-item list-group-item-action">
-                                    <div class="d-flex align-items-center">
-                                        <span class="avatar avatar-sm me-2">
-                                            <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
-                                        </span>
-                                        <div class="flex-fill">
-                                            <div>${reg.name}</div>
-                                            <div class="text-secondary small">${reg.registry_type}</div>
-                                        </div>
-                                        <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
-                                    </div>
-                                </a>
-                            `).join('')}
-                        </div>
-                    </div>
-
-                    <div class="card mt-3">
-                        <div class="card-header">
-                            <h3 class="card-title">Deploy Targets</h3>
-                            <div class="card-actions">
-                                <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-plus"></i>
-                                    Add
-                                </a>
-                            </div>
-                        </div>
-                        <div class="list-group list-group-flush">
-                            ${deployTargets.length === 0 ? `
-                                <div class="list-group-item text-center text-secondary py-4">
-                                    No deploy targets yet
-                                </div>
-                            ` : deployTargets.map(target => `
-                                <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                    <div class="d-flex align-items-center">
-                                        <div class="flex-fill">
-                                            <div>${target.name}</div>
-                                            <div class="text-secondary small">${target.env_name}</div>
-                                        </div>
-                                        <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                            ${target.is_active ? 'active' : 'inactive'}
-                                        </span>
                                     </div>
                                 </a>
                             `).join('')}
