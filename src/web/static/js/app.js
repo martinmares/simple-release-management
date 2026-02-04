@@ -2523,14 +2523,20 @@ router.on('/releases', async () => {
                             </a>
                         </div>
                     </div>
-                    <div class="card-body border-bottom">
-                        <div class="row g-3">
+                    <div class="card-body border-bottom py-3">
+                        <div class="row g-2">
                             <div class="col-md-4">
-                                <input class="form-control" id="releases-search" placeholder="Search release id" value="${searchQuery}">
+                                <div class="input-group">
+                                    <span class="input-group-text">
+                                        <i class="ti ti-search"></i>
+                                    </span>
+                                    <input class="form-control" id="releases-search" placeholder="Search by release id..."
+                                           value="${searchQuery}">
+                                </div>
                             </div>
                             <div class="col-md-4">
                                 <select class="form-select" id="releases-tenant">
-                                    <option value="">All tenants</option>
+                                    <option value="">All Tenants</option>
                                     ${tenants.map(t => `
                                         <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
                                     `).join('')}
@@ -2538,7 +2544,7 @@ router.on('/releases', async () => {
                             </div>
                             <div class="col-md-4">
                                 <select class="form-select" id="releases-bundle">
-                                    <option value="">All bundles</option>
+                                    <option value="">All Bundles</option>
                                     ${filteredBundles.map(b => `
                                         <option value="${b.id}" ${b.id === selectedBundle ? 'selected' : ''}>${b.name}</option>
                                     `).join('')}
@@ -2580,8 +2586,12 @@ router.on('/releases', async () => {
                                     return `
                                         <tr>
                                             <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
-                                            <td><span class="badge bg-blue-lt text-blue-fg">${release.tenant_name || 'Unknown'}</span></td>
-                                            <td>${release.bundle_name || '-'}</td>
+                                            <td>
+                                                ${release.tenant_id ? `<a href="#/tenants/${release.tenant_id}">${release.tenant_name || 'Unknown'}</a>` : (release.tenant_name || 'Unknown')}
+                                            </td>
+                                            <td>
+                                                ${release.bundle_id ? `<a href="#/bundles/${release.bundle_id}">${release.bundle_name || '-'}</a>` : (release.bundle_name || '-')}
+                                            </td>
                                             <td>${summary}</td>
                                             <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
                                         </tr>
