@@ -2740,8 +2740,11 @@ router.on('/deploy-jobs/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const job = await api.getDeployJob(params.id);
-        const logHistory = await api.getDeployJobLogHistory(params.id);
+        const [job, logHistory, diffInfo] = await Promise.all([
+            api.getDeployJob(params.id),
+            api.getDeployJobLogHistory(params.id),
+            api.getDeployJobDiff(params.id),
+        ]);
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -2797,6 +2800,24 @@ router.on('/deploy-jobs/:id', async (params) => {
                     </div>
                 </div>
             </div>
+
+            ${diffInfo ? `
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">Deploy Diff</h3>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <div class="text-secondary small mb-1">Files changed</div>
+                        <pre class="terminal-body" style="max-height: 200px;">${escapeHtml(diffInfo.files_changed || '')}</pre>
+                    </div>
+                    <div>
+                        <div class="text-secondary small mb-1">Diff</div>
+                        <pre class="terminal-body" style="max-height: 320px; white-space: pre;">${escapeHtml(diffInfo.diff_patch || '')}</pre>
+                    </div>
+                </div>
+            </div>
+            ` : ''}
         `;
 
         const logOutput = document.getElementById('deploy-log-output');

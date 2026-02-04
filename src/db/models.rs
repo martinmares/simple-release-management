@@ -274,3 +274,12 @@ pub struct DeployJobLog {
     pub log_line: String,
     pub created_at: DateTime<Utc>,
 }
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DeployJobDiff {
+    pub id: Uuid,
+    pub deploy_job_id: Uuid,
+    pub files_changed: String,
+    pub diff_patch: String,
+    pub created_at: DateTime<Utc>,
+}

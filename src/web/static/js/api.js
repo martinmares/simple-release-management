@@ -424,6 +424,18 @@ class ApiClient {
             return [];
         }
     }
+
+    async getDeployJobDiff(jobId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/deploy/jobs/${jobId}/diff`);
+            if (!response.ok) return null;
+            const text = await response.text();
+            if (!text) return null;
+            return JSON.parse(text);
+        } catch (e) {
+            return null;
+        }
+    }
 }
 
 /**

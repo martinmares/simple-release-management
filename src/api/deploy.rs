@@ -27,7 +27,7 @@ use walkdir::WalkDir;
 
 use crate::{
     crypto,
-    db::models::{DeployJob, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, Release},
+    db::models::{DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, Release},
     services::release_manifest::build_release_manifest,
 };
 
@@ -141,6 +141,7 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy/jobs/{id}", get(get_deploy_job))
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
         .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
+        .route("/deploy/jobs/{id}/diff", get(deploy_job_diff))
         .with_state(state)
 }
 
@@ -939,6 +940,8 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         }
     }
 
+    let diff_info = collect_deploy_diff(&deploy_repo_path, deploy_rel_path, &log_tx).await?;
+
     run_git_commit_and_push(
         &deploy_repo_path,
         deploy_rel_path,
@@ -948,6 +951,17 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         &log_tx,
     )
     .await?;
+
+    if let Some(diff) = diff_info {
+        let _ = sqlx::query(
+            "INSERT INTO deploy_job_diffs (deploy_job_id, files_changed, diff_patch) VALUES ($1, $2, $3)",
+        )
+        .bind(job_id)
+        .bind(diff.files_changed)
+        .bind(diff.diff_patch)
+        .execute(&state.pool)
+        .await;
+    }
 
     let commit_sha = get_git_head_sha(&deploy_repo_path, &git_env).await.ok();
 
@@ -1251,7 +1265,7 @@ async fn run_git_commit_and_push(
 
     run_command_logged(
         "git",
-        &["tag", "-a", release_id, "-m", &commit_msg],
+        &["tag", "-f", "-a", release_id, "-m", &commit_msg],
         Some(repo_path),
         git_env,
         log_tx,
@@ -1273,7 +1287,7 @@ async fn run_git_commit_and_push(
     }
 
     run_command_logged("git", &["push"], Some(repo_path), git_env, log_tx, "git push").await?;
-    run_command_logged("git", &["push", "--tags"], Some(repo_path), git_env, log_tx, "git push --tags").await?;
+    run_command_logged("git", &["push", "--force", "--tags"], Some(repo_path), git_env, log_tx, "git push --tags").await?;
 
     Ok(())
 }
@@ -1360,6 +1374,53 @@ async fn run_command_logged(
     Ok(())
 }
 
+struct DeployDiffSnapshot {
+    files_changed: String,
+    diff_patch: String,
+}
+
+async fn collect_deploy_diff(
+    repo_path: &FsPath,
+    deploy_path: &str,
+    log_tx: &broadcast::Sender<String>,
+) -> anyhow::Result<Option<DeployDiffSnapshot>> {
+    let add_path = if deploy_path.trim().is_empty() { "." } else { deploy_path };
+
+    let status_out = Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .arg("--")
+        .arg(add_path)
+        .current_dir(repo_path)
+        .output()
+        .await?;
+    if !status_out.status.success() {
+        let _ = log_tx.send("git status failed".to_string());
+        return Ok(None);
+    }
+    let files_changed = String::from_utf8_lossy(&status_out.stdout).trim().to_string();
+    if files_changed.is_empty() {
+        let _ = log_tx.send("No deploy changes detected".to_string());
+        return Ok(None);
+    }
+
+    let diff_out = Command::new("git")
+        .arg("diff")
+        .arg("--unified=3")
+        .arg("--")
+        .arg(add_path)
+        .current_dir(repo_path)
+        .output()
+        .await?;
+    if !diff_out.status.success() {
+        let _ = log_tx.send("git diff failed".to_string());
+        return Ok(None);
+    }
+    let diff_patch = String::from_utf8_lossy(&diff_out.stdout).to_string();
+
+    Ok(Some(DeployDiffSnapshot { files_changed, diff_patch }))
+}
+
 async fn deploy_job_logs_sse(
     State(state): State<DeployApiState>,
     Path(job_id): Path<Uuid>,
@@ -1411,4 +1472,26 @@ async fn deploy_job_logs_history(
 
     let lines = rows.into_iter().map(|row| row.log_line).collect();
     Ok(Json(lines))
+}
+
+async fn deploy_job_diff(
+    State(state): State<DeployApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<Option<DeployJobDiff>>, (StatusCode, Json<ErrorResponse>)> {
+    let row = sqlx::query_as::<_, DeployJobDiff>(
+        "SELECT * FROM deploy_job_diffs WHERE deploy_job_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load deploy job diff: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(row))
 }
