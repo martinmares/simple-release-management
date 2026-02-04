@@ -177,6 +177,18 @@ class ApiClient {
         return this.post(`/bundles/${bundleId}/versions`, data);
     }
 
+    async setBundleVersionArchived(bundleId, version, isArchived) {
+        return this.put(`/bundles/${bundleId}/versions/${version}/archive`, { is_archived: isArchived });
+    }
+
+    async getBundleCopyJobs(bundleId) {
+        return this.get(`/bundles/${bundleId}/copy-jobs`);
+    }
+
+    async getBundleReleases(bundleId) {
+        return this.get(`/bundles/${bundleId}/releases`);
+    }
+
     // Image mappings
     async getImageMappings(bundleId, version) {
         return this.get(`/bundles/${bundleId}/versions/${version}/images`);
@@ -212,6 +224,14 @@ class ApiClient {
 
     async getCopyJobs() {
         return this.get('/copy/jobs');
+    }
+
+    async startReleaseCopyJob(payload) {
+        return this.post('/copy/jobs/release', payload);
+    }
+
+    async startCopyJob(jobId) {
+        return this.post(`/copy/jobs/${jobId}/start`, {});
     }
 
     /**

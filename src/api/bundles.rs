@@ -43,8 +43,29 @@ pub struct BundleVersionWithCount {
     pub version: i32,
     pub change_note: Option<String>,
     pub created_by: Option<String>,
+    pub is_archived: bool,
     pub created_at: DateTime<Utc>,
     pub image_count: i32,
+}
+
+/// Copy job summary pro bundle
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BundleCopyJobSummary {
+    pub job_id: Uuid,
+    pub version: i32,
+    pub target_tag: String,
+    pub status: String,
+    pub is_release_job: bool,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BundleReleaseSummary {
+    pub id: Uuid,
+    pub release_id: String,
+    pub status: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Request pro přidání image mapping
@@ -59,6 +80,12 @@ pub struct CreateImageMappingRequest {
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+/// Request pro archivaci verze
+#[derive(Debug, Deserialize)]
+pub struct ArchiveBundleVersionRequest {
+    pub is_archived: bool,
 }
 
 /// Response s bundle včetně počtu image mappings
@@ -88,6 +115,9 @@ pub fn router(pool: PgPool) -> Router {
         // Bundle versions
         .route("/bundles/{bundle_id}/versions", get(list_bundle_versions).post(create_bundle_version))
         .route("/bundles/{bundle_id}/versions/{version}", get(get_bundle_version))
+        .route("/bundles/{bundle_id}/versions/{version}/archive", put(set_bundle_version_archive))
+        .route("/bundles/{bundle_id}/copy-jobs", get(list_bundle_copy_jobs))
+        .route("/bundles/{bundle_id}/releases", get(list_bundle_releases))
 
         // Image mappings
         .route("/bundles/{bundle_id}/versions/{version}/images", get(list_image_mappings).post(create_image_mapping))
@@ -497,6 +527,111 @@ async fn get_bundle_version(
     }
 }
 
+/// PUT /api/v1/bundles/{bundle_id}/versions/{version}/archive
+async fn set_bundle_version_archive(
+    State(pool): State<PgPool>,
+    Path((bundle_id, version)): Path<(Uuid, i32)>,
+    Json(payload): Json<ArchiveBundleVersionRequest>,
+) -> Result<Json<BundleVersion>, (StatusCode, Json<ErrorResponse>)> {
+    let updated = sqlx::query_as::<_, BundleVersion>(
+        "UPDATE bundle_versions
+         SET is_archived = $1
+         WHERE bundle_id = $2 AND version = $3
+         RETURNING id, bundle_id, version, change_note, created_by, is_archived, created_at"
+    )
+    .bind(payload.is_archived)
+    .bind(bundle_id)
+    .bind(version)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    match updated {
+        Some(version) => Ok(Json(version)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Bundle version {} not found", version),
+            }),
+        )),
+    }
+}
+
+/// GET /api/v1/bundles/{bundle_id}/copy-jobs - Seznam copy jobů pro bundle
+async fn list_bundle_copy_jobs(
+    State(pool): State<PgPool>,
+    Path(bundle_id): Path<Uuid>,
+) -> Result<Json<Vec<BundleCopyJobSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let jobs = sqlx::query_as::<_, BundleCopyJobSummary>(
+        r#"
+        SELECT
+            cj.id AS job_id,
+            bv.version,
+            cj.target_tag,
+            cj.status,
+            cj.is_release_job,
+            cj.started_at,
+            cj.completed_at
+        FROM copy_jobs cj
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        WHERE bv.bundle_id = $1
+        ORDER BY cj.started_at DESC
+        LIMIT 50
+        "#
+    )
+    .bind(bundle_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(jobs))
+}
+
+/// GET /api/v1/bundles/{bundle_id}/releases - Seznam release pro bundle
+async fn list_bundle_releases(
+    State(pool): State<PgPool>,
+    Path(bundle_id): Path<Uuid>,
+) -> Result<Json<Vec<BundleReleaseSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let releases = sqlx::query_as::<_, BundleReleaseSummary>(
+        r#"
+        SELECT r.id, r.release_id, r.status, r.created_at
+        FROM releases r
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        WHERE bv.bundle_id = $1
+        ORDER BY r.created_at DESC
+        LIMIT 50
+        "#
+    )
+    .bind(bundle_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(releases))
+}
+
 /// POST /api/v1/bundles/{bundle_id}/versions - Vytvoření nové verze
 async fn create_bundle_version(
     State(pool): State<PgPool>,
@@ -542,7 +677,7 @@ async fn create_bundle_version(
     let bundle_version = sqlx::query_as::<_, BundleVersion>(
         "INSERT INTO bundle_versions (bundle_id, version, change_note)
          VALUES ($1, $2, $3)
-         RETURNING id, bundle_id, version, change_note, created_by, created_at"
+         RETURNING id, bundle_id, version, change_note, created_by, is_archived, created_at"
     )
     .bind(bundle_id)
     .bind(new_version)
@@ -554,6 +689,23 @@ async fn create_bundle_version(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    // Archivovat předchozí verze
+    sqlx::query(
+        "UPDATE bundle_versions SET is_archived = TRUE WHERE bundle_id = $1 AND version < $2"
+    )
+    .bind(bundle_id)
+    .bind(new_version)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to archive previous versions: {}", e),
             }),
         )
     })?;

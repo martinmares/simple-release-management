@@ -95,6 +95,7 @@ pub struct BundleVersion {
     pub version: i32,
     pub change_note: Option<String>,
     pub created_by: Option<String>,
+    pub is_archived: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -142,6 +143,11 @@ pub struct CopyJob {
     pub bundle_version_id: Uuid,
     pub target_tag: String,
     pub status: String,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
+    pub is_release_job: bool,
+    pub release_id: Option<String>,
+    pub release_notes: Option<String>,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub created_by: Option<String>,

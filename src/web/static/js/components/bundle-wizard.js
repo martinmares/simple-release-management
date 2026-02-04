@@ -3,8 +3,14 @@
  */
 
 class BundleWizard {
-    constructor() {
+    constructor(options = {}) {
         this.currentStep = 1;
+        this.options = {
+            title: 'Create New Bundle',
+            createLabel: 'Create Bundle',
+            tenantLocked: false,
+            ...options,
+        };
         this.data = {
             bundle: {
                 tenant_id: '',
@@ -24,7 +30,7 @@ class BundleWizard {
         return `
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Create New Bundle</h3>
+                    <h3 class="card-title">${this.options.title}</h3>
                     <div class="card-subtitle">Step ${this.currentStep} of 3</div>
                 </div>
 
@@ -56,7 +62,7 @@ class BundleWizard {
                         ` : `
                             <button type="button" class="btn btn-success ms-auto" id="wizard-create">
                                 <i class="ti ti-check"></i>
-                                Create Bundle
+                                ${this.options.createLabel}
                             </button>
                         `}
                     </div>
@@ -99,15 +105,20 @@ class BundleWizard {
 
             <div class="mb-3">
                 <label class="form-label required">Tenant</label>
-                <select class="form-select" id="bundle-tenant" required>
-                    <option value="">Select tenant...</option>
-                    ${tenants.map(t => `
-                        <option value="${t.id}" ${this.data.bundle.tenant_id === t.id ? 'selected' : ''}>
-                            ${t.name}
-                        </option>
-                    `).join('')}
-                </select>
-                <small class="form-hint">Selecting a tenant will filter available registries</small>
+                ${this.options.tenantLocked ? `
+                    <input type="text" class="form-control" value="${tenants.find(t => t.id === this.data.bundle.tenant_id)?.name || ''}" disabled>
+                    <input type="hidden" id="bundle-tenant" value="${this.data.bundle.tenant_id}">
+                ` : `
+                    <select class="form-select" id="bundle-tenant" required>
+                        <option value="">Select tenant...</option>
+                        ${tenants.map(t => `
+                            <option value="${t.id}" ${this.data.bundle.tenant_id === t.id ? 'selected' : ''}>
+                                ${t.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                    <small class="form-hint">Selecting a tenant will filter available registries</small>
+                `}
             </div>
 
             <div class="mb-3">
