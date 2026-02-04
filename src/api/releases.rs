@@ -135,7 +135,8 @@ async fn create_release(
     Json(payload): Json<CreateReleaseRequest>,
 ) -> Result<(StatusCode, Json<Release>), (StatusCode, Json<ErrorResponse>)> {
     // Validace
-    if payload.release_id.trim().is_empty() {
+    let release_id = payload.release_id.trim().to_string();
+    if release_id.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -211,7 +212,7 @@ async fn create_release(
          RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
     )
     .bind(payload.copy_job_id)
-    .bind(&payload.release_id)
+    .bind(&release_id)
     .bind(&payload.notes)
     .bind(&payload.created_by)
     .fetch_one(&pool)
@@ -222,7 +223,7 @@ async fn create_release(
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
-                        error: format!("Release with ID '{}' already exists", payload.release_id),
+                        error: format!("Release with ID '{}' already exists", release_id),
                     }),
                 );
             }
@@ -244,7 +245,8 @@ async fn create_release_global(
     State(pool): State<PgPool>,
     Json(payload): Json<CreateReleaseRequest>,
 ) -> Result<(StatusCode, Json<Release>), (StatusCode, Json<ErrorResponse>)> {
-    if payload.release_id.trim().is_empty() {
+    let release_id = payload.release_id.trim().to_string();
+    if release_id.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -309,7 +311,7 @@ async fn create_release_global(
          RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
     )
     .bind(payload.copy_job_id)
-    .bind(&payload.release_id)
+    .bind(&release_id)
     .bind(&payload.notes)
     .bind(&payload.created_by)
     .fetch_one(&pool)
@@ -320,7 +322,7 @@ async fn create_release_global(
                 return (
                     StatusCode::CONFLICT,
                     Json(ErrorResponse {
-                        error: format!("Release with ID '{}' already exists", payload.release_id),
+                        error: format!("Release with ID '{}' already exists", release_id),
                     }),
                 );
             }
