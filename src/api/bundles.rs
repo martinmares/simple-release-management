@@ -74,6 +74,8 @@ pub struct CreateImageMappingRequest {
     pub source_image: String,
     pub source_tag: String,
     pub target_image: String,
+    pub app_name: String,
+    pub container_name: Option<String>,
 }
 
 /// Response s chybou
@@ -813,6 +815,14 @@ async fn create_image_mapping(
             }),
         ));
     }
+    if payload.app_name.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "App name cannot be empty".to_string(),
+            }),
+        ));
+    }
 
     // Získat bundle_version_id
     let bundle_version_id: Uuid = sqlx::query_scalar(
@@ -840,16 +850,30 @@ async fn create_image_mapping(
     })?;
 
     // Vytvořit image mapping
+    let source_tag = if payload.source_tag.trim().is_empty() {
+        "latest".to_string()
+    } else {
+        payload.source_tag.clone()
+    };
+    let container_name = payload
+        .container_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
     let mapping = sqlx::query_as::<_, ImageMapping>(
         "INSERT INTO image_mappings
-         (bundle_version_id, source_image, source_tag, target_image)
-         VALUES ($1, $2, $3, $4)
+         (bundle_version_id, source_image, source_tag, target_image, app_name, container_name)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *"
     )
     .bind(bundle_version_id)
     .bind(&payload.source_image)
-    .bind(&payload.source_tag)
+    .bind(&source_tag)
     .bind(&payload.target_image)
+    .bind(&payload.app_name)
+    .bind(&container_name)
     .fetch_one(&pool)
     .await
     .map_err(|e| {

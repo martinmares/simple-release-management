@@ -1,5 +1,6 @@
 pub mod bundles;
 pub mod copy;
+pub mod deploy;
 pub mod registries;
 pub mod releases;
 pub mod tenants;

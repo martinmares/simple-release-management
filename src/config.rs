@@ -24,6 +24,9 @@ pub struct Config {
     pub port: u16,
     pub base_path: String,
     pub skopeo_path: String,
+    pub kube_build_app_path: String,
+    pub apply_env_path: String,
+    pub encjson_path: String,
     pub encryption_secret: String,
     pub max_concurrent_copy_jobs: usize,
     pub copy_timeout_seconds: u64,
@@ -50,6 +53,15 @@ impl Config {
 
             skopeo_path: env::var("SKOPEO_PATH")
                 .unwrap_or_else(|_| "skopeo".to_string()),
+
+            kube_build_app_path: env::var("KUBE_BUILD_APP_PATH")
+                .unwrap_or_else(|_| "kube_build_app".to_string()),
+
+            apply_env_path: env::var("APPLY_ENV_PATH")
+                .unwrap_or_else(|_| "apply-env".to_string()),
+
+            encjson_path: env::var("ENCJSON_PATH")
+                .unwrap_or_else(|_| "encjson".to_string()),
 
             encryption_secret: env::var("ENCRYPTION_SECRET")
                 .context("ENCRYPTION_SECRET must be set")?,

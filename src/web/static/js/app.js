@@ -33,54 +33,7 @@ document.addEventListener('alpine:init', () => {
                 console.log('Route changed to:', value);
             });
 
-            // Keyboard shortcuts
-            this.setupKeyboardShortcuts();
-        },
-
-        // Keyboard shortcuts
-        setupKeyboardShortcuts() {
-            let lastKey = null;
-            let timeout = null;
-
-            document.addEventListener('keydown', (e) => {
-                // Ignore if typing in input/textarea
-                if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-                    return;
-                }
-
-                const key = e.key.toLowerCase();
-
-                // Single key shortcuts
-                if (key === '?' && !lastKey) {
-                    this.showInfo('Keyboard shortcuts: gh=Dashboard, gb=Bundles, gr=Releases, gt=Tenants');
-                    return;
-                }
-
-                // Two-key shortcuts (vim-style)
-                if (lastKey === 'g') {
-                    switch (key) {
-                        case 'h':
-                            router.navigate('/');
-                            break;
-                        case 'b':
-                            router.navigate('/bundles');
-                            break;
-                        case 'r':
-                            router.navigate('/releases');
-                            break;
-                        case 't':
-                            router.navigate('/tenants');
-                            break;
-                    }
-                    lastKey = null;
-                    clearTimeout(timeout);
-                } else if (key === 'g') {
-                    lastKey = 'g';
-                    timeout = setTimeout(() => {
-                        lastKey = null;
-                    }, 1000);
-                }
-            });
+            // no keyboard shortcuts
         },
 
         // ==================== LOADING ====================
@@ -627,10 +580,11 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles] = await Promise.all([
+        const [tenant, registries, bundles, deployTargets] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
+            api.getDeployTargets(params.id),
         ]);
 
         content.innerHTML = `
@@ -734,6 +688,37 @@ router.on('/tenants/:id', async (params) => {
                                             <div class="text-secondary small">${reg.registry_type}</div>
                                         </div>
                                         <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                    </div>
+                                </a>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="card mt-3">
+                        <div class="card-header">
+                            <h3 class="card-title">Deploy Targets</h3>
+                            <div class="card-actions">
+                                <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                    <i class="ti ti-plus"></i>
+                                    Add
+                                </a>
+                            </div>
+                        </div>
+                        <div class="list-group list-group-flush">
+                            ${deployTargets.length === 0 ? `
+                                <div class="list-group-item text-center text-secondary py-4">
+                                    No deploy targets yet
+                                </div>
+                            ` : deployTargets.map(target => `
+                                <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
+                                    <div class="d-flex align-items-center">
+                                        <div class="flex-fill">
+                                            <div>${target.name}</div>
+                                            <div class="text-secondary small">${target.env_name}</div>
+                                        </div>
+                                        <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                            ${target.is_active ? 'active' : 'inactive'}
+                                        </span>
                                     </div>
                                 </a>
                             `).join('')}
@@ -1104,6 +1089,143 @@ router.on('/registries/:id/edit', async (params) => {
         `;
     }
 });
+
+// ==================== DEPLOY TARGETS ROUTES ====================
+
+router.on('/deploy-targets/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const tenants = await api.getTenants();
+        content.innerHTML = createDeployTargetForm(null, tenants, []);
+
+        if (query.tenant_id) {
+            const select = document.querySelector('select[name=\"tenant_id\"]');
+            if (select) {
+                select.value = query.tenant_id;
+                select.disabled = true;
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'tenant_id';
+                hidden.value = query.tenant_id;
+                select.parentElement.appendChild(hidden);
+            }
+        }
+
+        attachEncjsonKeyHandlers();
+
+        document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                data.encjson_keys = collectEncjsonKeys();
+                const tenantId = data.tenant_id;
+                delete data.tenant_id;
+                await api.createDeployTarget(tenantId, data);
+                getApp().showSuccess('Deploy target created successfully');
+                router.navigate(`/tenants/${tenantId}`);
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load form: ${error.message}
+            </div>
+        `;
+    }
+});
+
+router.on('/deploy-targets/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const [response, tenants] = await Promise.all([
+            api.getDeployTarget(params.id),
+            api.getTenants(),
+        ]);
+        const target = response.target || response;
+        const encjsonKeys = response.encjson_keys || [];
+        content.innerHTML = createDeployTargetForm(target, tenants, encjsonKeys);
+
+        attachEncjsonKeyHandlers();
+
+        document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                data.encjson_keys = collectEncjsonKeys();
+                await api.updateDeployTarget(params.id, data);
+                getApp().showSuccess('Deploy target updated successfully');
+                router.navigate(`/tenants/${target.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load deploy target: ${error.message}
+            </div>
+        `;
+    }
+});
+
+function collectEncjsonKeys() {
+    const rows = document.querySelectorAll('[data-encjson-index]');
+    const keys = [];
+    rows.forEach(row => {
+        const publicKey = row.querySelector('.encjson-public-key')?.value?.trim() || '';
+        const privateKey = row.querySelector('.encjson-private-key')?.value?.trim() || '';
+        if (publicKey) {
+            keys.push({
+                public_key: publicKey,
+                private_key: privateKey || null,
+            });
+        }
+    });
+    return keys;
+}
+
+function attachEncjsonKeyHandlers() {
+    const list = document.getElementById('encjson-keys-list');
+    const addBtn = document.getElementById('encjson-add-btn');
+    if (!list || !addBtn) return;
+
+    const attachRemove = () => {
+        list.querySelectorAll('.encjson-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const card = btn.closest('[data-encjson-index]');
+                if (card) card.remove();
+            });
+        });
+    };
+
+    addBtn.addEventListener('click', () => {
+        const index = list.querySelectorAll('[data-encjson-index]').length;
+        const card = document.createElement('div');
+        card.className = 'card mb-2';
+        card.setAttribute('data-encjson-index', index.toString());
+        card.innerHTML = `
+            <div class="card-body p-3">
+                <div class="row g-2">
+                    <div class="col-md-5">
+                        <input type="text" class="form-control form-control-sm encjson-public-key"
+                               placeholder="public key (hex)">
+                    </div>
+                    <div class="col-md-6">
+                        <input type="password" class="form-control form-control-sm encjson-private-key"
+                               placeholder="private key (hex)">
+                    </div>
+                    <div class="col-md-1 d-flex align-items-center">
+                        <button type="button" class="btn btn-sm btn-ghost-danger encjson-remove">
+                            <i class="ti ti-trash"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+        list.appendChild(card);
+        attachRemove();
+    });
+
+    attachRemove();
+}
 
 // ==================== BUNDLES ROUTES ====================
 
@@ -1773,6 +1895,8 @@ router.on('/bundles/:id/copy', async (params) => {
             source_image: m.source_image,
             source_tag: m.source_tag,
             target_image: m.target_image,
+            app_name: m.app_name,
+            container_name: m.container_name,
         }));
 
         const renderWizard = () => {
@@ -1819,6 +1943,8 @@ router.on('/bundles/:id/copy', async (params) => {
                             source_image: m.source_image,
                             source_tag: m.source_tag,
                             target_image: m.target_image,
+                            app_name: m.app_name,
+                            container_name: m.container_name,
                         }));
                         renderWizard();
                     } catch (error) {
@@ -1921,6 +2047,8 @@ router.on('/bundles/:id/versions/new', async (params) => {
                 source_image: m.source_image,
                 source_tag: m.source_tag,
                 target_image: m.target_image,
+                app_name: m.app_name,
+                container_name: m.container_name,
             })),
         };
 
@@ -1968,6 +2096,20 @@ router.on('/bundles/:id/versions/new', async (params) => {
                                                 </button>
                                             </div>
                                         </div>
+                                        <div class="row g-2 mt-2">
+                                            <div class="col-md-6">
+                                                <label class="form-label">App Name</label>
+                                                <input type="text" class="form-control form-control-sm mapping-app-name"
+                                                       value="${mapping.app_name || ''}"
+                                                       placeholder="app name">
+                                            </div>
+                                            <div class="col-md-5">
+                                                <label class="form-label">Container Name</label>
+                                                <input type="text" class="form-control form-control-sm mapping-container-name"
+                                                       value="${mapping.container_name || ''}"
+                                                       placeholder="container name (optional)">
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             `).join('')}
@@ -2010,9 +2152,22 @@ router.on('/bundles/:id/versions/new', async (params) => {
                 const mappings = [];
                 cards.forEach((card) => {
                     const sourceImage = card.querySelector('.mapping-source-image')?.value || '';
-                    const sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+                    let sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+                    if (!sourceTag) sourceTag = 'latest';
                     const targetImage = card.querySelector('.mapping-target-image')?.value || '';
-                    mappings.push({ source_image: sourceImage, source_tag: sourceTag, target_image: targetImage });
+                    let appName = card.querySelector('.mapping-app-name')?.value || '';
+                    const containerName = card.querySelector('.mapping-container-name')?.value || '';
+                    if (!appName && targetImage) {
+                        const parts = targetImage.split('/');
+                        appName = parts[parts.length - 1] || '';
+                    }
+                    mappings.push({
+                        source_image: sourceImage,
+                        source_tag: sourceTag,
+                        target_image: targetImage,
+                        app_name: appName,
+                        container_name: containerName,
+                    });
                 });
                 state.mappings = mappings;
             };
@@ -2021,7 +2176,13 @@ router.on('/bundles/:id/versions/new', async (params) => {
             if (addBtn) {
                 addBtn.addEventListener('click', () => {
                     collectMappings();
-                    state.mappings.push({ source_image: '', source_tag: '', target_image: '' });
+                    state.mappings.push({
+                        source_image: '',
+                        source_tag: '',
+                        target_image: '',
+                        app_name: '',
+                        container_name: '',
+                    });
                     render();
                 });
             }
@@ -2037,7 +2198,9 @@ router.on('/bundles/:id/versions/new', async (params) => {
             const createBtn = document.getElementById('create-version-btn');
             createBtn.addEventListener('click', async () => {
                 collectMappings();
-                const validMappings = state.mappings.filter(m => m.source_image && m.source_tag && m.target_image);
+                const validMappings = state.mappings.filter(m =>
+                    m.source_image && (m.source_tag || 'latest') && m.target_image && m.app_name
+                );
                 if (validMappings.length === 0) {
                     getApp().showError('Please add at least one complete image mapping');
                     return;
@@ -2138,6 +2301,8 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                             <tr>
                                 <th>Source Image</th>
                                 <th>Target Image</th>
+                                <th>App</th>
+                                <th>Container</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2153,6 +2318,8 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                     <td>
                                         <div><code class="small">${mapping.target_image}</code></div>
                                     </td>
+                                    <td>${mapping.app_name || '-'}</td>
+                                    <td>${mapping.container_name || '-'}</td>
                                 </tr>
                             `}).join('')}
                         </tbody>
@@ -2295,9 +2462,11 @@ router.on('/releases/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [release, manifest] = await Promise.all([
+        const [release, manifest, deployTargets, deployJobs] = await Promise.all([
             api.getRelease(params.id),
             api.getReleaseManifest(params.id),
+            api.getReleaseDeployTargets(params.id),
+            api.getReleaseDeployJobs(params.id),
         ]);
 
         content.innerHTML = `
@@ -2325,13 +2494,11 @@ router.on('/releases/:id', async (params) => {
                         <dt class="col-4">Created:</dt>
                         <dd class="col-8">${new Date(release.created_at).toLocaleString('cs-CZ')}</dd>
 
-                        <dt class="col-4">Images:</dt>
-                        <dd class="col-8">${manifest.images.length}</dd>
                     </dl>
                 </div>
             </div>
 
-            <div class="card">
+            <div class="card mb-3">
                 <div class="card-header">
                     <h3 class="card-title">Release Manifest</h3>
                     <div class="card-actions">
@@ -2342,10 +2509,94 @@ router.on('/releases/:id', async (params) => {
                     </div>
                 </div>
                 <div class="card-body">
-                    <pre class="manifest-code" id="manifest-content">${JSON.stringify(manifest, null, 2)}</pre>
+                    <pre class="manifest-code" id="manifest-content"></pre>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">Build Deploy</h3>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-6">
+                            <label class="form-label required">Deploy Target</label>
+                            <select class="form-select" id="deploy-target-select">
+                                <option value="">Select target...</option>
+                                ${deployTargets.map(target => `
+                                    <option value="${target.id}">
+                                        ${target.name} (${target.env_name})
+                                    </option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-primary w-100" id="build-deploy-btn">
+                                <i class="ti ti-rocket"></i>
+                                Build Deploy
+                            </button>
+                        </div>
+                    </div>
+                    ${deployTargets.length === 0 ? `
+                        <div class="alert alert-info mt-3">
+                            <i class="ti ti-info-circle"></i>
+                            No deploy targets configured for this tenant.
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Deploy Jobs</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <thead>
+                            <tr>
+                                <th>Target</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                                <th>Completed</th>
+                                <th>Commit</th>
+                                <th class="w-1"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${deployJobs.length === 0 ? `
+                                <tr>
+                                    <td colspan="6" class="text-center text-secondary py-4">
+                                        No deploy jobs yet.
+                                    </td>
+                                </tr>
+                            ` : deployJobs.map(job => `
+                                <tr>
+                                    <td>${job.target_name} (${job.env_name})</td>
+                                    <td>
+                                        <span class="badge ${
+                                            job.status === 'success' ? 'bg-success text-success-fg' :
+                                            job.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                            job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                            'bg-secondary text-secondary-fg'
+                                        }">${job.status}</span>
+                                    </td>
+                                    <td>${new Date(job.started_at).toLocaleString('cs-CZ')}</td>
+                                    <td>${job.completed_at ? new Date(job.completed_at).toLocaleString('cs-CZ') : '-'}</td>
+                                    <td>${job.commit_sha ? `<code class="small">${job.commit_sha.slice(0, 8)}</code>` : '-'}</td>
+                                    <td>
+                                        <a href="#/deploy-jobs/${job.id}" class="btn btn-sm btn-outline-primary">
+                                            View
+                                        </a>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         `;
+
+        document.getElementById('manifest-content').textContent = manifest;
 
         // Copy manifest handler
         document.getElementById('copy-manifest-btn').addEventListener('click', () => {
@@ -2355,10 +2606,111 @@ router.on('/releases/:id', async (params) => {
             });
         });
 
+        const buildDeployBtn = document.getElementById('build-deploy-btn');
+        if (buildDeployBtn) {
+            buildDeployBtn.addEventListener('click', async () => {
+                const targetId = document.getElementById('deploy-target-select').value;
+                if (!targetId) {
+                    getApp().showError('Select a deploy target');
+                    return;
+                }
+                try {
+                    const response = await api.createDeployJob({
+                        release_id: release.id,
+                        deploy_target_id: targetId,
+                    });
+                    getApp().showSuccess('Deploy job started');
+                    window.location.hash = `#/deploy-jobs/${response.job_id}`;
+                } catch (err) {
+                    getApp().showError(err.message);
+                }
+            });
+        }
+
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">
                 Failed to load release: ${error.message}
+            </div>
+        `;
+    }
+});
+
+// Deploy Job Monitor
+router.on('/deploy-jobs/:id', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const job = await api.getDeployJob(params.id);
+
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/releases/${job.release_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Release
+                    </a>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">Deploy Job Monitor</h3>
+                </div>
+                <div class="card-body">
+                    <dl class="row mb-0">
+                        <dt class="col-4">Target:</dt>
+                        <dd class="col-8">${job.target_name} (${job.env_name})</dd>
+
+                        <dt class="col-4">Status:</dt>
+                        <dd class="col-8"><span class="badge ${
+                            job.status === 'success' ? 'bg-success text-success-fg' :
+                            job.status === 'failed' ? 'bg-danger text-danger-fg' :
+                            job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                            'bg-secondary text-secondary-fg'
+                        }">${job.status}</span></dd>
+
+                        <dt class="col-4">Started:</dt>
+                        <dd class="col-8">${new Date(job.started_at).toLocaleString('cs-CZ')}</dd>
+
+                        <dt class="col-4">Completed:</dt>
+                        <dd class="col-8">${job.completed_at ? new Date(job.completed_at).toLocaleString('cs-CZ') : '-'}</dd>
+
+                        <dt class="col-4">Commit:</dt>
+                        <dd class="col-8">${job.commit_sha ? `<code>${job.commit_sha}</code>` : '-'}</dd>
+                    </dl>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Live Logs</h3>
+                </div>
+                <div class="card-body">
+                    <div class="terminal" id="deploy-log-terminal">
+                        <div class="terminal-header">
+                            <span class="terminal-dot red"></span>
+                            <span class="terminal-dot yellow"></span>
+                            <span class="terminal-dot green"></span>
+                        </div>
+                        <pre class="terminal-body" id="deploy-log-output"></pre>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const logOutput = document.getElementById('deploy-log-output');
+        api.createDeployJobStream(params.id, (msg) => {
+            logOutput.textContent += `${msg}\n`;
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }, (err) => {
+            logOutput.textContent += `\n[Log stream error] ${err}\n`;
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load deploy job: ${error.message}
             </div>
         `;
     }
@@ -2720,18 +3072,95 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                         ` : ''}
                     </div>
 
-                    <button type="button" class="btn btn-primary w-100" id="start-copy-btn">
-                        <i class="ti ti-copy"></i>
-                        Start Copy Job
-                    </button>
+                    <div class="mb-3" id="precheck-result"></div>
+
+                    <div class="d-flex gap-2">
+                        <button type="button" class="btn btn-outline-primary w-100" id="precheck-btn">
+                            <i class="ti ti-search"></i>
+                            Pre-check Images
+                        </button>
+                        <button type="button" class="btn btn-primary w-100" id="start-copy-btn">
+                            <i class="ti ti-copy"></i>
+                            Start Copy Job
+                        </button>
+                    </div>
                 </div>
             </div>
         `;
+
+        const renderPrecheck = (result) => {
+            const box = document.getElementById('precheck-result');
+            if (!box) return;
+
+            if (result.failed && result.failed.length > 0) {
+                box.innerHTML = `
+                    <div class="alert alert-danger">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="ti ti-alert-triangle me-2"></i>
+                            <strong>Pre-check failed (${result.failed.length}/${result.total})</strong>
+                        </div>
+                        <div class="small text-secondary mb-2">Fix the missing images and create a new bundle version.</div>
+                        <div class="mb-2">
+                            <a href="#/bundles/${params.id}/versions/new" class="btn btn-sm btn-outline-primary">
+                                Create New Version
+                            </a>
+                        </div>
+                        <div class="list-group">
+                            ${result.failed.map(f => `
+                                <div class="list-group-item">
+                                    <div><code class="small">${f.source_image}:${f.source_tag}</code></div>
+                                    <div class="text-secondary small">${f.error}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            } else {
+                box.innerHTML = `
+                    <div class="alert alert-success">
+                        <i class="ti ti-check me-2"></i>
+                        All ${result.total} images found.
+                    </div>
+                `;
+            }
+        };
+
+        const runPrecheck = async () => {
+            const btn = document.getElementById('precheck-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
+            }
+            try {
+                const result = await api.precheckCopyImages(params.id, params.version);
+                renderPrecheck(result);
+                return result;
+            } catch (error) {
+                getApp().showError(error.message);
+                return null;
+            } finally {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="ti ti-search"></i> Pre-check Images';
+                }
+            }
+        };
+
+        const precheckBtn = document.getElementById('precheck-btn');
+        if (precheckBtn) {
+            precheckBtn.addEventListener('click', runPrecheck);
+        }
 
         document.getElementById('start-copy-btn').addEventListener('click', async () => {
             const targetTag = document.getElementById('target-tag').value;
             if (!targetTag) {
                 getApp().showError('Please enter a target tag');
+                return;
+            }
+
+            const precheck = await runPrecheck();
+            if (precheck && precheck.failed && precheck.failed.length > 0) {
+                getApp().showError('Pre-check failed. Fix missing images and create a new version.');
                 return;
             }
 
@@ -2771,9 +3200,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
     try {
         // Initial status + images
-        const [initialStatus, initialImages] = await Promise.all([
+        const [initialStatus, initialImages, logHistory] = await Promise.all([
             api.getCopyJobStatus(params.jobId),
             api.getCopyJobImages(params.jobId),
+            api.getCopyJobLogHistory(params.jobId),
         ]);
 
         const renderLogs = () => {
@@ -2957,6 +3387,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
             renderLogs();
         };
 
+        if (Array.isArray(logHistory)) {
+            logLines.push(...logHistory);
+        }
+
         // Initial render
         renderJobStatus(initialStatus, initialImages);
 
@@ -2967,7 +3401,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 try {
                     startBtn.disabled = true;
                     startBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
-                    await api.startCopyJob(params.jobId);
+                    await api.startPendingCopyJob(params.jobId);
                     const refreshed = await api.getCopyJobStatus(params.jobId);
                     renderJobStatus(refreshed, initialImages);
                     startLogStream();

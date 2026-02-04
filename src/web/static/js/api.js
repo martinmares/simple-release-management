@@ -58,6 +58,28 @@ class ApiClient {
     }
 
     /**
+     * GET request returning text (non-JSON)
+     */
+    async getText(endpoint) {
+        const url = `${this.baseUrl}${endpoint}`;
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            let message = 'Request failed';
+            try {
+                const data = await response.json();
+                message = data.error || message;
+            } catch (_) {
+                const text = await response.text();
+                if (text) message = text;
+            }
+            throw new ApiError(message, response.status, null);
+        }
+
+        return response.text();
+    }
+
+    /**
      * GET request
      */
     async get(endpoint) {
@@ -214,12 +236,20 @@ class ApiClient {
         });
     }
 
+    async precheckCopyImages(bundleId, version) {
+        return this.post(`/bundles/${bundleId}/versions/${version}/precheck`, {});
+    }
+
     async getCopyJobStatus(jobId) {
         return this.get(`/copy/jobs/${jobId}`);
     }
 
     async getCopyJobImages(jobId) {
         return this.get(`/copy/jobs/${jobId}/images`);
+    }
+
+    async getCopyJobLogHistory(jobId) {
+        return this.get(`/copy/jobs/${jobId}/logs/history`);
     }
 
     async getCopyJobs() {
@@ -230,7 +260,7 @@ class ApiClient {
         return this.post('/copy/jobs/release', payload);
     }
 
-    async startCopyJob(jobId) {
+    async startPendingCopyJob(jobId) {
         return this.post(`/copy/jobs/${jobId}/start`, {});
     }
 
@@ -273,6 +303,26 @@ class ApiClient {
         return eventSource;
     }
 
+    /**
+     * Jednoduchý SSE stream pro textové logy
+     */
+    createEventSource(path, onMessage, onError) {
+        const url = `${this.baseUrl}${path}`;
+        const eventSource = new EventSource(url);
+
+        eventSource.onmessage = (event) => {
+            if (onMessage) onMessage(event.data);
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('SSE error:', error);
+            eventSource.close();
+            if (onError) onError('Connection lost');
+        };
+
+        return eventSource;
+    }
+
     // ==================== RELEASES ====================
 
     async getReleases(tenantId = null) {
@@ -291,7 +341,51 @@ class ApiClient {
     }
 
     async getReleaseManifest(id) {
-        return this.get(`/releases/${id}/manifest`);
+        return this.getText(`/releases/${id}/manifest`);
+    }
+
+    // ==================== DEPLOY TARGETS ====================
+
+    async getDeployTargets(tenantId) {
+        return this.get(`/tenants/${tenantId}/deploy-targets`);
+    }
+
+    async getReleaseDeployTargets(releaseId) {
+        return this.get(`/releases/${releaseId}/deploy-targets`);
+    }
+
+    async createDeployTarget(tenantId, data) {
+        return this.post(`/tenants/${tenantId}/deploy-targets`, data);
+    }
+
+    async updateDeployTarget(id, data) {
+        return this.put(`/deploy-targets/${id}`, data);
+    }
+
+    async deleteDeployTarget(id) {
+        return this.delete(`/deploy-targets/${id}`);
+    }
+
+    async getDeployTarget(id) {
+        return this.get(`/deploy-targets/${id}`);
+    }
+
+    // ==================== DEPLOY JOBS ====================
+
+    async createDeployJob(data) {
+        return this.post(`/deploy/jobs`, data);
+    }
+
+    async getDeployJob(id) {
+        return this.get(`/deploy/jobs/${id}`);
+    }
+
+    async getReleaseDeployJobs(releaseId) {
+        return this.get(`/releases/${releaseId}/deploy-jobs`);
+    }
+
+    createDeployJobStream(jobId, onMessage, onError) {
+        return this.createEventSource(`/deploy/jobs/${jobId}/logs`, onMessage, onError);
     }
 }
 

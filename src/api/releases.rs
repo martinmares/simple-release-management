@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, StatusCode},
+    response::IntoResponse,
     routing::{get, post, put},
     Json, Router,
 };
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::models::{CopyJobImage, Release};
+use crate::{db::models::Release, services::release_manifest::build_release_manifest};
 
 /// Request pro vytvoření nového release
 #[derive(Debug, Deserialize)]
@@ -24,26 +25,6 @@ pub struct CreateReleaseRequest {
 pub struct UpdateReleaseRequest {
     pub status: String,
     pub notes: Option<String>,
-}
-
-/// Response s release manifestem (seznam images s SHA)
-#[derive(Debug, Serialize)]
-pub struct ReleaseManifest {
-    pub release_id: String,
-    pub status: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub images: Vec<ManifestImage>,
-}
-
-/// Image v release manifestu
-#[derive(Debug, Serialize)]
-pub struct ManifestImage {
-    pub source_image: String,
-    pub source_tag: String,
-    pub source_sha256: Option<String>,
-    pub target_image: String,
-    pub target_tag: String,
-    pub target_sha256: Option<String>,
 }
 
 /// Response s chybou
@@ -404,67 +385,32 @@ async fn update_release(
     }
 }
 
-/// GET /api/v1/releases/{id}/manifest - Release manifest s SHA pro deployment
+/// GET /api/v1/releases/{id}/manifest - Release manifest (YAML) pro deployment
 async fn get_release_manifest(
     State(pool): State<PgPool>,
     Path(id): Path<Uuid>,
-) -> Result<Json<ReleaseManifest>, (StatusCode, Json<ErrorResponse>)> {
-    // Získat release
-    let release = sqlx::query_as::<_, Release>("SELECT * FROM releases WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Database error: {}", e),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: format!("Release with id {} not found", id),
-                }),
-            )
-        })?;
-
-    // Získat všechny image mappings pro tento release
-    let images = sqlx::query_as::<_, CopyJobImage>(
-        "SELECT * FROM copy_job_images WHERE copy_job_id = $1 ORDER BY created_at"
-    )
-    .bind(release.copy_job_id)
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| {
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    let manifest = build_release_manifest(&pool, id).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: format!("Database error: {}", e),
+                error: format!("Failed to build manifest: {}", e),
             }),
         )
     })?;
 
-    let manifest_images: Vec<ManifestImage> = images
-        .into_iter()
-        .map(|img| ManifestImage {
-            source_image: img.source_image,
-            source_tag: img.source_tag,
-            source_sha256: img.source_sha256,
-            target_image: img.target_image,
-            target_tag: img.target_tag,
-            target_sha256: img.target_sha256,
-        })
-        .collect();
+    let yaml = serde_yaml_ng::to_string(&manifest).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to serialize manifest: {}", e),
+            }),
+        )
+    })?;
 
-    let manifest = ReleaseManifest {
-        release_id: release.release_id,
-        status: release.status,
-        created_at: release.created_at,
-        images: manifest_images,
-    };
-
-    Ok(Json(manifest))
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/yaml; charset=utf-8")],
+        yaml,
+    ))
 }

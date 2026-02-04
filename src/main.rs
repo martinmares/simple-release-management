@@ -86,6 +86,18 @@ async fn main() -> Result<()> {
     // Vytvoření copy API routeru
     let copy_router = api::copy::router(copy_state);
 
+    // Vytvoření deploy API state
+    let deploy_state = api::deploy::DeployApiState {
+        pool: pool.clone(),
+        encryption_secret: config.encryption_secret.clone(),
+        kube_build_app_path: config.kube_build_app_path.clone(),
+        apply_env_path: config.apply_env_path.clone(),
+        encjson_path: config.encjson_path.clone(),
+        job_logs: Arc::new(RwLock::new(std::collections::HashMap::new())),
+    };
+
+    let deploy_router = api::deploy::router(deploy_state);
+
     // Statické soubory
     let serve_dir = ServeDir::new("src/web/static")
         .not_found_service(ServeDir::new("src/web/static/index.html"));
@@ -95,6 +107,7 @@ async fn main() -> Result<()> {
         .route("/health", get(health_handler))
         .merge(api_router)
         .nest("/api/v1", copy_router)
+        .nest("/api/v1", deploy_router)
         .fallback_service(serve_dir);
 
     info!("Application initialized successfully");

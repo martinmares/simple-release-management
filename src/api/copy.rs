@@ -37,6 +37,20 @@ pub struct CopyJobResponse {
     pub message: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct PrecheckResult {
+    pub total: usize,
+    pub ok: usize,
+    pub failed: Vec<PrecheckFailure>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PrecheckFailure {
+    pub source_image: String,
+    pub source_tag: String,
+    pub error: String,
+}
+
 /// Status copy jobu
 #[derive(Debug, Clone, Serialize)]
 pub struct CopyJobStatus {
@@ -173,12 +187,17 @@ pub fn router(state: CopyApiState) -> Router {
             "/bundles/{bundle_id}/versions/{version}/copy",
             post(copy_bundle_version),
         )
+        .route(
+            "/bundles/{bundle_id}/versions/{version}/precheck",
+            post(precheck_copy_images),
+        )
         .route("/copy/jobs", get(list_copy_jobs))
         .route("/copy/jobs/release", post(start_release_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
         .route("/copy/jobs/{job_id}", get(get_copy_job_status))
         .route("/copy/jobs/{job_id}/images", get(get_copy_job_images))
         .route("/copy/jobs/{job_id}/logs", get(copy_job_logs_sse))
+        .route("/copy/jobs/{job_id}/logs/history", get(copy_job_logs_history))
         .route("/copy/jobs/{job_id}/progress", get(copy_job_progress_sse))
         .with_state(state)
 }
@@ -201,6 +220,13 @@ fn apply_override_name(path: &str, override_name: &str) -> String {
     } else {
         override_name.to_string()
     }
+}
+
+fn emit_log(
+    log_tx: &broadcast::Sender<String>,
+    line: String,
+) {
+    let _ = log_tx.send(line.clone());
 }
 
 /// POST /api/v1/bundles/{bundle_id}/versions/{version}/copy - Spustí copy operaci
@@ -354,6 +380,36 @@ async fn copy_bundle_version(
     let (log_tx, _log_rx) = broadcast::channel(512);
     state.job_logs.write().await.insert(job_id, log_tx.clone());
 
+    // Persist logs to DB
+    let pool_for_log = state.pool.clone();
+    let mut log_rx = log_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = log_rx.recv().await {
+            let _ = sqlx::query(
+                "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
+            )
+            .bind(job_id)
+            .bind(line)
+            .execute(&pool_for_log)
+            .await;
+        }
+    });
+
+    // Persist logs to DB
+    let pool_for_log = state.pool.clone();
+    let mut log_rx = log_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = log_rx.recv().await {
+            let _ = sqlx::query(
+                "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
+            )
+            .bind(job_id)
+            .bind(line)
+            .execute(&pool_for_log)
+            .await;
+        }
+    });
+
     // Spustit copy operaci na pozadí
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
@@ -395,7 +451,7 @@ async fn copy_bundle_version(
     tokio::spawn(async move {
         let mut failed = 0;
 
-        let _ = log_tx.send(format!("Starting copy job {} ({} images)", job_id, mapping_count));
+        emit_log(&log_tx, format!("Starting copy job {} ({} images)", job_id, mapping_count));
         let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
             .bind(job_id)
             .execute(&pool_clone)
@@ -406,7 +462,7 @@ async fn copy_bundle_version(
             let source_url = format!("{}/{}:{}", source_base_url, mapping.source_image, mapping.source_tag);
             let target_url = format!("{}/{}:{}", target_base_url, mapping.target_image, &target_tag);
 
-            let _ = log_tx.send(format!("Copying {} -> {}", source_url, target_url));
+            emit_log(&log_tx, format!("Copying {} -> {}", source_url, target_url));
 
             // Update DB status na in_progress
             let _ = sqlx::query("UPDATE copy_job_images SET copy_status = 'in_progress' WHERE id = $1")
@@ -460,7 +516,7 @@ async fn copy_bundle_version(
                     .execute(&pool_clone)
                     .await;
 
-                    let _ = log_tx.send(format!("SUCCESS {}", target_url));
+                    emit_log(&log_tx, format!("SUCCESS {}", target_url));
                 }
                 Ok(progress) => {
                     // Update DB na failed
@@ -476,7 +532,7 @@ async fn copy_bundle_version(
                     .await;
 
                     failed += 1;
-                    let _ = log_tx.send(format!("FAILED {} - {}", target_url, progress.message.trim()));
+                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, progress.message.trim()));
                 }
                 Err(err) => {
                     let _ = sqlx::query(
@@ -491,7 +547,7 @@ async fn copy_bundle_version(
                     .await;
 
                     failed += 1;
-                    let _ = log_tx.send(format!("FAILED {} - {}", target_url, err));
+                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, err));
                 }
             }
 
@@ -508,7 +564,7 @@ async fn copy_bundle_version(
         .execute(&pool_clone)
         .await;
 
-        let _ = log_tx.send("Copy job finished".to_string());
+        emit_log(&log_tx, "Copy job finished".to_string());
         log_state_clone.write().await.remove(&job_id);
     });
 
@@ -519,6 +575,126 @@ async fn copy_bundle_version(
             message: format!("Copy job started for {} images", mapping_count),
         }),
     ))
+}
+
+/// POST /api/v1/bundles/{bundle_id}/versions/{version}/precheck - ověří zdrojové images
+async fn precheck_copy_images(
+    State(state): State<CopyApiState>,
+    Path((bundle_id, version)): Path<(Uuid, i32)>,
+) -> Result<Json<PrecheckResult>, (StatusCode, Json<ErrorResponse>)> {
+    let bundle = sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
+        .bind(bundle_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Bundle {} not found", bundle_id),
+                }),
+            )
+        })?;
+
+    let mappings = sqlx::query_as::<_, ImageMapping>(
+        r#"
+        SELECT im.*
+        FROM image_mappings im
+        JOIN bundle_versions bv ON bv.id = im.bundle_version_id
+        WHERE bv.bundle_id = $1 AND bv.version = $2
+        ORDER BY im.created_at
+        "#,
+    )
+    .bind(bundle_id)
+    .bind(version)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if mappings.is_empty() {
+        return Ok(Json(PrecheckResult {
+            total: 0,
+            ok: 0,
+            failed: vec![],
+        }));
+    }
+
+    let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
+        .bind(bundle.source_registry_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Source registry not found".to_string(),
+                }),
+            )
+        })?;
+
+    let (source_username, source_password) = state
+        .get_registry_credentials(bundle.source_registry_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get registry credentials: {}", e),
+                }),
+            )
+        })?;
+
+    let source_base_url = source_registry
+        .base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
+
+    let total = mappings.len();
+    let mut failed = Vec::new();
+
+    for mapping in mappings {
+        let source_url = format!(
+            "{}/{}:{}",
+            source_base_url, mapping.source_image, mapping.source_tag
+        );
+        let result = state
+            .skopeo
+            .inspect_image(&source_url, source_username.as_deref(), source_password.as_deref())
+            .await;
+        if let Err(err) = result {
+            failed.push(PrecheckFailure {
+                source_image: mapping.source_image,
+                source_tag: mapping.source_tag,
+                error: err.to_string(),
+            });
+        }
+    }
+
+    let ok = total - failed.len();
+    Ok(Json(PrecheckResult { total, ok, failed }))
 }
 
 /// GET /api/v1/copy/jobs/{job_id}/images - seznam image výsledků pro job
@@ -908,7 +1084,7 @@ async fn start_copy_job(
 
     tokio::spawn(async move {
         let mut failed = 0;
-        let _ = log_tx.send(format!("Starting copy job {} ({} images)", job_id, images.len()));
+        emit_log(&log_tx, format!("Starting copy job {} ({} images)", job_id, images.len()));
 
         let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
             .bind(job_id)
@@ -919,7 +1095,7 @@ async fn start_copy_job(
             let source_url = format!("{}/{}:{}", source_base_url, img.source_image, img.source_tag);
             let target_url = format!("{}/{}:{}", target_base_url, img.target_image, &target_tag);
 
-            let _ = log_tx.send(format!("Copying {} -> {}", source_url, target_url));
+            emit_log(&log_tx, format!("Copying {} -> {}", source_url, target_url));
 
             let _ = sqlx::query("UPDATE copy_job_images SET copy_status = 'in_progress' WHERE id = $1")
                 .bind(img.id)
@@ -970,7 +1146,7 @@ async fn start_copy_job(
                     .execute(&pool_clone)
                     .await;
 
-                    let _ = log_tx.send(format!("SUCCESS {}", target_url));
+                    emit_log(&log_tx, format!("SUCCESS {}", target_url));
                 }
                 Ok(progress) => {
                     let _ = sqlx::query(
@@ -985,7 +1161,7 @@ async fn start_copy_job(
                     .await;
 
                     failed += 1;
-                    let _ = log_tx.send(format!("FAILED {} - {}", target_url, progress.message.trim()));
+                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, progress.message.trim()));
                 }
                 Err(err) => {
                     let _ = sqlx::query(
@@ -1000,7 +1176,7 @@ async fn start_copy_job(
                     .await;
 
                     failed += 1;
-                    let _ = log_tx.send(format!("FAILED {} - {}", target_url, err));
+                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, err));
                 }
             }
         }
@@ -1029,7 +1205,7 @@ async fn start_copy_job(
             }
         }
 
-        let _ = log_tx.send("Copy job finished".to_string());
+        emit_log(&log_tx, "Copy job finished".to_string());
         log_state_clone.write().await.remove(&job_id);
     });
 
@@ -1200,4 +1376,27 @@ async fn copy_job_logs_sse(
     };
 
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// GET /api/v1/copy/jobs/{job_id}/logs/history - celé uložené logy
+async fn copy_job_logs_history(
+    State(state): State<CopyApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
+    let lines = sqlx::query_scalar::<_, String>(
+        "SELECT line FROM copy_job_logs WHERE copy_job_id = $1 ORDER BY created_at",
+    )
+    .bind(job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(lines))
 }

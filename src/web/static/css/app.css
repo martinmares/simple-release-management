@@ -148,9 +148,11 @@ a.card-link:hover .card-body {
 
 /* Code blocks for manifests */
 .manifest-code {
-    background-color: #f8f9fa;
+    background-color: #0e0f12;
+    color: #c9d1d9;
     padding: 1rem;
     border-radius: 4px;
+    border: 1px solid #1f2430;
     font-family: 'Courier New', monospace;
     font-size: 0.875rem;
     max-height: 500px;
@@ -420,25 +422,7 @@ code {
     margin-bottom: 0.5rem;
 }
 
-/* Keyboard shortcuts hint */
-.kbd-hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.75rem;
-    color: var(--tblr-secondary);
-}
-
-.kbd {
-    display: inline-block;
-    padding: 0.125rem 0.25rem;
-    font-size: 0.75rem;
-    line-height: 1;
-    background-color: #f5f5f5;
-    border: 1px solid #ccc;
-    border-radius: 3px;
-    font-family: monospace;
-}
+/* Keyboard shortcuts hint removed */
 
 /* Better table responsive */
 @media (max-width: 768px) {

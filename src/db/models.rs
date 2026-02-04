@@ -132,6 +132,8 @@ pub struct ImageMapping {
 
     // Target
     pub target_image: String,
+    pub app_name: String,
+    pub container_name: Option<String>,
 
     pub created_at: DateTime<Utc>,
 }
@@ -173,6 +175,15 @@ pub struct CopyJobImage {
     pub created_at: DateTime<Utc>,
 }
 
+/// Persisted copy job log line
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct CopyJobLog {
+    pub id: Uuid,
+    pub copy_job_id: Uuid,
+    pub line: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Release status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -201,5 +212,57 @@ pub struct Release {
     pub status: String,
     pub notes: Option<String>,
     pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Deploy target - definice build pipeline pro release
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployTarget {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub name: String,
+    pub env_name: String,
+    pub environments_repo_url: String,
+    pub environments_branch: String,
+    pub deploy_repo_url: String,
+    pub deploy_branch: String,
+    pub deploy_path: String,
+    pub git_auth_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_username: Option<String>,
+    #[serde(skip_serializing)]
+    pub git_token_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub git_ssh_key_encrypted: Option<String>,
+    pub encjson_key_dir: Option<String>,
+    #[serde(skip_serializing)]
+    pub encjson_private_key_encrypted: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Encjson key pair per deploy target
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployTargetEncjsonKey {
+    pub id: Uuid,
+    pub deploy_target_id: Uuid,
+    pub public_key: String,
+    #[serde(skip_serializing)]
+    pub private_key_encrypted: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Deploy job - běh build pipeline
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployJob {
+    pub id: Uuid,
+    pub release_id: Uuid,
+    pub deploy_target_id: Uuid,
+    pub status: String,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub error_message: Option<String>,
+    pub commit_sha: Option<String>,
+    pub tag_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }

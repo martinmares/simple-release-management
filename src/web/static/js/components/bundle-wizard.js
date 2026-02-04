@@ -211,6 +211,21 @@ class BundleWizard {
                                     </button>
                                 </div>
                             </div>
+                            <div class="row g-2 mt-2">
+                                <div class="col-md-6">
+                                    <label class="form-label">App Name</label>
+                                    <input type="text" class="form-control form-control-sm mapping-app-name"
+                                           value="${mapping.app_name || ''}"
+                                           placeholder="app name">
+                                    <small class="form-hint">Kubernetes app name (used for release manifest)</small>
+                                </div>
+                                <div class="col-md-5">
+                                    <label class="form-label">Container Name</label>
+                                    <input type="text" class="form-control form-control-sm mapping-container-name"
+                                           value="${mapping.container_name || ''}"
+                                           placeholder="container name (optional)">
+                                </div>
+                            </div>
                         </div>
                     </div>
                 `).join('')}
@@ -273,6 +288,8 @@ class BundleWizard {
                                 <th>Source Tag</th>
                                 <th>→</th>
                                 <th>Target Image</th>
+                                <th>App</th>
+                                <th>Container</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -282,6 +299,8 @@ class BundleWizard {
                                     <td><span class="badge">${mapping.source_tag}</span></td>
                                     <td class="text-center"><i class="ti ti-arrow-right"></i></td>
                                     <td><code>${mapping.target_image}</code></td>
+                                    <td>${mapping.app_name || '-'}</td>
+                                    <td>${mapping.container_name || '-'}</td>
                                 </tr>
                             `).join('')}
                         </tbody>
@@ -316,13 +335,22 @@ class BundleWizard {
 
         mappingCards.forEach((card) => {
             const sourceImage = card.querySelector('.mapping-source-image')?.value || '';
-            const sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+            let sourceTag = card.querySelector('.mapping-source-tag')?.value || '';
+            if (!sourceTag) sourceTag = 'latest';
             const targetImage = card.querySelector('.mapping-target-image')?.value || '';
+            let appName = card.querySelector('.mapping-app-name')?.value || '';
+            const containerName = card.querySelector('.mapping-container-name')?.value || '';
+            if (!appName && targetImage) {
+                const parts = targetImage.split('/');
+                appName = parts[parts.length - 1] || '';
+            }
 
             mappings.push({
                 source_image: sourceImage,
                 source_tag: sourceTag,
-                target_image: targetImage
+                target_image: targetImage,
+                app_name: appName,
+                container_name: containerName
             });
         });
 
@@ -337,7 +365,7 @@ class BundleWizard {
 
         // Validate that we have at least one complete mapping
         const validMappings = this.data.imageMappings.filter(m =>
-            m.source_image && m.source_tag && m.target_image
+            m.source_image && (m.source_tag || 'latest') && m.target_image && m.app_name
         );
 
         if (validMappings.length === 0) {
@@ -355,7 +383,9 @@ class BundleWizard {
         this.data.imageMappings.push({
             source_image: '',
             source_tag: '',
-            target_image: ''
+            target_image: '',
+            app_name: '',
+            container_name: ''
         });
     }
 
