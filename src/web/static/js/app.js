@@ -8,6 +8,80 @@ window.getApp = function() {
     return appElement ? Alpine.$data(appElement) : null;
 };
 
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function ansiToHtml(line) {
+    const ansiRegex = /\x1b\[([0-9;]*)m/g;
+    const colors = {
+        30: '#111827',
+        31: '#ef4444',
+        32: '#22c55e',
+        33: '#f59e0b',
+        34: '#3b82f6',
+        35: '#a855f7',
+        36: '#06b6d4',
+        37: '#e5e7eb',
+        90: '#6b7280',
+        91: '#f87171',
+        92: '#4ade80',
+        93: '#fbbf24',
+        94: '#60a5fa',
+        95: '#c084fc',
+        96: '#22d3ee',
+        97: '#f9fafb',
+    };
+
+    let out = '';
+    let lastIndex = 0;
+    let currentStyle = '';
+    let match;
+
+    while ((match = ansiRegex.exec(line)) !== null) {
+        const chunk = line.slice(lastIndex, match.index);
+        if (chunk) {
+            out += currentStyle ? `<span style="${currentStyle}">${escapeHtml(chunk)}</span>` : escapeHtml(chunk);
+        }
+
+        const codes = match[1]
+            .split(';')
+            .filter(Boolean)
+            .map((c) => Number(c));
+
+        if (codes.length === 0) {
+            currentStyle = '';
+        } else {
+            for (const code of codes) {
+                if (code === 0) {
+                    currentStyle = '';
+                } else if (code === 1) {
+                    currentStyle = `${currentStyle}font-weight:bold;`;
+                } else if (code === 39) {
+                    currentStyle = currentStyle.replace(/color:[^;]+;?/g, '');
+                } else if (colors[code]) {
+                    currentStyle = currentStyle.replace(/color:[^;]+;?/g, '');
+                    currentStyle = `${currentStyle}color:${colors[code]};`;
+                }
+            }
+        }
+
+        lastIndex = ansiRegex.lastIndex;
+    }
+
+    const tail = line.slice(lastIndex);
+    if (tail) {
+        out += currentStyle ? `<span style="${currentStyle}">${escapeHtml(tail)}</span>` : escapeHtml(tail);
+    }
+
+    return out;
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         // State
@@ -598,7 +672,7 @@ router.on('/tenants/:id', async (params) => {
             </div>
 
             <div class="row">
-                <div class="col-md-8">
+                <div class="col-12">
                     <div class="card mb-3">
                         <div class="card-header">
                             <h3 class="card-title">${tenant.name}</h3>
@@ -1503,11 +1577,14 @@ router.on('/bundles/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [bundle, versions, copyJobs, releases] = await Promise.all([
-            api.getBundle(params.id),
+        const bundle = await api.getBundle(params.id);
+        const [versions, copyJobs, releases, tenant, sourceRegistry, targetRegistry] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
             api.getBundleReleases(params.id),
+            bundle.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
+            bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
+            bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
         ]);
 
         content.innerHTML = `
@@ -1521,16 +1598,23 @@ router.on('/bundles/:id', async (params) => {
             </div>
 
             <div class="row">
-                <div class="col-md-8">
+                <div class="col-12">
                     <div class="card mb-3">
                         <div class="card-header">
-                            <h3 class="card-title">${bundle.name}</h3>
+                            <div>
+                                <h3 class="card-title mb-1">${bundle.name}</h3>
+                                <div class="text-secondary small">
+                                    <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
+                                    <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}</code>` : 'Source: -'}</div>
+                                    <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}</code>` : 'Target: -'}</div>
+                                </div>
+                            </div>
                             <div class="card-actions">
                                 <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary btn-sm">
                                     <i class="ti ti-plus"></i>
                                     New Version
                                 </a>
-                                <a href="#/bundles/${bundle.id}/copy" class="btn btn-ghost-primary btn-sm">
+                                <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
                                     <i class="ti ti-copy"></i>
                                     Copy Bundle
                                 </a>
@@ -1686,25 +1770,6 @@ router.on('/bundles/:id', async (params) => {
                     </div>
                 </div>
 
-                <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">Quick Actions</h3>
-                        </div>
-                        <div class="card-body">
-                            <div class="d-grid gap-2">
-                                <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary">
-                                    <i class="ti ti-plus"></i>
-                                    New Version
-                                </a>
-                                <a href="#/bundles/${bundle.id}/copy" class="btn btn-success">
-                                    <i class="ti ti-copy"></i>
-                                    Copy Bundle
-                                </a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
             </div>
         `;
 
@@ -2734,11 +2799,18 @@ router.on('/deploy-jobs/:id', async (params) => {
         `;
 
         const logOutput = document.getElementById('deploy-log-output');
-        api.createDeployJobStream(params.id, (msg) => {
-            logOutput.textContent += `${msg}\n`;
+        const deployLines = [];
+        const renderDeployLogs = () => {
+            logOutput.innerHTML = deployLines.map(ansiToHtml).join('\n');
             logOutput.scrollTop = logOutput.scrollHeight;
+        };
+
+        api.createDeployJobStream(params.id, (msg) => {
+            deployLines.push(msg);
+            renderDeployLogs();
         }, (err) => {
-            logOutput.textContent += `\n[Log stream error] ${err}\n`;
+            deployLines.push(`[Log stream error] ${err}`);
+            renderDeployLogs();
         });
     } catch (error) {
         content.innerHTML = `
@@ -3238,11 +3310,17 @@ router.on('/copy-jobs/:jobId', async (params) => {
             api.getCopyJobImages(params.jobId),
             api.getCopyJobLogHistory(params.jobId),
         ]);
+        const bundle = initialStatus.bundle_id ? await api.getBundle(initialStatus.bundle_id).catch(() => null) : null;
+        const [tenant, sourceRegistry, targetRegistry] = await Promise.all([
+            bundle?.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
+            initialStatus.source_registry_id ? api.getRegistry(initialStatus.source_registry_id).catch(() => null) : null,
+            initialStatus.target_registry_id ? api.getRegistry(initialStatus.target_registry_id).catch(() => null) : null,
+        ]);
 
         const renderLogs = () => {
             const logEl = document.getElementById('copy-job-log');
             if (!logEl) return;
-            logEl.textContent = logLines.join('\n');
+            logEl.innerHTML = logLines.map(ansiToHtml).join('\n');
             logEl.scrollTop = logEl.scrollHeight;
         };
 
@@ -3276,7 +3354,20 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
                 <div class="card">
                     <div class="card-header d-flex align-items-start justify-content-between flex-wrap gap-2">
-                        <h3 class="card-title mb-0">Copy Job Monitor</h3>
+                        <div>
+                            <h3 class="card-title mb-1">
+                                Copy Job Monitor
+                                ${status.is_release_job ? `
+                                    <span class="badge bg-purple-lt text-purple-fg ms-2">release</span>
+                                ` : ''}
+                            </h3>
+                            <div class="text-secondary small">
+                                <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
+                                <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
+                                <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}</code>` : 'Source: -'}</div>
+                                <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}</code>` : 'Target: -'}</div>
+                            </div>
+                        </div>
                         <div class="card-subtitle">Job ID: ${status.job_id}</div>
                     </div>
                     <div class="card-body">

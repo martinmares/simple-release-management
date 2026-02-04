@@ -5,6 +5,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use anyhow::Context;
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -851,11 +852,20 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let release_manifest = build_release_manifest(&state.pool, release.id).await?;
     let manifest_path = temp_dir.path().join("release-manifest.yml");
     let yaml = serde_yaml_ng::to_string(&release_manifest)?;
-    tokio::fs::write(&manifest_path, yaml).await?;
+    tokio::fs::write(&manifest_path, yaml)
+        .await
+        .with_context(|| format!("Failed to write release manifest to {}", manifest_path.display()))?;
 
-    let deploy_path = deploy_repo_path.join(&target.deploy_path);
+    let deploy_rel_path = target.deploy_path.trim().trim_start_matches('/');
+    let deploy_path = if deploy_rel_path.is_empty() {
+        deploy_repo_path.clone()
+    } else {
+        deploy_repo_path.join(deploy_rel_path)
+    };
     if !deploy_path.exists() {
-        tokio::fs::create_dir_all(&deploy_path).await?;
+        tokio::fs::create_dir_all(&deploy_path)
+            .await
+            .with_context(|| format!("Failed to create deploy path {}", deploy_path.display()))?;
     }
 
     clean_deploy_output(&deploy_path).await?;
@@ -878,7 +888,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
 
     run_git_commit_and_push(
         &deploy_repo_path,
-        &target.deploy_path,
+        deploy_rel_path,
         &release.release_id,
         &target.deploy_repo_url,
         &git_env,
@@ -912,9 +922,18 @@ fn build_git_env(
     match target.git_auth_type.as_str() {
         "ssh" => {
             if let Some(enc_key) = &target.git_ssh_key_encrypted {
-                let key = crypto::decrypt(enc_key, &state.encryption_secret)?;
+                let mut key = crypto::decrypt(enc_key, &state.encryption_secret)?;
+                // Normalize key formatting in case it was stored with escaped newlines.
+                if key.contains("\\n") {
+                    key = key.replace("\\n", "\n");
+                }
+                if key.contains("\r\n") {
+                    key = key.replace("\r\n", "\n");
+                }
+                let key = if key.ends_with('\n') { key } else { format!("{key}\n") };
                 let key_path = temp_root.join("git_ssh_key");
-                std::fs::write(&key_path, key.as_bytes())?;
+                std::fs::write(&key_path, key.as_bytes())
+                    .with_context(|| format!("Failed to write git ssh key {}", key_path.display()))?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
@@ -1026,7 +1045,9 @@ async fn build_env_file(
 
     combined.push_str(&format!("TSM_RELEASE_ID={}\n", release.release_id));
 
-    tokio::fs::write(env_file_path, combined).await?;
+    tokio::fs::write(env_file_path, combined)
+        .await
+        .with_context(|| format!("Failed to write env file {}", env_file_path.display()))?;
     Ok(())
 }
 
@@ -1082,11 +1103,15 @@ async fn build_encjson_keydir(
         }
 
         let key_dir = temp_root.join("encjson_keys");
-        tokio::fs::create_dir_all(&key_dir).await?;
+        tokio::fs::create_dir_all(&key_dir)
+            .await
+            .with_context(|| format!("Failed to create encjson key dir {}", key_dir.display()))?;
         for key in keys {
             let private = crypto::decrypt(&key.private_key_encrypted, &state.encryption_secret)?;
             let file_path = key_dir.join(&key.public_key);
-            tokio::fs::write(&file_path, private).await?;
+            tokio::fs::write(&file_path, private)
+                .await
+                .with_context(|| format!("Failed to write encjson key {}", file_path.display()))?;
         }
         return Ok(Some(key_dir));
     }
@@ -1157,7 +1182,8 @@ async fn run_git_commit_and_push(
     run_command_logged("git", &["config", "user.name", "simple-release-management"], Some(repo_path), git_env, log_tx, "git config").await?;
     run_command_logged("git", &["config", "user.email", "release-management@local"], Some(repo_path), git_env, log_tx, "git config").await?;
 
-    run_command_logged("git", &["add", deploy_path], Some(repo_path), git_env, log_tx, "git add").await?;
+    let add_path = if deploy_path.trim().is_empty() { "." } else { deploy_path };
+    run_command_logged("git", &["add", add_path], Some(repo_path), git_env, log_tx, "git add").await?;
 
     let commit_msg = format!("release {}", release_id);
     run_command_logged(

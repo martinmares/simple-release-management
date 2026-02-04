@@ -142,4 +142,10 @@ async fn shutdown_signal() {
         .expect("Failed to install CTRL+C signal handler");
 
     info!("Shutdown signal received, cleaning up...");
+
+    // In dev, force exit to avoid hanging on long-lived SSE connections.
+    if cfg!(debug_assertions) {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        std::process::exit(0);
+    }
 }

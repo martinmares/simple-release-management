@@ -413,7 +413,7 @@ function createDeployTargetForm(target = null, tenants = [], encjsonKeys = []) {
                     <input type="text" class="form-control" name="deploy_path"
                            value="${target?.deploy_path || ''}"
                            placeholder="deploy/${target?.env_name || ''}">
-                    <small class="form-hint">Defaults to deploy/&lt;env&gt;</small>
+                    <small class="form-hint">e.g. deploy/&lt;env&gt;</small>
                 </div>
 
                 <hr class="my-4">
