@@ -206,9 +206,14 @@ class BundleWizard {
                                     <small class="form-hint">Path without registry hostname</small>
                                 </div>
                                 <div class="col-md-1 d-flex align-items-end">
-                                    <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">
-                                        <i class="ti ti-trash"></i>
-                                    </button>
+                                    <div class="d-flex flex-column gap-1 w-100">
+                                        <button type="button" class="btn btn-sm btn-ghost-primary w-100 mapping-duplicate">
+                                            <i class="ti ti-copy"></i>
+                                        </button>
+                                        <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">
+                                            <i class="ti ti-trash"></i>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                             <div class="row g-2 mt-2">
@@ -387,6 +392,15 @@ class BundleWizard {
             app_name: '',
             container_name: ''
         });
+    }
+
+    /**
+     * Duplikuje mapping
+     */
+    duplicateMapping(index) {
+        const current = this.data.imageMappings[index];
+        if (!current) return;
+        this.data.imageMappings.splice(index + 1, 0, { ...current });
     }
 
     /**

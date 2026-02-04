@@ -249,7 +249,28 @@ class ApiClient {
     }
 
     async getCopyJobLogHistory(jobId) {
-        return this.get(`/copy/jobs/${jobId}/logs/history`);
+        const url = `${this.baseUrl}/copy/jobs/${jobId}/logs/history`;
+        const response = await fetch(url);
+
+        if (response.status === 404) {
+            return [];
+        }
+
+        if (!response.ok) {
+            let message = 'Request failed';
+            try {
+                const data = await response.json();
+                message = data.error || message;
+            } catch (_) {
+                const text = await response.text();
+                if (text) message = text;
+            }
+            throw new ApiError(message, response.status, null);
+        }
+
+        const text = await response.text();
+        if (!text) return [];
+        return JSON.parse(text);
     }
 
     async getCopyJobs() {

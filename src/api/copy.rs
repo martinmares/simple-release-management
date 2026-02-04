@@ -395,21 +395,6 @@ async fn copy_bundle_version(
         }
     });
 
-    // Persist logs to DB
-    let pool_for_log = state.pool.clone();
-    let mut log_rx = log_tx.subscribe();
-    tokio::spawn(async move {
-        while let Ok(line) = log_rx.recv().await {
-            let _ = sqlx::query(
-                "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
-            )
-            .bind(job_id)
-            .bind(line)
-            .execute(&pool_for_log)
-            .await;
-        }
-    });
-
     // Spustit copy operaci na pozadí
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
@@ -478,6 +463,39 @@ async fn copy_bundle_version(
                 Ok(info) => Some(info.digest),
                 Err(_) => None,
             };
+
+            if let Some(ref src_digest) = source_sha {
+                match skopeo_clone.inspect_image(
+                    &target_url,
+                    credentials_clone.target_username.as_deref(),
+                    credentials_clone.target_password.as_deref(),
+                ).await {
+                    Ok(info) => {
+                        if info.digest == *src_digest {
+                            let _ = sqlx::query(
+                                "UPDATE copy_job_images
+                                 SET copy_status = 'success',
+                                     source_sha256 = $1,
+                                     target_sha256 = $2,
+                                     copied_at = NOW(),
+                                     bytes_copied = 0
+                                 WHERE id = $3"
+                            )
+                            .bind(&source_sha)
+                            .bind(&info.digest)
+                            .bind(copy_job_image_id)
+                            .execute(&pool_clone)
+                            .await;
+
+                            emit_log(&log_tx, format!("SKIP {} (digest match)", target_url));
+                            continue;
+                        }
+                    }
+                    Err(err) => {
+                        emit_log(&log_tx, format!("WARN target inspect failed for {} ({}) - copying anyway", target_url, err));
+                    }
+                }
+            }
 
             // Zkopírovat image
             match skopeo_clone
@@ -1035,6 +1053,21 @@ async fn start_copy_job(
     let (log_tx, _log_rx) = broadcast::channel(512);
     state.job_logs.write().await.insert(job_id, log_tx.clone());
 
+    // Persist logs to DB
+    let pool_for_log = state.pool.clone();
+    let mut log_rx = log_tx.subscribe();
+    tokio::spawn(async move {
+        while let Ok(line) = log_rx.recv().await {
+            let _ = sqlx::query(
+                "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
+            )
+            .bind(job_id)
+            .bind(line)
+            .execute(&pool_for_log)
+            .await;
+        }
+    });
+
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
     let log_state_clone = state.job_logs.clone();
@@ -1110,6 +1143,39 @@ async fn start_copy_job(
                 Ok(info) => Some(info.digest),
                 Err(_) => None,
             };
+
+            if let Some(ref src_digest) = source_sha {
+                match skopeo_clone.inspect_image(
+                    &target_url,
+                    credentials.target_username.as_deref(),
+                    credentials.target_password.as_deref(),
+                ).await {
+                    Ok(info) => {
+                        if info.digest == *src_digest {
+                            let _ = sqlx::query(
+                                "UPDATE copy_job_images
+                                 SET copy_status = 'success',
+                                     source_sha256 = $1,
+                                     target_sha256 = $2,
+                                     copied_at = NOW(),
+                                     bytes_copied = 0
+                                 WHERE id = $3"
+                            )
+                            .bind(&source_sha)
+                            .bind(&info.digest)
+                            .bind(img.id)
+                            .execute(&pool_clone)
+                            .await;
+
+                            emit_log(&log_tx, format!("SKIP {} (digest match)", target_url));
+                            continue;
+                        }
+                    }
+                    Err(err) => {
+                        emit_log(&log_tx, format!("WARN target inspect failed for {} ({}) - copying anyway", target_url, err));
+                    }
+                }
+            }
 
             match skopeo_clone
                 .copy_image_with_retry(

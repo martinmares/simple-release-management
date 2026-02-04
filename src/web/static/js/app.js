@@ -1475,6 +1475,15 @@ router.on('/bundles/new', async (params, query) => {
                     renderWizard();
                 });
             });
+
+            // Duplicate mapping buttons
+            document.querySelectorAll('.mapping-duplicate').forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    wizard.collectStep2Data();
+                    wizard.duplicateMapping(index);
+                    renderWizard();
+                });
+            });
         };
 
         renderWizard();
@@ -2017,6 +2026,14 @@ router.on('/bundles/:id/copy', async (params) => {
                     renderWizard();
                 });
             });
+
+            document.querySelectorAll('.mapping-duplicate').forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    wizard.collectStep2Data();
+                    wizard.duplicateMapping(index);
+                    renderWizard();
+                });
+            });
         };
 
         renderWizard();
@@ -2091,9 +2108,14 @@ router.on('/bundles/:id/versions/new', async (params) => {
                                                 <small class="form-hint">Path without registry hostname</small>
                                             </div>
                                             <div class="col-md-1 d-flex align-items-end">
-                                                <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">
-                                                    <i class="ti ti-trash"></i>
-                                                </button>
+                                                <div class="d-flex flex-column gap-1 w-100">
+                                                    <button type="button" class="btn btn-sm btn-ghost-primary w-100 mapping-duplicate">
+                                                        <i class="ti ti-copy"></i>
+                                                    </button>
+                                                    <button type="button" class="btn btn-sm btn-ghost-danger w-100 mapping-remove">
+                                                        <i class="ti ti-trash"></i>
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                         <div class="row g-2 mt-2">
@@ -2192,6 +2214,17 @@ router.on('/bundles/:id/versions/new', async (params) => {
                     collectMappings();
                     state.mappings.splice(index, 1);
                     render();
+                });
+            });
+
+            document.querySelectorAll('.mapping-duplicate').forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    collectMappings();
+                    const current = state.mappings[index];
+                    if (current) {
+                        state.mappings.splice(index + 1, 0, { ...current });
+                        render();
+                    }
                 });
             });
 
@@ -3220,6 +3253,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
             const isComplete = status.status === 'success' || status.status === 'failed';
             const failedImages = images.filter(img => img.copy_status === 'failed');
+            const skippedImages = images.filter(img => img.copy_status === 'success' && img.bytes_copied === 0);
 
             content.innerHTML = `
                 <style>
@@ -3231,9 +3265,18 @@ router.on('/copy-jobs/:jobId', async (params) => {
                     .terminal-dot.green { background: #28c840; }
                     .terminal-body { max-height: 320px; overflow: auto; margin: 0; padding: 12px; color: #c9d1d9; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap; }
                 </style>
+                <div class="row mb-3">
+                    <div class="col">
+                        <a href="#/bundles/${status.bundle_id}" class="btn btn-ghost-secondary">
+                            <i class="ti ti-arrow-left"></i>
+                            Back to Bundle
+                        </a>
+                    </div>
+                </div>
+
                 <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">Copy Job Monitor</h3>
+                    <div class="card-header d-flex align-items-start justify-content-between flex-wrap gap-2">
+                        <h3 class="card-title mb-0">Copy Job Monitor</h3>
                         <div class="card-subtitle">Job ID: ${status.job_id}</div>
                     </div>
                     <div class="card-body">
@@ -3273,6 +3316,11 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 <div class="progress-bar bg-success" style="width: ${(status.copied_images / status.total_images * 100).toFixed(0)}%"></div>
                                 <div class="progress-bar bg-danger" style="width: ${(status.failed_images / status.total_images * 100).toFixed(0)}%"></div>
                             </div>
+                            ${skippedImages.length > 0 ? `
+                                <div class="text-secondary small mt-2">
+                                    Skipped: ${skippedImages.length}
+                                </div>
+                            ` : ''}
                         </div>
 
                         <div class="alert ${
@@ -3333,7 +3381,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
                 <div class="card mt-3">
                     <div class="card-header">
-                        <h3 class="card-title">Live Logs</h3>
+                        <h3 class="card-title">${isComplete ? 'Audit Logs' : 'Live Logs'}</h3>
                     </div>
                     <div class="card-body">
                         <div class="terminal-shell">
@@ -3375,6 +3423,38 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                                 ${img.error_message || 'Unknown error'}
                                             </div>
                                         </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                ` : ''}
+
+                ${skippedImages.length > 0 ? `
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <h3 class="card-title">Skipped Images</h3>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table">
+                            <thead>
+                                <tr>
+                                    <th>Source</th>
+                                    <th>Target</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${skippedImages.map(img => `
+                                    <tr>
+                                        <td>
+                                            <div><code class="small">${img.source_image}:${img.source_tag}</code></div>
+                                        </td>
+                                        <td>
+                                            <div><code class="small">${img.target_image}:${img.target_tag}</code></div>
+                                        </td>
+                                        <td><span class="badge bg-azure-lt">SKIP</span></td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -3439,7 +3519,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
             };
         };
 
-        if (initialStatus.status !== 'pending') {
+        if (initialStatus.status === 'in_progress') {
             startLogStream();
         }
 

@@ -178,6 +178,7 @@ impl SkopeoService {
         source_url: &str,
         target_url: &str,
         creds: &SkopeoCredentials,
+        dest_no_reuse: bool,
         log_tx: Option<&broadcast::Sender<String>>,
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
@@ -185,6 +186,10 @@ impl SkopeoService {
         let mut cmd = Command::new(&self.skopeo_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
+
+        if dest_no_reuse {
+            cmd.arg("--dest-no-reuse");
+        }
 
         if let (Some(user), Some(pass)) = (&creds.source_username, &creds.source_password) {
             cmd.arg("--src-creds").arg(format!("{}:{}", user, pass));
@@ -298,41 +303,50 @@ impl SkopeoService {
         loop {
             attempts += 1;
 
-            match self
-                .copy_image_streaming(source_url, target_url, creds, log_tx)
-                .await
+            let mut progress = self
+                .copy_image_streaming(source_url, target_url, creds, false, log_tx)
+                .await?;
+
+            if progress.status == CopyStatus::Failed
+                && is_reuse_blob_error(&progress.message)
             {
-                Ok(progress) if progress.status == CopyStatus::Success => {
-                    return Ok(progress);
+                if let Some(tx) = log_tx {
+                    let _ = tx.send("Detected reuse-blob error, retrying with --dest-no-reuse...".to_string());
                 }
-                Ok(progress) if attempts >= max_retries => {
-                    return Ok(progress);
-                }
-                Ok(_) | Err(_) => {
-                    if attempts < max_retries {
-                        if let Some(tx) = log_tx {
-                            let _ = tx.send(format!(
-                                "Copy attempt {} failed, retrying in {} seconds...",
-                                attempts, retry_delay_secs
-                            ));
-                        }
-                        warn!(
-                            "Copy attempt {} failed, retrying in {} seconds...",
-                            attempts, retry_delay_secs
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
-                    } else {
-                        return Ok(CopyProgress {
-                            status: CopyStatus::Failed,
-                            message: format!("Failed after {} attempts", attempts),
-                            bytes_copied: None,
-                            total_bytes: None,
-                        });
-                    }
+                progress = self
+                    .copy_image_streaming(source_url, target_url, creds, true, log_tx)
+                    .await?;
+                if let Some(tx) = log_tx {
+                    let _ = tx.send("FALLBACK: --dest-no-reuse applied".to_string());
                 }
             }
+
+            if progress.status == CopyStatus::Success {
+                return Ok(progress);
+            }
+
+            if attempts >= max_retries {
+                return Ok(progress);
+            }
+
+            if let Some(tx) = log_tx {
+                let _ = tx.send(format!(
+                    "Copy attempt {} failed, retrying in {} seconds...",
+                    attempts, retry_delay_secs
+                ));
+            }
+            warn!(
+                "Copy attempt {} failed, retrying in {} seconds...",
+                attempts, retry_delay_secs
+            );
+            tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
         }
     }
+}
+
+fn is_reuse_blob_error(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    msg.contains("reuse blob") || msg.contains("reuse-blob") || msg.contains("trying to reuse blob")
 }
 
 #[cfg(test)]
