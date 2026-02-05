@@ -199,6 +199,7 @@ a.card-link:hover .card-body {
     padding-bottom: 2rem;
 }
 
+
 .timeline-item::before {
     content: '';
     position: absolute;

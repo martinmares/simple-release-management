@@ -3340,7 +3340,7 @@ router.on('/deploy-jobs/:id', async (params) => {
                     </div>
                     <div>
                         <div class="text-secondary small mb-1">Diff</div>
-                        <pre class="terminal-body" style="max-height: 320px; white-space: pre;">${escapeHtml(diffInfo.diff_patch || '')}</pre>
+                        <div id="deploy-diff-content"></div>
                     </div>
                 </div>
             </div>
@@ -3367,6 +3367,20 @@ router.on('/deploy-jobs/:id', async (params) => {
                 deployLines.push(`[Log stream error] ${err}`);
                 renderDeployLogs();
             });
+        }
+
+        if (diffInfo && diffInfo.diff_patch) {
+            const diffEl = document.getElementById('deploy-diff-content');
+            if (diffEl && window.Diff2Html) {
+                diffEl.innerHTML = window.Diff2Html.html(diffInfo.diff_patch, {
+                    drawFileList: false,
+                    matching: 'lines',
+                    outputFormat: 'line-by-line',
+                    colorScheme: 'auto',
+                });
+            } else if (diffEl) {
+                diffEl.innerHTML = `<pre class="terminal-body" style="max-height: 320px; white-space: pre;">${escapeHtml(diffInfo.diff_patch || '')}</pre>`;
+            }
         }
     } catch (error) {
         content.innerHTML = `
