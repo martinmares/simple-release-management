@@ -281,8 +281,6 @@ router.on('/', async () => {
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5);
 
-        const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
-
         content.innerHTML = `
             <!-- Stats Row -->
             <div class="row row-deck row-cards mb-4">
@@ -1867,10 +1865,11 @@ router.on('/bundles/:id', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [versions, copyJobs, releases, tenant, sourceRegistry, targetRegistry] = await Promise.all([
+        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
             api.getBundleReleases(params.id),
+            api.getBundleDeployments(params.id),
             bundle.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
             bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
@@ -2029,7 +2028,10 @@ router.on('/bundles/:id', async (params) => {
                                         </tr>
                                     ` : releases.map(release => `
                                         <tr>
-                                            <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
+                                            <td>
+                                                <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
+                                                ${release.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                                            </td>
                                             <td><span class="badge bg-blue text-blue-fg">${release.status}</span></td>
                                             <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
                                         </tr>
@@ -2091,12 +2093,66 @@ router.on('/bundles/:id', async (params) => {
                                                 ${job.is_release_job ? `
                                                     <span class="badge bg-purple-lt text-purple-fg">image release</span>
                                                 ` : job.status === 'success' ? `
-                                                    <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
-                                                        <i class="ti ti-rocket"></i>
-                                                        Release Images
-                                                    </a>
+                                                    <div class="d-flex flex-column gap-1">
+                                                        <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
+                                                            <i class="ti ti-rocket"></i>
+                                                            Release Images
+                                                        </a>
+                                                        <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
+                                                            <i class="ti ti-rocket"></i>
+                                                            Deploy (dev/test)
+                                                        </button>
+                                                    </div>
                                                 ` : ''}
                                             </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card mt-3">
+                        <div class="card-header">
+                            <h3 class="card-title">Deployments</h3>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-vcenter card-table">
+                                <thead>
+                                    <tr>
+                                        <th>Release</th>
+                                        <th>Target</th>
+                                        <th>Status</th>
+                                        <th>Started</th>
+                                        <th>Completed</th>
+                                        <th>Tag</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${deployments.length === 0 ? `
+                                        <tr>
+                                            <td colspan="6" class="text-center text-secondary py-4">
+                                                No deployments yet.
+                                            </td>
+                                        </tr>
+                                    ` : deployments.map(row => `
+                                        <tr>
+                                            <td>
+                                                <a href="#/releases/${row.release_db_id}"><strong>${row.release_id}</strong></a>
+                                                ${row.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                                            </td>
+                                            <td>${row.target_name} (${row.env_name})</td>
+                                            <td>
+                                                <span class="badge ${
+                                                    row.status === 'success' ? 'bg-success text-success-fg' :
+                                                    row.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                                    row.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                                    'bg-secondary text-secondary-fg'
+                                                }">${row.status}</span>
+                                            </td>
+                                            <td>${new Date(row.started_at).toLocaleString('cs-CZ')}</td>
+                                            <td>${row.completed_at ? new Date(row.completed_at).toLocaleString('cs-CZ') : '-'}</td>
+                                            <td>${row.tag_name ? `<code class="small">${row.tag_name}</code>` : '-'}</td>
                                         </tr>
                                     `).join('')}
                                 </tbody>
@@ -2107,6 +2163,14 @@ router.on('/bundles/:id', async (params) => {
 
             </div>
         `;
+
+        document.querySelectorAll('.auto-deploy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const jobId = btn.getAttribute('data-job-id');
+                const targetTag = btn.getAttribute('data-target-tag');
+                await runAutoDeployFromCopyJob(jobId, tenant?.id, targetTag);
+            });
+        });
 
         // Delete handler
         document.getElementById('delete-bundle-btn').addEventListener('click', async () => {
@@ -2177,6 +2241,14 @@ router.on('/bundles/:id/edit', async (params) => {
                             <label class="form-label">Description</label>
                             <textarea class="form-control" name="description" rows="3">${bundle.description || ''}</textarea>
                         </div>
+
+                        <div class="mb-3">
+                            <label class="form-check">
+                                <input type="checkbox" class="form-check-input" name="auto_tag_enabled" ${bundle.auto_tag_enabled ? 'checked' : ''}>
+                                <span class="form-check-label">Auto-generate target tag (YYYY.MM.DD.COUNTER)</span>
+                            </label>
+                            <small class="form-hint">Locks target tag input when starting copy jobs</small>
+                        </div>
                     </div>
                     <div class="card-footer text-end">
                         <div class="d-flex">
@@ -2241,6 +2313,7 @@ router.on('/bundles/:id/edit', async (params) => {
                     description: data.description,
                     source_registry_id: bundle.source_registry_id,
                     target_registry_id: bundle.target_registry_id,
+                    auto_tag_enabled: data.auto_tag_enabled === 'on' || data.auto_tag_enabled === true,
                 });
                 getApp().showSuccess('Bundle updated successfully');
                 router.navigate(`/bundles/${bundle.id}`);
@@ -2300,6 +2373,7 @@ router.on('/bundles/:id/copy', async (params) => {
         wizard.data.bundle.description = bundle.description || '';
         wizard.data.bundle.source_registry_id = bundle.source_registry_id;
         wizard.data.bundle.target_registry_id = bundle.target_registry_id;
+        wizard.data.bundle.auto_tag_enabled = bundle.auto_tag_enabled;
         wizard.data.imageMappings = mappings.map(m => ({
             source_image: m.source_image,
             source_tag: m.source_tag,
@@ -2806,10 +2880,16 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                     })() : '-'}</td>
                                     <td>
                                         ${!job.is_release_job && job.status === 'success' ? `
-                                            <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
-                                                <i class="ti ti-rocket"></i>
-                                                Release Images
-                                            </a>
+                                            <div class="d-flex flex-column gap-1">
+                                                <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
+                                                    <i class="ti ti-rocket"></i>
+                                                    Release Images
+                                                </a>
+                                                <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
+                                                    <i class="ti ti-rocket"></i>
+                                                    Deploy (dev/test)
+                                                </button>
+                                            </div>
                                         ` : job.is_release_job ? `
                                             <span class="badge bg-purple-lt text-purple-fg">image release</span>
                                         ` : ''}
@@ -2821,6 +2901,14 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                 </div>
             </div>
         `;
+
+        document.querySelectorAll('.auto-deploy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const jobId = btn.getAttribute('data-job-id');
+                const targetTag = btn.getAttribute('data-target-tag');
+                await runAutoDeployFromCopyJob(jobId, bundle?.tenant_id, targetTag);
+            });
+        });
 
     } catch (error) {
         content.innerHTML = `
@@ -3010,6 +3098,7 @@ router.on('/releases/:id', async (params) => {
                     <h3 class="card-title">
                         <i class="ti ti-rocket me-2"></i>
                         ${release.release_id}
+                        ${release.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                     </h3>
                 </div>
                 <div class="card-body">
@@ -3599,6 +3688,8 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             api.getImageMappings(params.id, params.version),
         ]);
 
+        const autoTagEnabled = !!bundle.auto_tag_enabled;
+
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -3622,10 +3713,15 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label required">Target Tag</label>
+                        <label class="form-label required">
+                            Target Tag
+                            ${autoTagEnabled ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                        </label>
                         <input type="text" class="form-control" id="target-tag"
-                               placeholder="2026.02.02.01" required>
-                        <small class="form-hint">Tag to use for all target images</small>
+                               placeholder="2026.02.02.01" required ${autoTagEnabled ? 'disabled' : ''}>
+                        <small class="form-hint">
+                            ${autoTagEnabled ? 'Tag is auto-generated (YYYY.MM.DD.COUNTER)' : 'Tag to use for all target images'}
+                        </small>
                     </div>
 
                     <div class="list-group mb-3">
@@ -3725,9 +3821,20 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             precheckBtn.addEventListener('click', runPrecheck);
         }
 
+        const targetTagInput = document.getElementById('target-tag');
+        if (autoTagEnabled && targetTagInput) {
+            try {
+                const tzOffset = new Date().getTimezoneOffset();
+                const preview = await api.getNextCopyTag(params.id, params.version, tzOffset);
+                targetTagInput.value = preview.tag;
+            } catch (error) {
+                getApp().showError(`Failed to generate tag preview: ${error.message}`);
+            }
+        }
+
         document.getElementById('start-copy-btn').addEventListener('click', async () => {
             const targetTag = document.getElementById('target-tag').value;
-            if (!targetTag) {
+            if (!autoTagEnabled && !targetTag) {
                 getApp().showError('Please enter a target tag');
                 return;
             }
@@ -3743,7 +3850,8 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
 
             try {
-                const response = await api.startCopyJob(params.id, params.version, targetTag);
+                const tzOffset = new Date().getTimezoneOffset();
+                const response = await api.startCopyJob(params.id, params.version, targetTag, tzOffset);
                 getApp().showSuccess('Copy job started successfully');
                 router.navigate(`/copy-jobs/${response.job_id}`);
             } catch (error) {
@@ -3774,10 +3882,11 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
     try {
         // Initial status + images
-        const [initialStatus, initialImages, logHistory] = await Promise.all([
+        const [initialStatus, initialImages, logHistory, releaseList] = await Promise.all([
             api.getCopyJobStatus(params.jobId),
             api.getCopyJobImages(params.jobId),
             api.getCopyJobLogHistory(params.jobId),
+            api.getReleases(),
         ]);
         const bundle = initialStatus.bundle_id ? await api.getBundle(initialStatus.bundle_id).catch(() => null) : null;
         const [tenant, sourceRegistry, targetRegistry] = await Promise.all([
@@ -3801,6 +3910,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
             const isComplete = status.status === 'success' || status.status === 'failed' || status.status === 'cancelled';
             const failedImages = images.filter(img => img.copy_status === 'failed');
             const skippedImages = images.filter(img => img.copy_status === 'success' && img.bytes_copied === 0);
+            const autoRelease = releaseList.find(r => r.copy_job_id === status.job_id && r.is_auto);
 
             content.innerHTML = `
                 <style>
@@ -3827,7 +3937,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             <h3 class="card-title mb-1">
                                 Copy Job Monitor
                                 ${status.is_release_job ? `
-                                    <span class="badge bg-purple-lt text-purple-fg ms-2">release</span>
+                                    <span class="badge bg-purple-lt text-purple-fg ms-2">image release</span>
                                 ` : ''}
                             </h3>
                             <div class="text-secondary small">
@@ -3909,6 +4019,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             </div>
                         </div>
 
+                        <div class="text-secondary small mb-3">
+                            Auto-release: ${autoRelease ? `created (<a href="#/releases/${autoRelease.id}">${autoRelease.release_id}</a>)` : 'not created'}
+                        </div>
+
                         ${isComplete ? `
                             <div class="d-grid gap-2">
                                 ${status.status === 'success' && !status.is_release_job ? `
@@ -3916,6 +4030,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                         <i class="ti ti-rocket"></i>
                                         Release Images
                                     </a>
+                                    <button class="btn btn-outline-primary" id="auto-deploy-btn">
+                                        <i class="ti ti-rocket"></i>
+                                        Deploy (dev/test)
+                                    </button>
                                 ` : ''}
                                 <a href="#/copy-jobs" class="btn btn-outline-secondary">
                                     <i class="ti ti-list"></i>
@@ -4036,6 +4154,13 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 </div>
                 ` : ''}
             `;
+
+            const autoDeployBtn = document.getElementById('auto-deploy-btn');
+            if (autoDeployBtn) {
+                autoDeployBtn.addEventListener('click', async () => {
+                    await runAutoDeployFromCopyJob(status.job_id, tenant?.id || bundle?.tenant_id, status.target_tag);
+                });
+            }
 
             const cancelBtn = document.getElementById('cancel-copy-job');
             if (cancelBtn) {
@@ -4283,6 +4408,167 @@ router.on('/copy-jobs', async () => {
     }
 });
 
+// Deployments List
+router.on('/deployments', async () => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const [deployments, tenants, bundles] = await Promise.all([
+            api.getDeployments(),
+            api.getTenants(),
+            api.getBundles(),
+        ]);
+
+        const renderDeployments = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedStatus = '') => {
+            const filteredBundles = bundles.filter(b => !selectedTenant || b.tenant_id === selectedTenant);
+            const q = searchQuery.trim().toLowerCase();
+
+            const filtered = rows.filter(row => {
+                if (selectedTenant && row.tenant_id !== selectedTenant) return false;
+                if (selectedBundle && row.bundle_id !== selectedBundle) return false;
+                if (selectedStatus && row.status !== selectedStatus) return false;
+                if (q) {
+                    return (
+                        row.bundle_name.toLowerCase().includes(q) ||
+                        row.release_id.toLowerCase().includes(q) ||
+                        row.target_name.toLowerCase().includes(q)
+                    );
+                }
+                return true;
+            });
+
+            return `
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Deployments</h3>
+                    </div>
+                    <div class="card-body border-bottom py-3">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <div class="input-group">
+                                    <span class="input-group-text">
+                                        <i class="ti ti-search"></i>
+                                    </span>
+                                    <input class="form-control" id="deployments-search" placeholder="Search bundle, release, target..."
+                                           value="${searchQuery}">
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select" id="deployments-tenant">
+                                    <option value="">All Tenants</option>
+                                    ${tenants.map(t => `
+                                        <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select" id="deployments-bundle">
+                                    <option value="">All Bundles</option>
+                                    ${filteredBundles.map(b => `
+                                        <option value="${b.id}" ${b.id === selectedBundle ? 'selected' : ''}>${b.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <select class="form-select" id="deployments-status">
+                                    <option value="">All Status</option>
+                                    <option value="in_progress" ${selectedStatus === 'in_progress' ? 'selected' : ''}>in_progress</option>
+                                    <option value="pending" ${selectedStatus === 'pending' ? 'selected' : ''}>pending</option>
+                                    <option value="success" ${selectedStatus === 'success' ? 'selected' : ''}>success</option>
+                                    <option value="failed" ${selectedStatus === 'failed' ? 'selected' : ''}>failed</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Release</th>
+                                    <th>Bundle</th>
+                                    <th>Target</th>
+                                    <th>Status</th>
+                                    <th>Started</th>
+                                    <th>Completed</th>
+                                    <th>Tag</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${filtered.length === 0 ? `
+                                    <tr>
+                                        <td colspan="8" class="text-center text-secondary py-5">
+                                            No deployments found.
+                                        </td>
+                                    </tr>
+                                ` : filtered.map(row => `
+                                    <tr>
+                                        <td>
+                                            <a href="#/releases/${row.release_db_id}"><strong>${row.release_id}</strong></a>
+                                            ${row.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                                        </td>
+                                        <td>
+                                            <a href="#/bundles/${row.bundle_id}">${row.bundle_name}</a>
+                                        </td>
+                                        <td>${row.target_name} (${row.env_name})</td>
+                                        <td>
+                                            <span class="badge ${
+                                                row.status === 'success' ? 'bg-success text-success-fg' :
+                                                row.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                                row.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                                'bg-secondary text-secondary-fg'
+                                            }">${row.status}</span>
+                                        </td>
+                                        <td>${new Date(row.started_at).toLocaleString('cs-CZ')}</td>
+                                        <td>${row.completed_at ? new Date(row.completed_at).toLocaleString('cs-CZ') : '-'}</td>
+                                        <td>${row.tag_name ? `<code class="small">${row.tag_name}</code>` : '-'}</td>
+                                        <td>
+                                            <a href="#/deploy-jobs/${row.id}" class="btn btn-sm btn-outline-primary">View</a>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        content.innerHTML = renderDeployments(deployments);
+
+        const applyFilters = () => {
+            const searchEl = document.getElementById('deployments-search');
+            const tenantEl = document.getElementById('deployments-tenant');
+            const bundleEl = document.getElementById('deployments-bundle');
+            const statusEl = document.getElementById('deployments-status');
+            content.innerHTML = renderDeployments(
+                deployments,
+                searchEl?.value || '',
+                tenantEl?.value || '',
+                bundleEl?.value || '',
+                statusEl?.value || ''
+            );
+            attachFilterHandlers();
+        };
+
+        const attachFilterHandlers = () => {
+            document.getElementById('deployments-search')?.addEventListener('input', applyFilters);
+            document.getElementById('deployments-tenant')?.addEventListener('change', applyFilters);
+            document.getElementById('deployments-bundle')?.addEventListener('change', applyFilters);
+            document.getElementById('deployments-status')?.addEventListener('change', applyFilters);
+        };
+
+        attachFilterHandlers();
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load deployments: ${error.message}
+            </div>
+        `;
+    }
+});
+
 /**
  * Registry list component with filtering
  */
@@ -4337,6 +4623,112 @@ function registryList() {
             return badges[role] || 'bg-secondary text-secondary-fg';
         }
     };
+}
+
+async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
+    if (!tenantId) {
+        getApp().showError('Tenant not resolved for this copy job');
+        return;
+    }
+
+    let targets = [];
+    try {
+        targets = await api.getDeployTargets(tenantId);
+    } catch (error) {
+        getApp().showError(`Failed to load deploy targets: ${error.message}`);
+        return;
+    }
+
+    const eligible = targets.filter(t => t.allow_auto_release && t.is_active !== false);
+    if (eligible.length === 0) {
+        getApp().showError('No deploy targets allow auto release');
+        return;
+    }
+
+    const dialogHtml = `
+        <div class="modal modal-blur fade show" style="display: block;" id="auto-deploy-modal">
+            <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-body">
+                        <div class="modal-title" id="auto-deploy-title">Deploy Target</div>
+                        <div class="mt-2">
+                            <label class="form-label">Deploy Target</label>
+                            <select class="form-select" id="auto-deploy-select">
+                                <option value="">Select...</option>
+                                ${eligible.map(t => `
+                                    <option value="${t.id}">${t.name} (${t.env_name})</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link link-secondary" id="auto-deploy-cancel">
+                            Cancel
+                        </button>
+                        <button type="button" class="btn btn-primary" id="auto-deploy-confirm" disabled>
+                            Start Deploy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', dialogHtml);
+
+    const modal = document.getElementById('auto-deploy-modal');
+    const backdrop = document.querySelector('.modal-backdrop');
+    const select = document.getElementById('auto-deploy-select');
+    const titleEl = document.getElementById('auto-deploy-title');
+    const labelEl = modal.querySelector('label.form-label');
+    const confirmBtn = document.getElementById('auto-deploy-confirm');
+    const cancelBtn = document.getElementById('auto-deploy-cancel');
+
+    const cleanup = () => {
+        modal.remove();
+        backdrop.remove();
+    };
+
+    const updateTitle = (target) => {
+        if (!target) {
+            titleEl.textContent = 'Deploy Target';
+            if (labelEl) {
+                labelEl.textContent = 'Deploy Target';
+            }
+            return;
+        }
+        const tagPreview = targetTag
+            ? (target.append_env_suffix ? `${targetTag}-${target.env_name}` : targetTag)
+            : null;
+        titleEl.textContent = 'Deploy Target';
+        if (labelEl) {
+            labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
+        }
+    };
+
+    select.addEventListener('change', () => {
+        const target = eligible.find(t => t.id === select.value);
+        confirmBtn.disabled = !target;
+        updateTitle(target);
+    });
+
+    cancelBtn.addEventListener('click', () => {
+        cleanup();
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+        const targetId = select.value;
+        if (!targetId) return;
+        cleanup();
+        try {
+            const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId);
+            getApp().showSuccess('Deploy job started');
+            router.navigate(`/deploy-jobs/${response.job_id}`);
+        } catch (error) {
+            getApp().showError(error.message);
+        }
+    });
 }
 
 console.log('App.js loaded');

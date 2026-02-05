@@ -18,6 +18,7 @@ pub struct CreateBundleRequest {
     pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    pub auto_tag_enabled: Option<bool>,
 }
 
 /// Request pro update bundle
@@ -27,6 +28,7 @@ pub struct UpdateBundleRequest {
     pub description: Option<String>,
     pub source_registry_id: Uuid,
     pub target_registry_id: Uuid,
+    pub auto_tag_enabled: Option<bool>,
 }
 
 /// Request pro vytvoření nové verze bundle
@@ -65,7 +67,23 @@ pub struct BundleReleaseSummary {
     pub id: Uuid,
     pub release_id: String,
     pub status: String,
+    pub is_auto: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BundleDeployJobSummary {
+    pub id: Uuid,
+    pub status: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub commit_sha: Option<String>,
+    pub tag_name: Option<String>,
+    pub target_name: String,
+    pub env_name: String,
+    pub release_db_id: Uuid,
+    pub release_id: String,
+    pub is_auto: bool,
 }
 
 /// Request pro přidání image mapping
@@ -100,6 +118,7 @@ pub struct BundleWithStats {
     pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    pub auto_tag_enabled: bool,
     pub current_version: i32,
     pub created_at: chrono::DateTime<chrono::Utc>,
     // Stats
@@ -120,6 +139,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/bundles/{bundle_id}/versions/{version}/archive", put(set_bundle_version_archive))
         .route("/bundles/{bundle_id}/copy-jobs", get(list_bundle_copy_jobs))
         .route("/bundles/{bundle_id}/releases", get(list_bundle_releases))
+        .route("/bundles/{bundle_id}/deployments", get(list_bundle_deployments))
 
         // Image mappings
         .route("/bundles/{bundle_id}/versions/{version}/images", get(list_image_mappings).post(create_image_mapping))
@@ -317,16 +337,19 @@ async fn create_bundle(
     })?;
 
     // Vytvoření bundle
+    let auto_tag_enabled = payload.auto_tag_enabled.unwrap_or(false);
+
     let bundle = sqlx::query_as::<_, Bundle>(
-        "INSERT INTO bundles (tenant_id, source_registry_id, target_registry_id, name, description, current_version)
-         VALUES ($1, $2, $3, $4, $5, 1)
-         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, current_version, created_at",
+        "INSERT INTO bundles (tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version)
+         VALUES ($1, $2, $3, $4, $5, $6, 1)
+         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version, created_at",
     )
     .bind(tenant_id)
     .bind(payload.source_registry_id)
     .bind(payload.target_registry_id)
     .bind(&payload.name)
     .bind(&payload.description)
+    .bind(auto_tag_enabled)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
@@ -395,16 +418,19 @@ async fn update_bundle(
         ));
     }
 
+    let auto_tag_enabled = payload.auto_tag_enabled.unwrap_or(false);
+
     let bundle = sqlx::query_as::<_, Bundle>(
         "UPDATE bundles
-         SET name = $1, description = $2, source_registry_id = $3, target_registry_id = $4
-         WHERE id = $5
-         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, current_version, created_at",
+         SET name = $1, description = $2, source_registry_id = $3, target_registry_id = $4, auto_tag_enabled = $5
+         WHERE id = $6
+         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version, created_at",
     )
     .bind(&payload.name)
     .bind(&payload.description)
     .bind(payload.source_registry_id)
     .bind(payload.target_registry_id)
+    .bind(auto_tag_enabled)
     .bind(id)
     .fetch_optional(&pool)
     .await
@@ -610,7 +636,7 @@ async fn list_bundle_releases(
 ) -> Result<Json<Vec<BundleReleaseSummary>>, (StatusCode, Json<ErrorResponse>)> {
     let releases = sqlx::query_as::<_, BundleReleaseSummary>(
         r#"
-        SELECT r.id, r.release_id, r.status, r.created_at
+        SELECT r.id, r.release_id, r.status, r.is_auto, r.created_at
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
@@ -632,6 +658,50 @@ async fn list_bundle_releases(
     })?;
 
     Ok(Json(releases))
+}
+
+/// GET /api/v1/bundles/{bundle_id}/deployments - Seznam deploy jobů pro bundle
+async fn list_bundle_deployments(
+    State(pool): State<PgPool>,
+    Path(bundle_id): Path<Uuid>,
+) -> Result<Json<Vec<BundleDeployJobSummary>>, (StatusCode, Json<ErrorResponse>)> {
+    let jobs = sqlx::query_as::<_, BundleDeployJobSummary>(
+        r#"
+        SELECT
+            dj.id,
+            dj.status,
+            dj.started_at,
+            dj.completed_at,
+            dj.commit_sha,
+            dj.tag_name,
+            dt.name as target_name,
+            dt.env_name,
+            r.id as release_db_id,
+            r.release_id,
+            r.is_auto
+        FROM deploy_jobs dj
+        JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
+        JOIN releases r ON r.id = dj.release_id
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        WHERE bv.bundle_id = $1
+        ORDER BY dj.started_at DESC
+        LIMIT 50
+        "#
+    )
+    .bind(bundle_id)
+    .fetch_all(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(jobs))
 }
 
 /// POST /api/v1/bundles/{bundle_id}/versions - Vytvoření nové verze

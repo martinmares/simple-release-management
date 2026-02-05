@@ -255,10 +255,16 @@ class ApiClient {
 
     // ==================== COPY OPERATIONS ====================
 
-    async startCopyJob(bundleId, version, targetTag) {
+    async startCopyJob(bundleId, version, targetTag, timezoneOffsetMinutes = null) {
         return this.post(`/bundles/${bundleId}/versions/${version}/copy`, {
             target_tag: targetTag,
+            timezone_offset_minutes: timezoneOffsetMinutes,
         });
+    }
+
+    async getNextCopyTag(bundleId, version, timezoneOffsetMinutes = null) {
+        const params = timezoneOffsetMinutes === null ? '' : `?tz_offset_minutes=${encodeURIComponent(timezoneOffsetMinutes)}`;
+        return this.get(`/bundles/${bundleId}/versions/${version}/next-tag${params}`);
     }
 
     async precheckCopyImages(bundleId, version) {
@@ -304,6 +310,14 @@ class ApiClient {
 
     async getCopyJobs() {
         return this.get('/copy/jobs');
+    }
+
+    async getDeployments() {
+        return this.get('/deploy/jobs');
+    }
+
+    async getBundleDeployments(bundleId) {
+        return this.get(`/bundles/${bundleId}/deployments`);
     }
 
     async startReleaseCopyJob(payload) {
@@ -406,6 +420,13 @@ class ApiClient {
 
     async createDeployTarget(tenantId, data) {
         return this.post(`/tenants/${tenantId}/deploy-targets`, data);
+    }
+
+    async startAutoDeployFromCopyJob(copyJobId, deployTargetId) {
+        return this.post(`/deploy/jobs/from-copy`, {
+            copy_job_id: copyJobId,
+            deploy_target_id: deployTargetId,
+        });
     }
 
     async updateDeployTarget(id, data) {

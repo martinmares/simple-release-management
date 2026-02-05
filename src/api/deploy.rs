@@ -53,6 +53,8 @@ pub struct CreateDeployTargetRequest {
     pub encjson_key_dir: Option<String>,
     pub encjson_private_key: Option<String>,
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
+    pub allow_auto_release: Option<bool>,
+    pub append_env_suffix: Option<bool>,
     pub is_active: Option<bool>,
 }
 
@@ -67,12 +69,20 @@ pub struct UpdateDeployTargetRequest {
     pub encjson_key_dir: Option<String>,
     pub encjson_private_key: Option<String>,
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
+    pub allow_auto_release: Option<bool>,
+    pub append_env_suffix: Option<bool>,
     pub is_active: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDeployJobRequest {
     pub release_id: Uuid,
+    pub deploy_target_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AutoDeployFromCopyJobRequest {
+    pub copy_job_id: Uuid,
     pub deploy_target_id: Uuid,
 }
 
@@ -116,6 +126,26 @@ pub struct DeployJobSummary {
     pub env_name: String,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DeployJobListRow {
+    pub id: Uuid,
+    pub status: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub error_message: Option<String>,
+    pub commit_sha: Option<String>,
+    pub tag_name: Option<String>,
+    pub target_name: String,
+    pub env_name: String,
+    pub release_db_id: Uuid,
+    pub release_id: String,
+    pub is_auto: bool,
+    pub bundle_id: Uuid,
+    pub bundle_name: String,
+    pub tenant_id: Uuid,
+    pub tenant_name: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: String,
@@ -127,7 +157,8 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy-targets/{id}", get(get_deploy_target).put(update_deploy_target).delete(delete_deploy_target))
         .route("/releases/{id}/deploy-targets", get(list_release_deploy_targets))
         .route("/releases/{id}/deploy-jobs", get(list_release_deploy_jobs))
-        .route("/deploy/jobs", post(create_deploy_job))
+        .route("/deploy/jobs", get(list_deploy_jobs).post(create_deploy_job))
+        .route("/deploy/jobs/from-copy", post(auto_deploy_from_copy_job))
         .route("/deploy/jobs/{id}", get(get_deploy_job))
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
         .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
@@ -300,8 +331,8 @@ async fn create_deploy_target(
         r#"
         INSERT INTO deploy_targets
         (tenant_id, name, env_name, env_repo_id, env_repo_path,
-         deploy_repo_id, deploy_repo_path, encjson_key_dir, encjson_private_key_encrypted, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         deploy_repo_id, deploy_repo_path, encjson_key_dir, encjson_private_key_encrypted, allow_auto_release, append_env_suffix, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         RETURNING *
         "#,
     )
@@ -314,6 +345,8 @@ async fn create_deploy_target(
     .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
+    .bind(payload.allow_auto_release.unwrap_or(false))
+    .bind(payload.append_env_suffix.unwrap_or(false))
     .bind(payload.is_active.unwrap_or(true))
     .fetch_one(&state.pool)
     .await
@@ -441,8 +474,10 @@ async fn update_deploy_target(
             deploy_repo_path = $6,
             encjson_key_dir = $7,
             encjson_private_key_encrypted = COALESCE($8, encjson_private_key_encrypted),
-            is_active = $9
-        WHERE id = $10
+            allow_auto_release = $9,
+            append_env_suffix = $10,
+            is_active = $11
+        WHERE id = $12
         RETURNING *
         "#,
     )
@@ -454,6 +489,8 @@ async fn update_deploy_target(
     .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
+    .bind(payload.allow_auto_release.unwrap_or(false))
+    .bind(payload.append_env_suffix.unwrap_or(false))
     .bind(payload.is_active.unwrap_or(true))
     .bind(id)
     .fetch_optional(&state.pool)
@@ -572,6 +609,53 @@ async fn list_release_deploy_jobs(
     Ok(Json(jobs))
 }
 
+async fn list_deploy_jobs(
+    State(state): State<DeployApiState>,
+) -> Result<Json<Vec<DeployJobListRow>>, (StatusCode, Json<ErrorResponse>)> {
+    let jobs = sqlx::query_as::<_, DeployJobListRow>(
+        r#"
+        SELECT
+            dj.id,
+            dj.status,
+            dj.started_at,
+            dj.completed_at,
+            dj.error_message,
+            dj.commit_sha,
+            dj.tag_name,
+            dt.name as target_name,
+            dt.env_name,
+            r.id as release_db_id,
+            r.release_id,
+            r.is_auto,
+            b.id as bundle_id,
+            b.name as bundle_name,
+            t.id as tenant_id,
+            t.name as tenant_name
+        FROM deploy_jobs dj
+        JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
+        JOIN releases r ON r.id = dj.release_id
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        JOIN tenants t ON t.id = b.tenant_id
+        ORDER BY dj.started_at DESC
+        LIMIT 200
+        "#
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(jobs))
+}
+
 async fn get_deploy_job(
     State(state): State<DeployApiState>,
     Path(id): Path<Uuid>,
@@ -660,13 +744,175 @@ async fn create_deploy_job(
         ));
     }
 
+    let job_id = enqueue_deploy_job(&state, payload.release_id, payload.deploy_target_id).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DeployJobResponse {
+            job_id,
+            message: "Deploy job started".to_string(),
+        }),
+    ))
+}
+
+async fn auto_deploy_from_copy_job(
+    State(state): State<DeployApiState>,
+    Json(payload): Json<AutoDeployFromCopyJobRequest>,
+) -> Result<(StatusCode, Json<DeployJobResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let target = sqlx::query_as::<_, DeployTarget>(
+        "SELECT * FROM deploy_targets WHERE id = $1",
+    )
+    .bind(payload.deploy_target_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy target not found".to_string(),
+            }),
+        )
+    })?;
+
+    if !target.allow_auto_release {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy target does not allow auto release".to_string(),
+            }),
+        ));
+    }
+
+    let job_row = sqlx::query_as::<_, (String, String, Uuid)>(
+        r#"
+        SELECT cj.status, cj.target_tag, b.tenant_id
+        FROM copy_jobs cj
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        WHERE cj.id = $1
+        "#,
+    )
+    .bind(payload.copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let Some((status, target_tag, tenant_id)) = job_row else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Copy job with id {} not found", payload.copy_job_id),
+            }),
+        ));
+    };
+
+    if status != "success" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Copy job is not successful".to_string(),
+            }),
+        ));
+    }
+
+    if tenant_id != target.tenant_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy target does not belong to this tenant".to_string(),
+            }),
+        ));
+    }
+
+    let existing_release = sqlx::query_as::<_, Release>(
+        "SELECT * FROM releases WHERE copy_job_id = $1",
+    )
+    .bind(payload.copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let release = if let Some(release) = existing_release {
+        release
+    } else {
+        sqlx::query_as::<_, Release>(
+            "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason)
+             VALUES ($1, $2, 'draft', $3, $4, true, $5)
+             RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+        )
+        .bind(payload.copy_job_id)
+        .bind(&target_tag)
+        .bind("Auto release from copy job")
+        .bind("system")
+        .bind("copy_job_deploy")
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            if let Some(db_err) = e.as_database_error() {
+                if db_err.is_unique_violation() {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(ErrorResponse {
+                            error: format!("Release ID '{}' already exists", target_tag),
+                        }),
+                    );
+                }
+            }
+
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to create auto release: {}", e),
+                }),
+            )
+        })?
+    };
+
+    let job_id = enqueue_deploy_job(&state, release.id, payload.deploy_target_id).await?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DeployJobResponse {
+            job_id,
+            message: "Deploy job started".to_string(),
+        }),
+    ))
+}
+
+async fn enqueue_deploy_job(
+    state: &DeployApiState,
+    release_id: Uuid,
+    deploy_target_id: Uuid,
+) -> Result<Uuid, (StatusCode, Json<ErrorResponse>)> {
     let job_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO deploy_jobs (id, release_id, deploy_target_id, status) VALUES ($1, $2, $3, 'pending')",
     )
     .bind(job_id)
-    .bind(payload.release_id)
-    .bind(payload.deploy_target_id)
+    .bind(release_id)
+    .bind(deploy_target_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -709,13 +955,7 @@ async fn create_deploy_job(
         }
     });
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(DeployJobResponse {
-            job_id,
-            message: "Deploy job started".to_string(),
-        }),
-    ))
+    Ok(job_id)
 }
 
 async fn store_encjson_keys(
@@ -954,12 +1194,17 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     }
 
     let diff_info = collect_deploy_diff(&deploy_repo_path, deploy_rel_path, &log_tx).await?;
+    let tag_name = if target.append_env_suffix {
+        format!("{}-{}", release.release_id, target.env_name)
+    } else {
+        release.release_id.clone()
+    };
 
     if let Some(diff) = diff_info {
     run_git_commit_and_push(
         &deploy_repo_path,
         deploy_rel_path,
-        &release.release_id,
+        &tag_name,
         &deploy_repo.repo_url,
         &git_env_deploy,
         &log_tx,
@@ -984,7 +1229,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         "UPDATE deploy_jobs SET status = 'success', completed_at = NOW(), commit_sha = $1, tag_name = $2 WHERE id = $3",
     )
     .bind(&commit_sha)
-    .bind(&release.release_id)
+    .bind(&tag_name)
     .bind(job_id)
     .execute(&state.pool)
     .await?;
