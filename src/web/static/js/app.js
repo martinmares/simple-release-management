@@ -3767,7 +3767,7 @@ router.on('/deploy-jobs/:id', async (params) => {
                 <div class="card-body">
                     <dl class="row mb-0">
                         <dt class="col-4">Target:</dt>
-                        <dd class="col-8">${job.target_name} (${job.env_name})</dd>
+                        <dd class="col-8">${formatTargetWithEnv(job.target_name, job.env_name)}</dd>
 
                         <dt class="col-4">Status:</dt>
                         <dd class="col-8"><span class="badge ${
@@ -5149,7 +5149,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
                             <select class="form-select" id="auto-deploy-select">
                                 <option value="">Select...</option>
                                 ${eligible.map(t => `
-                                    <option value="${t.id}">${t.name} (${t.env_name})</option>
+                                    <option value="${t.id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -5278,6 +5278,13 @@ function applyReplaceRules(value, rules) {
         result = result.split(find).join(replace);
     });
     return result;
+}
+
+function formatTargetWithEnv(name, envName) {
+    if (!envName) return name || '';
+    const suffix = `(${envName})`;
+    if ((name || '').includes(suffix)) return name;
+    return `${name} (${envName})`;
 }
 
 function parseMappingCsv(input, rules = []) {
