@@ -567,7 +567,23 @@ router.on('/tenants', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const tenants = await api.getTenants();
+        const [tenants, registries, bundles] = await Promise.all([
+            api.getTenants(),
+            api.getRegistries(),
+            api.getBundles(),
+        ]);
+
+        const registriesByTenant = new Map();
+        registries.forEach(reg => {
+            if (!registriesByTenant.has(reg.tenant_id)) registriesByTenant.set(reg.tenant_id, []);
+            registriesByTenant.get(reg.tenant_id).push(reg);
+        });
+
+        const bundlesByTenant = new Map();
+        bundles.forEach(bundle => {
+            if (!bundlesByTenant.has(bundle.tenant_id)) bundlesByTenant.set(bundle.tenant_id, []);
+            bundlesByTenant.get(bundle.tenant_id).push(bundle);
+        });
 
         const renderTenants = (rows, searchQuery = '') => `
             <div class="card">
@@ -599,24 +615,54 @@ router.on('/tenants', async () => {
                             <tr>
                                 <th>Name</th>
                                 <th>Slug</th>
-                                <th>Description</th>
+                                <th>Registries</th>
+                                <th>Bundles</th>
                                 <th>Created</th>
                             </tr>
                         </thead>
                         <tbody>
                             ${rows.length === 0 ? `
                                 <tr>
-                                    <td colspan="4" class="text-center text-secondary py-5">
+                                    <td colspan="5" class="text-center text-secondary py-5">
                                         No tenants found. Create your first tenant to get started.
                                     </td>
                                 </tr>
                             ` : rows.map(tenant => `
+                                ${(() => {
+                                    const regs = registriesByTenant.get(tenant.id) || [];
+                                    const bnds = bundlesByTenant.get(tenant.id) || [];
+                                    const regList = regs.length === 0
+                                        ? '<span class="text-secondary">-</span>'
+                                        : regs.map(reg => `
+                                            <div class="small">
+                                                <a href="#/registries/${reg.id}">${reg.name}</a>
+                                                <span class="text-secondary">•</span>
+                                                <span class="text-secondary">${reg.username || '-'}</span>
+                                                <span class="text-secondary">•</span>
+                                                <span class="text-secondary">${reg.base_url}</span>
+                                            </div>
+                                        `).join('');
+                                    const bundleList = bnds.length === 0
+                                        ? '<span class="text-secondary">-</span>'
+                                        : bnds.map(bundle => `
+                                            <div class="small">
+                                                <a href="#/bundles/${bundle.id}">${bundle.name}</a>
+                                                <span class="text-secondary">•</span>
+                                                <span class="badge bg-blue text-blue-fg">v${bundle.current_version || 1}</span>
+                                                <span class="text-secondary">•</span>
+                                                <span class="text-secondary">${bundle.image_count || '-'}</span>
+                                            </div>
+                                        `).join('');
+                                    return `
                                 <tr>
                                     <td><a href="#/tenants/${tenant.id}"><strong>${tenant.name}</strong></a></td>
                                     <td><span class="badge">${tenant.slug}</span></td>
-                                    <td>${tenant.description || '-'}</td>
+                                    <td>${regList}</td>
+                                    <td>${bundleList}</td>
                                     <td>${new Date(tenant.created_at).toLocaleDateString('cs-CZ')}</td>
                                 </tr>
+                                    `;
+                                })()}
                             `).join('')}
                         </tbody>
                     </table>
