@@ -42,6 +42,7 @@ pub struct DeployApiState {
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
+    pub encjson_legacy_path: String,
     pub kubeconform_path: String,
     pub job_logs: Arc<RwLock<HashMap<Uuid, broadcast::Sender<String>>>>,
 }
@@ -1885,6 +1886,51 @@ async fn run_encjson_dotenv(
     log_tx: &broadcast::Sender<String>,
     keydir_override: Option<&FsPath>,
 ) -> anyhow::Result<String> {
+    let contents = tokio::fs::read_to_string(file_path)
+        .await
+        .with_context(|| format!("Failed to read env file {}", file_path.display()))?;
+    let api_mode = detect_encjson_api(&contents);
+
+    match api_mode {
+        EncJsonApi::Legacy => {
+            let _ = log_tx.send(format!(
+                "encjson legacy detected in {}, using legacy pipeline",
+                file_path.display()
+            ));
+            run_encjson_legacy_pipeline(state, target, file_path, keydir_override).await
+        }
+        EncJsonApi::Modern => {
+            let _ = log_tx.send(format!(
+                "encjson modern detected in {}, using encjson-rs",
+                file_path.display()
+            ));
+            run_encjson_modern(state, target, file_path, keydir_override).await
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EncJsonApi {
+    Legacy,
+    Modern,
+}
+
+fn detect_encjson_api(contents: &str) -> EncJsonApi {
+    if contents.contains("EncJson[@api=1.0") {
+        EncJsonApi::Legacy
+    } else if contents.contains("EncJson[@api=2.0") {
+        EncJsonApi::Modern
+    } else {
+        EncJsonApi::Modern
+    }
+}
+
+async fn run_encjson_modern(
+    state: &DeployApiState,
+    target: &DeployTarget,
+    file_path: &FsPath,
+    keydir_override: Option<&FsPath>,
+) -> anyhow::Result<String> {
     let mut cmd = Command::new(&state.encjson_path);
     cmd.arg("decrypt")
         .arg("-f")
@@ -1905,8 +1951,59 @@ async fn run_encjson_dotenv(
 
     let output = cmd.output().await?;
     if !output.status.success() {
-        let _ = log_tx.send(format!("encjson failed for {}", file_path.display()));
-        anyhow::bail!("encjson failed");
+        anyhow::bail!("encjson-rs failed");
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+async fn run_encjson_legacy_pipeline(
+    state: &DeployApiState,
+    target: &DeployTarget,
+    file_path: &FsPath,
+    keydir_override: Option<&FsPath>,
+) -> anyhow::Result<String> {
+    let mut legacy_cmd = Command::new(&state.encjson_legacy_path);
+    legacy_cmd
+        .arg("decrypt")
+        .arg("-f")
+        .arg(file_path)
+        .stdout(std::process::Stdio::piped());
+
+    if let Some(keydir) = keydir_override {
+        legacy_cmd.arg("-k").arg(keydir);
+    } else if let Some(keydir) = &target.encjson_key_dir {
+        legacy_cmd.arg("-k").arg(keydir);
+    }
+
+    if let Some(enc_key) = &target.encjson_private_key_encrypted {
+        let key = crypto::decrypt(enc_key, &state.encryption_secret)?;
+        legacy_cmd.env("ENCJSON_PRIVATE_KEY", key);
+    }
+
+    let mut legacy_child = legacy_cmd.spawn()?;
+    let legacy_stdout = legacy_child
+        .stdout
+        .take()
+        .context("Failed to capture legacy encjson stdout")?;
+
+    let mut modern_cmd = Command::new(&state.encjson_path);
+    modern_cmd
+        .arg("decrypt")
+        .arg("-o")
+        .arg("dot-env")
+        .arg("-")
+        .stdin(legacy_stdout)
+        .stdout(std::process::Stdio::piped());
+
+    let output = modern_cmd.output().await?;
+    let legacy_status = legacy_child.wait().await?;
+
+    if !legacy_status.success() {
+        anyhow::bail!("encjson legacy failed");
+    }
+    if !output.status.success() {
+        anyhow::bail!("encjson-rs failed");
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

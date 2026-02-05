@@ -27,6 +27,7 @@ pub struct Config {
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
+    pub encjson_legacy_path: String,
     pub kubeconform_path: String,
     pub encryption_secret: String,
     pub max_concurrent_copy_jobs: usize,
@@ -63,6 +64,9 @@ impl Config {
                 .unwrap_or_else(|_| "apply-env".to_string()),
 
             encjson_path: env::var("ENCJSON_PATH")
+                .unwrap_or_else(|_| "encjson".to_string()),
+
+            encjson_legacy_path: env::var("ENCJSON_LEGACY_PATH")
                 .unwrap_or_else(|_| "encjson".to_string()),
 
             kubeconform_path: env::var("KUBECONFORM_PATH")
