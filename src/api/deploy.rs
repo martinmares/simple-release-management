@@ -2431,6 +2431,18 @@ async fn collect_deploy_diff(
 ) -> anyhow::Result<Option<DeployDiffSnapshot>> {
     let add_path = if deploy_path.trim().is_empty() { "." } else { deploy_path };
 
+    let intent_out = Command::new("git")
+        .arg("add")
+        .arg("-N")
+        .arg("--")
+        .arg(add_path)
+        .current_dir(repo_path)
+        .output()
+        .await?;
+    if !intent_out.status.success() {
+        let _ = log_tx.send("git add -N failed (continuing)".to_string());
+    }
+
     let status_out = Command::new("git")
         .arg("status")
         .arg("--porcelain")
