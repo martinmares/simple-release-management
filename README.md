@@ -140,10 +140,6 @@ COPY_RETRY_DELAY_SECONDS=30
 
 ```
 simple-release-management/
-├── .docs/               # Dokumentace
-│   ├── AGENTS.md       # Instrukce pro AI agenty
-│   ├── IDEA.mh         # Původní nápad a use case
-│   └── IMPLEMENTATION.md  # Technická dokumentace
 ├── migrations/          # SQL migrace
 ├── src/
 │   ├── main.rs         # Entry point
@@ -237,41 +233,10 @@ docker run -d \
 
 ### Kubernetes
 
-Viz `.docs/IMPLEMENTATION.md` pro Kubernetes deployment manifesty.
-
-## Stav implementace
-
-### ✅ Hotovo
-
-- [x] Databázový schema a migrace
-- [x] Základní konfigurace
-- [x] Registry abstraction layer (Harbor, Docker Registry v2)
-- [x] Datové modely
-- [x] Logging a tracing
-
-### 🚧 TODO
-
-- [ ] Skopeo wrapper service
-- [ ] REST API endpoints
-- [ ] Web UI s Tabler CSS
-- [ ] SSE pro real-time progress
-- [ ] Bundle CRUD operace
-- [ ] Release management
-- [ ] TOML export/import
-- [ ] CLI interface
-
-Viz `.docs/IMPLEMENTATION.md` sekce TODO pro kompletní seznam plánovaných funkcí.
-
-## Dokumentace
-
-- [IMPLEMENTATION.md](.docs/IMPLEMENTATION.md) - Detailní technická dokumentace
-- [IDEA.mh](.docs/IDEA.mh) - Původní use case a požadavky
-- [AGENTS.md](.docs/AGENTS.md) - Instrukce pro vývoj
-
 ## License
 
-TODO
+AGPLv3. See `LICENSE`.
 
 ## Autor
 
-TODO
+Martin Mareš
