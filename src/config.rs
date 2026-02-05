@@ -6,7 +6,7 @@ use std::env;
 /// CLI arguments
 #[derive(Debug, Parser)]
 #[command(name = "simple-release-management")]
-#[command(about = "Simple Release Management - Docker image registry management tool", long_about = None)]
+#[command(about = "Simple Release Management - Docker image registry management tool", long_about = None, version)]
 pub struct CliArgs {
     /// Server host to bind to
     #[arg(long, default_value = "127.0.0.1")]
