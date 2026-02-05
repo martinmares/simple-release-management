@@ -199,6 +199,10 @@ class ApiClient {
         return this.get(`/bundles/${id}`);
     }
 
+    async getVersion() {
+        return this.get('/version');
+    }
+
     async createBundle(tenantId, data) {
         return this.post(`/tenants/${tenantId}/bundles`, data);
     }

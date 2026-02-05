@@ -113,6 +113,13 @@ a.card-link:hover .card-body {
     background-color: rgba(32, 107, 196, 0.02);
 }
 
+/* Navbar active underline */
+.navbar .nav-link.active {
+    color: var(--tblr-primary);
+    border-bottom: 2px solid var(--tblr-primary);
+    padding-bottom: calc(var(--tblr-nav-link-padding-y, 0.5rem) - 2px);
+}
+
 /* Progress bars */
 .progress-sm {
     height: 0.5rem;

@@ -6,7 +6,8 @@ pub mod registries;
 pub mod releases;
 pub mod tenants;
 
-use axum::Router;
+use axum::{routing::get, Json, Router};
+use serde::Serialize;
 use sqlx::PgPool;
 
 /// Vytvoří router s všemi API endpointy
@@ -26,7 +27,19 @@ pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
         .merge(registries::router(registry_state))
         .merge(git_repos::router(git_repo_state))
         .merge(bundles::router(pool.clone()))
-        .merge(releases::router(pool.clone()));
+        .merge(releases::router(pool.clone()))
+        .route("/version", get(get_version));
 
     Router::new().nest("/api/v1", api_v1)
+}
+
+#[derive(Serialize)]
+struct VersionResponse {
+    version: &'static str,
+}
+
+async fn get_version() -> Json<VersionResponse> {
+    Json(VersionResponse {
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }

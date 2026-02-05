@@ -46,6 +46,10 @@ class Router {
         if (route) {
             this.currentRoute = path;
             this.params = params;
+            const app = window.getApp ? window.getApp() : null;
+            if (app) {
+                app.currentRoute = path;
+            }
 
             try {
                 await this.routes[route](params, this.query);

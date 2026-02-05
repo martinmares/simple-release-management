@@ -86,6 +86,7 @@ document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         // State
         currentRoute: '/',
+        mobileMenuOpen: false,
         loading: false,
         loadingMessage: '',
         toasts: [],
@@ -106,6 +107,17 @@ document.addEventListener('alpine:init', () => {
             this.$watch('currentRoute', (value) => {
                 console.log('Route changed to:', value);
             });
+
+            const versionBadge = document.getElementById('app-version');
+            if (versionBadge) {
+                api.getVersion()
+                    .then((res) => {
+                        if (res?.version) {
+                            versionBadge.textContent = `v${res.version}`;
+                        }
+                    })
+                    .catch(() => {});
+            }
 
             // no keyboard shortcuts
         },

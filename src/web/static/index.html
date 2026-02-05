@@ -26,7 +26,7 @@
 <body>
     <div class="page" x-data="app" x-cloak>
         <!-- Navigation -->
-        <header class="navbar navbar-expand-md d-print-none" x-data="{ mobileMenuOpen: false }">
+        <header class="navbar navbar-expand-md d-print-none">
             <div class="container-xl">
                 <button class="navbar-toggler" type="button" @click="mobileMenuOpen = !mobileMenuOpen">
                     <span class="navbar-toggler-icon"></span>
@@ -59,14 +59,14 @@
                     </div>
                     <!-- User info -->
                     <div class="nav-item">
-                        <span class="badge bg-blue text-blue-fg">v0.1.0</span>
+                        <span class="badge bg-blue text-blue-fg" id="app-version">v0.9.0</span>
                     </div>
                 </div>
 
             </div>
         </header>
 
-        <header class="navbar-expand-md" x-data="{ mobileMenuOpen: false }">
+        <header class="navbar-expand-md">
             <div class="collapse navbar-collapse" :class="{ 'show': mobileMenuOpen }" id="navbar-menu">
                 <div class="navbar">
                     <div class="container-xl">
