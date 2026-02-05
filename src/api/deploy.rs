@@ -56,6 +56,7 @@ pub struct CreateDeployTargetRequest {
     pub allow_auto_release: Option<bool>,
     pub append_env_suffix: Option<bool>,
     pub is_active: Option<bool>,
+    pub copy_from_target_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,8 +335,8 @@ async fn create_deploy_target(
         r#"
         INSERT INTO deploy_targets
         (tenant_id, name, env_name, env_repo_id, env_repo_path,
-         deploy_repo_id, deploy_repo_path, encjson_key_dir, encjson_private_key_encrypted, allow_auto_release, append_env_suffix, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         deploy_repo_id, deploy_repo_path, deploy_path, encjson_key_dir, encjson_private_key_encrypted, allow_auto_release, append_env_suffix, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         RETURNING *
         "#,
     )
@@ -345,6 +346,7 @@ async fn create_deploy_target(
     .bind(payload.env_repo_id)
     .bind(&env_repo_path)
     .bind(payload.deploy_repo_id)
+    .bind(&deploy_repo_path)
     .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
@@ -364,6 +366,52 @@ async fn create_deploy_target(
 
     if let Some(keys) = payload.encjson_keys {
         store_encjson_keys(&state, target.id, keys).await?;
+    } else if let Some(source_id) = payload.copy_from_target_id {
+        let same_tenant = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM deploy_targets WHERE id = $1 AND tenant_id = $2)",
+        )
+        .bind(source_id)
+        .bind(tenant_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        if !same_tenant {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Copy source deploy target does not belong to this tenant".to_string(),
+                }),
+            ));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO deploy_target_encjson_keys (deploy_target_id, public_key, private_key_encrypted)
+            SELECT $1, public_key, private_key_encrypted
+            FROM deploy_target_encjson_keys
+            WHERE deploy_target_id = $2
+            "#,
+        )
+        .bind(target.id)
+        .bind(source_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
     }
 
     Ok((StatusCode::CREATED, Json(target)))
@@ -475,12 +523,13 @@ async fn update_deploy_target(
             env_repo_path = $4,
             deploy_repo_id = $5,
             deploy_repo_path = $6,
-            encjson_key_dir = $7,
-            encjson_private_key_encrypted = COALESCE($8, encjson_private_key_encrypted),
-            allow_auto_release = $9,
-            append_env_suffix = $10,
-            is_active = $11
-        WHERE id = $12
+            deploy_path = $7,
+            encjson_key_dir = $8,
+            encjson_private_key_encrypted = COALESCE($9, encjson_private_key_encrypted),
+            allow_auto_release = $10,
+            append_env_suffix = $11,
+            is_active = $12
+        WHERE id = $13
         RETURNING *
         "#,
     )
@@ -489,6 +538,7 @@ async fn update_deploy_target(
     .bind(payload.env_repo_id)
     .bind(&env_repo_path)
     .bind(payload.deploy_repo_id)
+    .bind(&deploy_repo_path)
     .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
@@ -527,6 +577,30 @@ async fn delete_deploy_target(
     State(state): State<DeployApiState>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let has_jobs = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM deploy_jobs WHERE deploy_target_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if has_jobs {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy target has deploy jobs and cannot be deleted".to_string(),
+            }),
+        ));
+    }
+
     let result = sqlx::query("DELETE FROM deploy_targets WHERE id = $1")
         .bind(id)
         .execute(&state.pool)
@@ -870,37 +944,45 @@ async fn auto_deploy_from_copy_job(
     let release = if let Some(release) = existing_release {
         release
     } else {
-        sqlx::query_as::<_, Release>(
-            "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason)
-             VALUES ($1, $2, 'draft', $3, $4, true, $5)
-             RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+        let existing_by_tag = sqlx::query_as::<_, Release>(
+            "SELECT * FROM releases WHERE release_id = $1",
         )
-        .bind(payload.copy_job_id)
         .bind(&target_tag)
-        .bind("Auto release from copy job")
-        .bind("system")
-        .bind("copy_job_deploy")
-        .fetch_one(&state.pool)
+        .fetch_optional(&state.pool)
         .await
         .map_err(|e| {
-            if let Some(db_err) = e.as_database_error() {
-                if db_err.is_unique_violation() {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(ErrorResponse {
-                            error: format!("Release ID '{}' already exists", target_tag),
-                        }),
-                    );
-                }
-            }
-
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to create auto release: {}", e),
+                    error: format!("Database error: {}", e),
                 }),
             )
-        })?
+        })?;
+
+        if let Some(release) = existing_by_tag {
+            release
+        } else {
+            sqlx::query_as::<_, Release>(
+                "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason)
+                 VALUES ($1, $2, 'draft', $3, $4, true, $5)
+                 RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+            )
+            .bind(payload.copy_job_id)
+            .bind(&target_tag)
+            .bind("Auto release from copy job")
+            .bind("system")
+            .bind("copy_job_deploy")
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to create auto release: {}", e),
+                    }),
+                )
+            })?
+        }
     };
 
     let job_id = enqueue_deploy_job(&state, release.id, payload.deploy_target_id).await?;
