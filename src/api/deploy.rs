@@ -1982,7 +1982,7 @@ async fn run_encjson_legacy_pipeline(
     }
 
     let mut legacy_child = legacy_cmd.spawn()?;
-    let legacy_stdout = legacy_child
+    let mut legacy_stdout = legacy_child
         .stdout
         .take()
         .context("Failed to capture legacy encjson stdout")?;
@@ -1993,10 +1993,19 @@ async fn run_encjson_legacy_pipeline(
         .arg("-o")
         .arg("dot-env")
         .arg("-")
-        .stdin(legacy_stdout)
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
 
-    let output = modern_cmd.output().await?;
+    let mut modern_child = modern_cmd.spawn()?;
+    let mut modern_stdin = modern_child
+        .stdin
+        .take()
+        .context("Failed to capture encjson-rs stdin")?;
+
+    tokio::io::copy(&mut legacy_stdout, &mut modern_stdin).await?;
+    drop(modern_stdin);
+
+    let output = modern_child.wait_with_output().await?;
     let legacy_status = legacy_child.wait().await?;
 
     if !legacy_status.success() {
