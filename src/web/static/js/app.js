@@ -655,7 +655,10 @@ router.on('/', async () => {
                 <div class="col-md-6">
                     <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">Recent Copy Jobs</h3>
+                            <h3 class="card-title">
+                                <i class="ti ti-copy me-2"></i>
+                                Recent Copy Jobs
+                            </h3>
                             <div class="card-actions">
                                 <a href="#/copy-jobs" class="btn btn-sm btn-outline-primary">View All</a>
                             </div>
@@ -697,7 +700,10 @@ router.on('/', async () => {
                 <div class="col-md-6">
                     <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">Recent Deploy Jobs</h3>
+                            <h3 class="card-title">
+                                <i class="ti ti-rocket me-2"></i>
+                                Recent Deploy Jobs
+                            </h3>
                             <div class="card-actions">
                                 <a href="#/deployments" class="btn btn-sm btn-outline-primary">View All</a>
                             </div>
@@ -2177,7 +2183,10 @@ router.on('/bundles/:id', async (params) => {
 
                     <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">Versions</h3>
+                            <h3 class="card-title">
+                                <i class="ti ti-layers me-2"></i>
+                                Versions
+                            </h3>
                         </div>
                         <div class="list-group list-group-flush">
                             ${versions.map(version => `
@@ -2242,7 +2251,10 @@ router.on('/bundles/:id', async (params) => {
 
                     <div class="card mt-3">
                         <div class="card-header">
-                            <h3 class="card-title">Copy History</h3>
+                            <h3 class="card-title">
+                                <i class="ti ti-copy me-2"></i>
+                                Copy History
+                            </h3>
                         </div>
                         <div class="table-responsive">
                             <table class="table table-vcenter card-table">
@@ -2313,7 +2325,10 @@ router.on('/bundles/:id', async (params) => {
 
                     <div class="card mt-3">
                         <div class="card-header">
-                            <h3 class="card-title">Deployments</h3>
+                            <h3 class="card-title">
+                                <i class="ti ti-rocket me-2"></i>
+                                Deployments
+                            </h3>
                         </div>
                         <div class="table-responsive">
                             <table class="table table-vcenter card-table">
@@ -3501,6 +3516,8 @@ router.on('/deploy-jobs/:id', async (params) => {
             <div class="card mb-3">
                 <div class="card-header">
                     <h3 class="card-title">
+                        <i class="ti ti-rocket me-2"></i>
+                        <i class="ti ti-cloud-upload me-2"></i>
                         Deploy Job Monitor
                         ${job.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                     </h3>
@@ -4167,6 +4184,8 @@ router.on('/copy-jobs/:jobId', async (params) => {
                     <div class="card-header d-flex align-items-start justify-content-between flex-wrap gap-2">
                         <div>
                             <h3 class="card-title mb-1">
+                                <i class="ti ti-brand-docker me-2"></i>
+                                <i class="ti ti-copy me-2"></i>
                                 Copy Job Monitor
                                 ${status.is_release_job ? `
                                     <span class="badge bg-purple-lt text-purple-fg ms-2">image release</span>
