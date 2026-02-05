@@ -29,8 +29,8 @@ use walkdir::WalkDir;
 use crate::{
     crypto,
     db::models::{
-        DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, DeployTargetEnvVar, GitRepository,
-        Release,
+        DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, DeployTargetEnvVar,
+        DeployTargetExtraEnvVar, GitRepository, Release,
     },
     services::release_manifest::{build_release_manifest, ReleaseManifest},
 };
@@ -63,6 +63,7 @@ pub struct CreateDeployTargetRequest {
     pub is_active: Option<bool>,
     pub copy_from_target_id: Option<Uuid>,
     pub env_vars: Option<Vec<DeployTargetEnvVarInput>>,
+    pub extra_env_vars: Option<Vec<DeployTargetExtraEnvVarInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +82,7 @@ pub struct UpdateDeployTargetRequest {
     pub release_manifest_mode: Option<String>,
     pub is_active: Option<bool>,
     pub env_vars: Option<Vec<DeployTargetEnvVarInput>>,
+    pub extra_env_vars: Option<Vec<DeployTargetExtraEnvVarInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,12 +111,19 @@ pub struct DeployTargetEnvVarInput {
     pub target_key: String,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeployTargetExtraEnvVarInput {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DeployTargetWithKeys {
     #[serde(flatten)]
     pub target: DeployTarget,
     pub encjson_keys: Vec<EncjsonKeySummary>,
     pub env_vars: Vec<DeployTargetEnvVar>,
+    pub extra_env_vars: Vec<DeployTargetExtraEnvVar>,
 }
 
 #[derive(Debug, Serialize)]
@@ -276,10 +285,26 @@ async fn get_deploy_target(
                 })
                 .collect();
 
+            let extra_env_vars = sqlx::query_as::<_, DeployTargetExtraEnvVar>(
+                "SELECT * FROM deploy_target_extra_env_vars WHERE deploy_target_id = $1 ORDER BY key",
+            )
+            .bind(target.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
+
             Ok(Json(DeployTargetWithKeys {
                 target,
                 encjson_keys: summaries,
                 env_vars,
+                extra_env_vars,
             }))
         }
         None => Err((
@@ -484,6 +509,31 @@ async fn create_deploy_target(
         })?;
     }
 
+    if let Some(extra_env_vars) = payload.extra_env_vars {
+        store_deploy_target_extra_env_vars(&state, target.id, extra_env_vars).await?;
+    } else if let Some(source_id) = payload.copy_from_target_id {
+        sqlx::query(
+            r#"
+            INSERT INTO deploy_target_extra_env_vars (deploy_target_id, key, value)
+            SELECT $1, key, value
+            FROM deploy_target_extra_env_vars
+            WHERE deploy_target_id = $2
+            "#,
+        )
+        .bind(target.id)
+        .bind(source_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+    }
+
     Ok((StatusCode::CREATED, Json(target)))
 }
 
@@ -636,6 +686,9 @@ async fn update_deploy_target(
             }
             if let Some(env_vars) = payload.env_vars {
                 store_deploy_target_env_vars(&state, target.id, env_vars).await?;
+            }
+            if let Some(extra_env_vars) = payload.extra_env_vars {
+                store_deploy_target_extra_env_vars(&state, target.id, extra_env_vars).await?;
             }
             Ok(Json(target))
         }
@@ -1323,6 +1376,79 @@ async fn store_deploy_target_env_vars(
     Ok(())
 }
 
+async fn store_deploy_target_extra_env_vars(
+    state: &DeployApiState,
+    deploy_target_id: Uuid,
+    vars: Vec<DeployTargetExtraEnvVarInput>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let mut cleaned = Vec::new();
+    for item in vars {
+        let key = item.key.trim().to_string();
+        let value = item.value.trim().to_string();
+        if key.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Extra env vars must include a key".to_string(),
+                }),
+            ));
+        }
+        cleaned.push((key, value));
+    }
+
+    let mut tx = state.pool.begin().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    sqlx::query("DELETE FROM deploy_target_extra_env_vars WHERE deploy_target_id = $1")
+        .bind(deploy_target_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+    for (key, value) in cleaned {
+        sqlx::query(
+            "INSERT INTO deploy_target_extra_env_vars (deploy_target_id, key, value) VALUES ($1, $2, $3)",
+        )
+        .bind(deploy_target_id)
+        .bind(&key)
+        .bind(&value)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(())
+}
+
 async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::Sender<String>) -> anyhow::Result<()> {
     let _ = log_tx.send(format!("Starting deploy job {}", job_id));
 
@@ -1347,6 +1473,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .await?;
 
     let env_var_rows = load_deploy_target_env_vars(&state.pool, target.id).await?;
+    let extra_env_rows = load_deploy_target_extra_env_vars(&state.pool, target.id).await?;
     let mapped_vars = build_release_env_var_map(&env_var_rows, &release, &log_tx);
 
     let temp_dir = TempDir::new()?;
@@ -1411,6 +1538,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         &manifest_path,
         &env_repo_path,
         &mapped_vars,
+        &extra_env_rows,
     )?;
     run_command_logged(
         &state.kube_build_app_path,
@@ -1440,6 +1568,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         &env_file_path,
         &release,
         &env_var_rows,
+        &extra_env_rows,
         &log_tx,
         temp_dir.path(),
     )
@@ -1620,6 +1749,7 @@ fn build_kube_build_env(
     manifest_path: &FsPath,
     env_repo_path: &FsPath,
     mapped_vars: &HashMap<String, String>,
+    extra_env_vars: &[DeployTargetExtraEnvVar],
 ) -> anyhow::Result<HashMap<String, String>> {
     let mut env = HashMap::new();
     env.insert(
@@ -1635,6 +1765,13 @@ fn build_kube_build_env(
     for (key, value) in mapped_vars {
         env.insert(key.clone(), value.clone());
     }
+    for item in extra_env_vars {
+        let key = item.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        env.insert(key.to_string(), item.value.clone());
+    }
     Ok(env)
 }
 
@@ -1645,6 +1782,7 @@ async fn build_env_file(
     env_file_path: &FsPath,
     release: &Release,
     env_vars: &[DeployTargetEnvVar],
+    extra_env_vars: &[DeployTargetExtraEnvVar],
     log_tx: &broadcast::Sender<String>,
     temp_root: &FsPath,
 ) -> anyhow::Result<()> {
@@ -1675,6 +1813,13 @@ async fn build_env_file(
     for (key, value) in build_release_env_var_map(env_vars, release, log_tx) {
         combined.push_str(&format!("{}={}\n", key, value));
     }
+    for item in extra_env_vars {
+        let key = item.key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        combined.push_str(&format!("{}={}\n", key, item.value.trim()));
+    }
 
     tokio::fs::write(env_file_path, combined)
         .await
@@ -1685,6 +1830,19 @@ async fn build_env_file(
 async fn load_deploy_target_env_vars(pool: &PgPool, deploy_target_id: Uuid) -> anyhow::Result<Vec<DeployTargetEnvVar>> {
     let rows = sqlx::query_as::<_, DeployTargetEnvVar>(
         "SELECT * FROM deploy_target_env_vars WHERE deploy_target_id = $1 ORDER BY target_key",
+    )
+    .bind(deploy_target_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+async fn load_deploy_target_extra_env_vars(
+    pool: &PgPool,
+    deploy_target_id: Uuid,
+) -> anyhow::Result<Vec<DeployTargetExtraEnvVar>> {
+    let rows = sqlx::query_as::<_, DeployTargetExtraEnvVar>(
+        "SELECT * FROM deploy_target_extra_env_vars WHERE deploy_target_id = $1 ORDER BY key",
     )
     .bind(deploy_target_id)
     .fetch_all(pool)

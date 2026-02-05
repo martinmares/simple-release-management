@@ -247,6 +247,14 @@ pub struct DeployTargetEnvVar {
     pub target_key: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployTargetExtraEnvVar {
+    pub id: Uuid,
+    pub deploy_target_id: Uuid,
+    pub key: String,
+    pub value: String,
+}
+
 /// Git repository configuration per tenant
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct GitRepository {

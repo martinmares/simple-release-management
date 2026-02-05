@@ -1676,6 +1676,7 @@ router.on('/deploy-targets/new', async (params, query) => {
         let prefillTarget = null;
         let encjsonKeys = [];
         let envVars = [];
+        let extraEnvVars = [];
         let tenantId = query.tenant_id || null;
         let formOptions = {};
         let copyFromId = null;
@@ -1685,6 +1686,7 @@ router.on('/deploy-targets/new', async (params, query) => {
             const source = response.target || response;
             encjsonKeys = response.encjson_keys || [];
             envVars = response.env_vars || [];
+            extraEnvVars = response.extra_env_vars || [];
             prefillTarget = {
                 ...source,
                 name: `Copy of ${source.name}`,
@@ -1699,7 +1701,7 @@ router.on('/deploy-targets/new', async (params, query) => {
         }
 
         const scopedRepos = tenantId ? gitRepos.filter(r => r.tenant_id === tenantId) : gitRepos;
-        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, envVars, formOptions);
+        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, envVars, extraEnvVars, formOptions);
 
         if (tenantId) {
             const select = document.querySelector('select[name=\"tenant_id\"]');
@@ -1727,12 +1729,14 @@ router.on('/deploy-targets/new', async (params, query) => {
 
         attachEncjsonKeyHandlers();
         attachDeployEnvVarHandlers();
+        attachDeployExtraEnvVarHandlers();
 
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 const collectedKeys = collectEncjsonKeys();
                 const keysWithPrivate = collectedKeys.filter(k => k.private_key && k.private_key.trim() !== '');
                 data.env_vars = collectDeployEnvVars();
+                data.extra_env_vars = collectDeployExtraEnvVars();
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
                 if (data.copy_from_target_id) {
@@ -1743,6 +1747,9 @@ router.on('/deploy-targets/new', async (params, query) => {
                     }
                     if (!data.env_vars || data.env_vars.length === 0) {
                         delete data.env_vars;
+                    }
+                    if (!data.extra_env_vars || data.extra_env_vars.length === 0) {
+                        delete data.extra_env_vars;
                     }
                 } else {
                     data.encjson_keys = collectedKeys;
@@ -1774,14 +1781,16 @@ router.on('/deploy-targets/:id/edit', async (params) => {
         const target = response.target || response;
         const encjsonKeys = response.encjson_keys || [];
         const envVars = response.env_vars || [];
+        const extraEnvVars = response.extra_env_vars || [];
         const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
-        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, envVars, {
+        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, envVars, extraEnvVars, {
             isEdit: true,
             copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
         });
 
         attachEncjsonKeyHandlers();
         attachDeployEnvVarHandlers();
+        attachDeployExtraEnvVarHandlers();
 
         const deleteBtn = document.getElementById('delete-deploy-target-btn');
         if (deleteBtn) {
@@ -1807,6 +1816,7 @@ router.on('/deploy-targets/:id/edit', async (params) => {
             await handleFormSubmit(e, async (data) => {
                 data.encjson_keys = collectEncjsonKeys();
                 data.env_vars = collectDeployEnvVars();
+                data.extra_env_vars = collectDeployExtraEnvVars();
                 await api.updateDeployTarget(params.id, data);
                 getApp().showSuccess('Deploy target updated successfully');
                 router.navigate(`/tenants/${target.tenant_id}`);
@@ -1898,6 +1908,19 @@ function collectDeployEnvVars() {
     return vars;
 }
 
+function collectDeployExtraEnvVars() {
+    const rows = document.querySelectorAll('[data-extra-env-var-index]');
+    const vars = [];
+    rows.forEach(row => {
+        const key = row.querySelector('.extra-env-var-key')?.value?.trim() || '';
+        const value = row.querySelector('.extra-env-var-value')?.value?.trim() || '';
+        if (key) {
+            vars.push({ key, value });
+        }
+    });
+    return vars;
+}
+
 function attachDeployEnvVarHandlers() {
     const list = document.getElementById('deploy-env-vars-list');
     const addBtn = document.getElementById('deploy-env-var-add-btn');
@@ -1926,6 +1949,45 @@ function attachDeployEnvVarHandlers() {
             </div>
             <div class="col-md-2">
                 <button type="button" class="btn btn-sm btn-outline-danger w-100 env-var-remove">
+                    <i class="ti ti-trash"></i>
+                </button>
+            </div>
+        `;
+        list.appendChild(row);
+        attachRemove();
+    });
+
+    attachRemove();
+}
+
+function attachDeployExtraEnvVarHandlers() {
+    const list = document.getElementById('deploy-extra-env-vars-list');
+    const addBtn = document.getElementById('deploy-extra-env-var-add-btn');
+    if (!list || !addBtn) return;
+
+    const attachRemove = () => {
+        list.querySelectorAll('.extra-env-var-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const row = btn.closest('[data-extra-env-var-index]');
+                if (row) row.remove();
+            });
+        });
+    };
+
+    addBtn.addEventListener('click', () => {
+        const index = list.querySelectorAll('[data-extra-env-var-index]').length;
+        const row = document.createElement('div');
+        row.className = 'row g-2 align-items-end mb-2';
+        row.setAttribute('data-extra-env-var-index', index.toString());
+        row.innerHTML = `
+            <div class="col-md-5">
+                <input type="text" class="form-control form-control-sm extra-env-var-key" placeholder="REGISTRY_URL">
+            </div>
+            <div class="col-md-5">
+                <input type="text" class="form-control form-control-sm extra-env-var-value" placeholder="https://registry.example.com/project">
+            </div>
+            <div class="col-md-2">
+                <button type="button" class="btn btn-sm btn-outline-danger w-100 extra-env-var-remove">
                     <i class="ti ti-trash"></i>
                 </button>
             </div>

@@ -490,13 +490,14 @@ function createGitRepoForm(repo = null, tenants = []) {
 /**
  * Vytvoří deploy target form
  */
-function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], envVars = [], options = {}) {
+function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], envVars = [], extraEnvVars = [], options = {}) {
     const isEdit = options.isEdit ?? !!target;
     const title = options.title || (isEdit ? 'Edit Deploy Target' : 'New Deploy Target');
     const submitLabel = options.submitLabel || (isEdit ? 'Update Deploy Target' : 'Create Deploy Target');
     const copyLink = options.copyLink || '';
     const keys = encjsonKeys.length > 0 ? encjsonKeys : [{ public_key: '', has_private: false }];
     const vars = envVars.length > 0 ? envVars : [{ source_key: '', target_key: '' }];
+    const extraVars = extraEnvVars.length > 0 ? extraEnvVars : [{ key: '', value: '' }];
     const selectedTenantId = target?.tenant_id || '';
 
     return `
@@ -698,6 +699,39 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="deploy-env-var-add-btn">
                         <i class="ti ti-plus"></i>
                         Add mapping
+                    </button>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Extra env vars (override)</label>
+                    <div class="text-secondary small mb-2">
+                        These values are appended to the generated env file and override any existing keys.
+                        Example: <code>REGISTRY_URL=https://example.com/dev</code>
+                    </div>
+                    <div id="deploy-extra-env-vars-list">
+                        ${extraVars.map((item, index) => `
+                            <div class="row g-2 align-items-end mb-2" data-extra-env-var-index="${index}">
+                                <div class="col-md-5">
+                                    <input type="text" class="form-control form-control-sm extra-env-var-key"
+                                           value="${item.key || ''}"
+                                           placeholder="REGISTRY_URL">
+                                </div>
+                                <div class="col-md-5">
+                                    <input type="text" class="form-control form-control-sm extra-env-var-value"
+                                           value="${item.value || ''}"
+                                           placeholder="https://registry.example.com/project">
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="button" class="btn btn-sm btn-outline-danger w-100 extra-env-var-remove" ${extraVars.length === 1 ? 'disabled' : ''}>
+                                        <i class="ti ti-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="deploy-extra-env-var-add-btn">
+                        <i class="ti ti-plus"></i>
+                        Add env var
                     </button>
                 </div>
 
