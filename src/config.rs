@@ -33,6 +33,7 @@ pub struct Config {
     pub copy_timeout_seconds: u64,
     pub copy_max_retries: u32,
     pub copy_retry_delay_seconds: u64,
+    pub static_dir: String,
 }
 
 impl Config {
@@ -89,6 +90,9 @@ impl Config {
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()
                 .unwrap_or(30),
+
+            static_dir: env::var("STATIC_DIR")
+                .unwrap_or_else(|_| "src/web/static".to_string()),
         };
 
         Ok(config)

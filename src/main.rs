@@ -101,8 +101,10 @@ async fn main() -> Result<()> {
     let deploy_router = api::deploy::router(deploy_state);
 
     // Statické soubory
-    let serve_dir = ServeDir::new("src/web/static")
-        .not_found_service(ServeDir::new("src/web/static/index.html"));
+    let static_dir = config.static_dir.clone();
+    let static_index = std::path::Path::new(&static_dir).join("index.html");
+    let serve_dir = ServeDir::new(&static_dir)
+        .not_found_service(ServeDir::new(static_index));
 
     // Vytvoření kompletního routeru
     let app = Router::new()
