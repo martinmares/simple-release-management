@@ -1,242 +1,111 @@
 # Simple Release Management
 
-Aplikace pro správu a kopírování Docker images mezi registry s verzováním a release managementem.
+Simple Release Management is a web app for copying Docker images between registries, tracking immutable bundle versions, and generating deploy-ready releases with auditable logs.
 
-## Funkce
+## Key concepts
 
-- 🏢 **Multi-tenancy** - Podpora více tenantů
-- 📦 **Bundle management** - Správa balíčků Docker images
-- 🔄 **Verzování** - Automatické verzování změn
-- 🚀 **Release management** - Vytváření production releases
-- 🔍 **SHA tracking** - Sledování SHA256 checksumů pro immutability
-- 🌐 **Podpora různých registry** - Harbor, Docker Registry v2, Quay, atd.
-- 📋 **TOML export/import** - Export/import bundle definic
-- 🔐 **Bezpečné credentials** - Integrace s Vault/Secrets
+- **Tenant**: Logical customer/account boundary.
+- **Registry**: Source/target registry configuration and credentials.
+- **Bundle**: A named collection of image mappings.
+- **Bundle version**: Immutable snapshot of mappings.
+- **Copy job**: Copies images for a bundle version to a target registry (via `skopeo`).
+- **Image release**: Named target tag for a successful copy job.
+- **Deploy target**: Build/deploy pipeline config (git repos, env paths, keys).
+- **Deploy job**: Regenerates deploy manifests for a release.
 
-## Technologie
+## Features
 
-- **Rust** - Backend
-- **Axum 0.8** - Web framework
-- **PostgreSQL** - Databáze
-- **SQLx** - Database driver
-- **Skopeo** - Image copy (bez Docker daemon!)
-- **Tokio** - Async runtime
-- **Tracing** - Logging
+- Multi-tenant model
+- Immutable bundle versions
+- Copy jobs with live + audit logs
+- Auto tag generation: `YYYY.MM.DD.COUNTER`
+- Image releases with rename rules + preview
+- Deploy targets + deploy jobs (kube_build_app + encjson + apply-env + kubeconform)
+- SSE live logs and persisted audit logs
 
-## Rychlý start
+## Quick start
 
-### 1. Prerekvizity
+### 1) Prerequisites
 
 - Rust 1.75+
-- Docker & Docker Compose
-- PostgreSQL 15+ (nebo použít Docker Compose)
+- PostgreSQL 15+ (or Docker Compose)
+- `skopeo` installed and in PATH
 
-### 2. Instalace
+### 2) Setup
 
 ```bash
-# Naklonovat repository
 git clone <repo-url>
 cd simple-release-management
-
-# Zkopírovat environment config
 cp .env.example .env
-
-# Upravit .env podle potřeby
-# nano .env
 ```
 
-### 3. Spuštění databáze
+### 3) Database
 
 ```bash
-# Spustit PostgreSQL přes Docker Compose
 docker-compose up -d
-
-# Zkontrolovat že běží
-docker-compose ps
 ```
 
-### 4. Spuštění aplikace
+### 4) Run
 
 ```bash
-# Build a spuštění (výchozí: 127.0.0.1:3000)
 cargo run
 
-# S vlastním portem a hostem
+# Custom host/port
 cargo run -- --host 0.0.0.0 --port 8080
 
-# Zobrazit help
+# CLI help/version
 cargo run -- --help
-
-# Nebo jen kontrola kompilace
-cargo check
+cargo run -- --version
 ```
 
-**CLI parametry:**
-- `--host <HOST>` - Server host (výchozí: `127.0.0.1`)
-- `--port <PORT>` - Server port (výchozí: `3000`)
-- `--help` - Zobrazit nápovědu
+App runs at `http://127.0.0.1:3000` by default.
 
-**Poznámka:** CLI parametry mají přednost před environment variables.
+## Configuration
 
-Aplikace poběží na `http://127.0.0.1:3000` (nebo na adrese kterou specifikuješ)
+Configuration is read from environment variables (see `.env.example`).
 
-## Konfigurace
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection string | (required) |
+| `BASE_PATH` | Base path for reverse proxy | empty |
+| `SKOPEO_PATH` | Path to `skopeo` binary | `skopeo` |
+| `KUBE_BUILD_APP_PATH` | Path to `kube_build_app` | `kube_build_app` |
+| `APPLY_ENV_PATH` | Path to `apply-env` | `apply-env` |
+| `ENCJSON_PATH` | Path to `encjson` | `encjson` |
+| `KUBECONFORM_PATH` | Path to `kubeconform` | `kubeconform` |
+| `ENCRYPTION_SECRET` | Secret for encrypting credentials | (required) |
+| `MAX_CONCURRENT_COPY_JOBS` | Parallel copy limit | `3` |
+| `COPY_TIMEOUT_SECONDS` | Copy timeout (seconds) | `3600` |
+| `COPY_MAX_RETRIES` | Copy retries | `3` |
+| `COPY_RETRY_DELAY_SECONDS` | Retry delay (seconds) | `30` |
 
-Všechny konfigurační parametry lze nastavit přes environment variables nebo `.env` soubor.
+Host/port are CLI flags (`--host`, `--port`) and take precedence.
 
-### Základní konfigurace
+## Migrations
+
+Migrations run automatically on startup. For manual runs:
 
 ```bash
-# Databáze
-DATABASE_URL=postgresql://release_mgmt:secret@localhost:5433/release_mgmt
-
-# Server
-HOST=0.0.0.0
-PORT=3000
-BASE_PATH=
-
-# Logging
-RUST_LOG=simple_release_management=info,sqlx=warn
-```
-
-### Registry credentials
-
-Credentials pro přístup k registry se ukládají jako JSON soubory vytvořené pomocí `skopeo login`:
-
-```bash
-# Přihlásit se k registry
-skopeo login registry.datalite.cz
-
-# Credentials se uloží do ~/.docker/config.json
-# Nebo můžeš specifikovat vlastní cestu:
-skopeo login --authfile /run/secrets/registry-auth.json registry.datalite.cz
-```
-
-V produkci mount tento soubor jako secret do podu:
-
-```bash
-REGISTRY_CREDENTIALS_PATH=/run/secrets/registry-auth
-```
-
-### Copy job konfigurace
-
-```bash
-# Maximum současně běžících copy operací
-MAX_CONCURRENT_COPY_JOBS=3
-
-# Timeout pro jednu copy operaci (sekundy)
-COPY_TIMEOUT_SECONDS=3600
-
-# Počet retry při selhání
-COPY_MAX_RETRIES=3
-
-# Delay mezi retry (sekundy)
-COPY_RETRY_DELAY_SECONDS=30
-```
-
-## Vývoj
-
-### Struktura projektu
-
-```
-simple-release-management/
-├── migrations/          # SQL migrace
-├── src/
-│   ├── main.rs         # Entry point
-│   ├── config.rs       # Konfigurace
-│   ├── db/             # Database modely
-│   ├── registry/       # Registry abstraction
-│   ├── services/       # Business logika (TODO)
-│   ├── api/            # REST API endpoints (TODO)
-│   └── web/            # Web UI (TODO)
-├── .env                # Environment config (local)
-├── .env.example        # Template pro .env
-├── Cargo.toml          # Rust dependencies
-└── docker-compose.yml  # PostgreSQL pro development
-```
-
-### Databázové migrace
-
-Migrace se spouští automaticky při startu aplikace.
-
-Pro manuální spuštění migrací:
-
-```bash
-# Nainstalovat sqlx-cli
 cargo install sqlx-cli --features postgres
-
-# Spustit migrace
 sqlx migrate run --database-url postgresql://release_mgmt:secret@localhost:5433/release_mgmt
-
-# Rollback poslední migrace
-sqlx migrate revert --database-url postgresql://release_mgmt:secret@localhost:5433/release_mgmt
 ```
 
-### Vytvoření nové migrace
+## Development
 
 ```bash
-sqlx migrate add create_my_table
-
-# Otevře se nový soubor v migrations/
-# Přidej SQL příkazy a commitni
-```
-
-### Kontrola a build
-
-```bash
-# Jen zkontrolovat kompilaci (rychlé)
 cargo check
-
-# Build v debug módu
 cargo build
-
-# Build v release módu (optimalizované)
-cargo build --release
-
-# Spustit
 cargo run
-
-# Spustit s release buildou
-cargo run --release
 ```
 
-### Logy
-
-Nastavení úrovně logování přes `RUST_LOG`:
+Logging via `RUST_LOG`:
 
 ```bash
-# Info pro celou aplikaci
 RUST_LOG=info cargo run
-
-# Debug pro specifický modul
 RUST_LOG=simple_release_management=debug,sqlx=warn cargo run
-
-# Trace level pro všechno
-RUST_LOG=trace cargo run
 ```
-
-## Deployment
-
-### Docker
-
-```bash
-# Build image
-docker build -t release-management:latest .
-
-# Run
-docker run -d \
-  -p 3000:3000 \
-  -e DATABASE_URL=postgresql://user:pass@db:5432/release_mgmt \
-  -v /path/to/credentials:/run/secrets/registry-auth:ro \
-  release-management:latest
-```
-
-### Kubernetes
 
 ## License
 
 AGPLv3. See `LICENSE`.
 
-## Autor
-
-Martin Mareš
