@@ -281,6 +281,8 @@ router.on('/', async () => {
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5);
 
+        const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
+
         content.innerHTML = `
             <!-- Stats Row -->
             <div class="row row-deck row-cards mb-4">
@@ -331,7 +333,7 @@ router.on('/', async () => {
                                 </div>
                                 <div class="col">
                                     <div class="font-weight-medium">${releases.length}</div>
-                                    <div class="text-secondary">Releases</div>
+                                    <div class="text-secondary">Image Releases</div>
                                 </div>
                             </div>
                         </div>
@@ -393,7 +395,7 @@ router.on('/', async () => {
                                 <div class="col-6 col-md-4">
                                     <a href="#/releases" class="btn btn-outline-success w-100">
                                         <i class="ti ti-rocket me-2"></i>
-                                        View Releases
+                                        View Image Releases
                                     </a>
                                 </div>
                                 <div class="col-6 col-md-4">
@@ -498,7 +500,7 @@ router.on('/', async () => {
                 <div class="col-md-6">
                     <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">Recent Releases</h3>
+                            <h3 class="card-title">Recent Image Releases</h3>
                             <div class="card-actions">
                                 <a href="#/releases" class="btn btn-sm btn-outline-primary">View All</a>
                             </div>
@@ -506,8 +508,8 @@ router.on('/', async () => {
                         <div class="card-body p-0">
                             ${recentReleases.length === 0 ? `
                                 <div class="empty p-4">
-                                    <p class="empty-title">No releases yet</p>
-                                    <p class="empty-subtitle text-secondary">Create a bundle and release it</p>
+                                    <p class="empty-title">No image releases yet</p>
+                                    <p class="empty-subtitle text-secondary">Create a bundle and release images</p>
                                 </div>
                             ` : `
                                 <div class="list-group list-group-flush">
@@ -708,6 +710,8 @@ router.on('/tenants/:id', async (params) => {
             api.getGitRepos(params.id),
         ]);
 
+        const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
+
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -776,6 +780,7 @@ router.on('/tenants/:id', async (params) => {
                                                 <div class="flex-fill">
                                                     <div>${reg.name}</div>
                                                     <div class="text-secondary small">${reg.registry_type}</div>
+                                                    <div class="text-secondary small"><code class="small">${reg.base_url || '-'}</code></div>
                                                 </div>
                                                 <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
                                             </div>
@@ -806,7 +811,22 @@ router.on('/tenants/:id', async (params) => {
                                             <div class="d-flex align-items-center">
                                                 <div class="flex-fill">
                                                     <div>${target.name}</div>
-                                                    <div class="text-secondary small">${target.env_name}</div>
+                                                    ${(() => {
+                                                        const envRepo = gitRepoById.get(target.env_repo_id);
+                                                        const envUrl = envRepo?.repo_url || '-';
+                                                        const envPath = target.env_repo_path || '-';
+                                                        const deployRepo = gitRepoById.get(target.deploy_repo_id);
+                                                        const deployUrl = deployRepo?.repo_url || '-';
+                                                        const deployPath = target.deploy_repo_path || '-';
+                                                        return `
+                                                            <div class="text-secondary small">
+                                                                Env: <code class="small">${envUrl}</code> (path: <code class="small">${envPath}</code>)
+                                                            </div>
+                                                            <div class="text-secondary small">
+                                                                Deploy: <code class="small">${deployUrl}</code> (path: <code class="small">${deployPath}</code>)
+                                                            </div>
+                                                        `;
+                                                    })()}
                                                 </div>
                                                 <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
                                                     ${target.is_active ? 'active' : 'inactive'}
@@ -839,7 +859,7 @@ router.on('/tenants/:id', async (params) => {
                                     <div class="d-flex align-items-center">
                                         <div class="flex-fill">
                                             <div>${repo.name}</div>
-                                            <div class="text-secondary small">${repo.repo_url}</div>
+                                            <div class="text-secondary small"><code class="small">${repo.repo_url}</code></div>
                                         </div>
                                         <span class="badge bg-secondary-lt text-secondary-fg">${repo.default_branch || 'main'}</span>
                                     </div>
@@ -1046,7 +1066,7 @@ router.on('/registries', async () => {
                                         </div>
                                     </td>
                                     <td>
-                                        <span class="badge bg-blue text-blue-fg" x-text="tenantMap[reg.tenant_id]?.name || 'Unknown'"></span>
+                                        <span x-text="tenantMap[reg.tenant_id]?.name || 'Unknown'"></span>
                                     </td>
                                     <td>
                                         <span class="badge bg-azure text-azure-fg" x-text="reg.registry_type"></span>
@@ -1856,6 +1876,16 @@ router.on('/bundles/:id', async (params) => {
             bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
         ]);
 
+        const latestVersion = versions.length > 0
+            ? Math.max(...versions.map(v => v.version))
+            : null;
+        const latestSuccessJob = copyJobs
+            .filter(job => job.status === 'success' && !job.is_release_job)
+            .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
+        const latestRelease = releases
+            .slice()
+            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -1911,6 +1941,42 @@ router.on('/bundles/:id', async (params) => {
                         </div>
                     </div>
 
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h3 class="card-title">How It Works</h3>
+                        </div>
+                        <div class="card-body">
+                            <ol class="mb-0">
+                                <li class="mb-2">
+                                    Start a copy job from the latest bundle version.
+                                    ${latestVersion ? `
+                                        <a href="#/bundles/${bundle.id}/versions/${latestVersion}/copy" class="btn btn-sm btn-outline-primary ms-2">
+                                            Start Copy Job
+                                        </a>
+                                    ` : ''}
+                                </li>
+                                <li class="mb-2">
+                                    From a successful copy job, create a release.
+                                    ${latestSuccessJob ? `
+                                        <a href="#/releases/new?copy_job_id=${latestSuccessJob.job_id}" class="btn btn-sm btn-outline-success ms-2">
+                                            Release Images
+                                        </a>
+                                    ` : `
+                                        <span class="text-secondary ms-2">No successful copy jobs yet</span>
+                                    `}
+                                </li>
+                                <li>
+                                    Build deploy from the release to regenerate <code>tsm-deploy/deploy/&lt;env&gt;</code>.
+                                    ${latestRelease ? `
+                                        <a href="#/releases/${latestRelease.id}" class="btn btn-sm btn-outline-secondary ms-2">
+                                            View Image Release
+                                        </a>
+                                    ` : ''}
+                                </li>
+                            </ol>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <h3 class="card-title">Versions</h3>
@@ -1943,13 +2009,13 @@ router.on('/bundles/:id', async (params) => {
 
                     <div class="card mt-3">
                         <div class="card-header">
-                            <h3 class="card-title">Releases</h3>
+                            <h3 class="card-title">Image Releases</h3>
                         </div>
                         <div class="table-responsive">
                             <table class="table table-vcenter card-table">
                                 <thead>
                                     <tr>
-                                        <th>Release ID</th>
+                                    <th>Image Release ID</th>
                                         <th>Status</th>
                                         <th>Created</th>
                                     </tr>
@@ -2023,11 +2089,11 @@ router.on('/bundles/:id', async (params) => {
                                             })() : '-'}</td>
                                             <td>
                                                 ${job.is_release_job ? `
-                                                    <span class="badge bg-purple-lt text-purple-fg">release</span>
+                                                    <span class="badge bg-purple-lt text-purple-fg">image release</span>
                                                 ` : job.status === 'success' ? `
                                                     <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
                                                         <i class="ti ti-rocket"></i>
-                                                        Release
+                                                        Release Images
                                                     </a>
                                                 ` : ''}
                                             </td>
@@ -2742,10 +2808,10 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                         ${!job.is_release_job && job.status === 'success' ? `
                                             <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
                                                 <i class="ti ti-rocket"></i>
-                                                Release
+                                                Release Images
                                             </a>
                                         ` : job.is_release_job ? `
-                                            <span class="badge bg-purple-lt text-purple-fg">release</span>
+                                            <span class="badge bg-purple-lt text-purple-fg">image release</span>
                                         ` : ''}
                                     </td>
                                 </tr>
@@ -2784,11 +2850,11 @@ router.on('/releases', async () => {
             return `
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Releases</h3>
+                        <h3 class="card-title">Image Releases</h3>
                         <div class="card-actions">
                             <a href="#/releases/new" class="btn btn-primary">
                                 <i class="ti ti-plus"></i>
-                                New Release
+                                New Image Release
                             </a>
                         </div>
                     </div>
@@ -2825,12 +2891,12 @@ router.on('/releases', async () => {
                         <table class="table table-vcenter card-table table-hover">
                             <thead>
                                 <tr>
-                                    <th>Release ID</th>
+                                    <th>Image Release ID</th>
                                     <th>Tenant</th>
                                     <th>Bundle</th>
                                     <th>
                                         Deploy Jobs
-                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of deploy jobs (success/failed/running/pending). Release stays draft until first successful deploy."></i>
+                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of deploy jobs (success/failed/running/pending). Image release stays draft until first successful deploy."></i>
                                     </th>
                                     <th>Created</th>
                                 </tr>
@@ -2839,7 +2905,7 @@ router.on('/releases', async () => {
                                 ${rows.length === 0 ? `
                                     <tr>
                                         <td colspan="5" class="text-center text-secondary py-5">
-                                            No releases yet. Create a release from a copy job.
+                                            No image releases yet. Create one from a successful copy job.
                                         </td>
                                     </tr>
                                 ` : rows.map(release => {
@@ -2934,7 +3000,7 @@ router.on('/releases/:id', async (params) => {
                 <div class="col">
                     <a href="#/releases" class="btn btn-ghost-secondary">
                         <i class="ti ti-arrow-left"></i>
-                        Back to Releases
+                        Back to Image Releases
                     </a>
                 </div>
             </div>
@@ -2960,7 +3026,7 @@ router.on('/releases/:id', async (params) => {
 
             <div class="card mb-3">
                 <div class="card-header">
-                    <h3 class="card-title">Release Manifest</h3>
+                    <h3 class="card-title">Image Release Manifest</h3>
                     <div class="card-actions">
                         <button class="btn btn-sm btn-primary" id="copy-manifest-btn">
                             <i class="ti ti-copy"></i>
@@ -2971,6 +3037,11 @@ router.on('/releases/:id', async (params) => {
                 <div class="card-body">
                     <pre class="manifest-code" id="manifest-content"></pre>
                 </div>
+            </div>
+
+            <div class="alert alert-info">
+                <i class="ti ti-info-circle"></i>
+                Build Deploy regenerates <code>tsm-deploy/deploy/&lt;env&gt;</code> for this release.
             </div>
 
             <div class="card mb-3">
@@ -2997,6 +3068,11 @@ router.on('/releases/:id', async (params) => {
                             </button>
                         </div>
                     </div>
+                    ${release.tenant_id ? `
+                        <div class="text-secondary small mt-2">
+                            Manage deploy targets in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
+                        </div>
+                    ` : ''}
                     ${deployTargets.length === 0 ? `
                         <div class="alert alert-info mt-3">
                             <i class="ti ti-info-circle"></i>
@@ -3113,7 +3189,7 @@ router.on('/deploy-jobs/:id', async (params) => {
                 <div class="col">
                     <a href="#/releases/${job.release_id}" class="btn btn-ghost-secondary">
                         <i class="ti ti-arrow-left"></i>
-                        Back to Release
+                        Back to Image Release
                     </a>
                 </div>
             </div>
@@ -3222,12 +3298,12 @@ router.on('/releases/new', async (params, query) => {
             content.innerHTML = `
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Create Release</h3>
+                        <h3 class="card-title">Release Images</h3>
                     </div>
                     <div class="card-body">
                         <div class="alert alert-info">
                             <i class="ti ti-info-circle"></i>
-                            Create release from a successful copy job.
+                            Create an image release from a successful copy job.
                         </div>
                         <a href="#/copy-jobs" class="btn btn-primary">
                             <i class="ti ti-list"></i>
@@ -3280,7 +3356,7 @@ router.on('/releases/new', async (params, query) => {
             content.innerHTML = `
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Create Release</h3>
+                        <h3 class="card-title">Release Images</h3>
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
@@ -3400,7 +3476,7 @@ router.on('/releases/new', async (params, query) => {
                             <a href="#/copy-jobs/${job.job_id}" class="btn btn-link">Cancel</a>
                             <button type="button" class="btn btn-success ms-auto" id="release-create">
                                 <i class="ti ti-rocket"></i>
-                                Create Release
+                                Release Images
                             </button>
                         </div>
                     </div>
@@ -3474,7 +3550,7 @@ router.on('/releases/new', async (params, query) => {
 
                 try {
                     const response = await api.startReleaseCopyJob(payload);
-                    getApp().showSuccess('Release copy job started');
+                    getApp().showSuccess('Image release copy job started');
                     router.navigate(`/copy-jobs/${response.job_id}`);
                 } catch (error) {
                     getApp().showError(error.message);
@@ -3838,7 +3914,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 ${status.status === 'success' && !status.is_release_job ? `
                                     <a href="#/releases/new?copy_job_id=${status.job_id}" class="btn btn-success">
                                         <i class="ti ti-rocket"></i>
-                                        Create Release
+                                        Release Images
                                     </a>
                                 ` : ''}
                                 <a href="#/copy-jobs" class="btn btn-outline-secondary">

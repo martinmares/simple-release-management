@@ -125,7 +125,7 @@ class BundleWizard {
                 <label class="form-label required">Bundle Name</label>
                 <input type="text" class="form-control" id="bundle-name"
                        value="${this.data.bundle.name}"
-                       placeholder="e.g., NAC Production Release" required>
+                       placeholder="e.g., NAC Production Bundle" required>
             </div>
 
             <div class="mb-3">
