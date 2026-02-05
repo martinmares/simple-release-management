@@ -5217,7 +5217,7 @@ function parseMappingCsv(input, rules = []) {
 async function showMappingImportModal({ onApply }) {
     const modalHtml = `
         <div class="modal modal-blur fade show" style="display: block;" id="import-mappings-modal">
-            <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+            <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
                 <div class="modal-content">
                     <div class="modal-header">
                         <h5 class="modal-title">Import Image Mappings</h5>
