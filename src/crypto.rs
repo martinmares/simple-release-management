@@ -17,7 +17,7 @@ pub fn encrypt(plaintext: &str, secret_key: &str) -> Result<String> {
 
     // Generate random 12-byte nonce
     let mut rng = rand::thread_rng();
-    let nonce_bytes: [u8; 12] = rng.gen();
+    let nonce_bytes: [u8; 12] = rng.r#gen();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt the plaintext
