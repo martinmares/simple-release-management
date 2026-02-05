@@ -30,8 +30,10 @@ pub struct UpdateReleaseRequest {
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct ReleaseSummary {
     pub id: Uuid,
+    pub copy_job_id: Uuid,
     pub release_id: String,
     pub status: String,
+    pub is_auto: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub tenant_id: Uuid,
     pub tenant_name: String,
@@ -68,8 +70,10 @@ async fn list_all_releases(
         r#"
         SELECT
             r.id,
+            r.copy_job_id,
             r.release_id,
             r.status,
+            r.is_auto,
             r.created_at,
             t.id AS tenant_id,
             t.name AS tenant_name,
@@ -113,8 +117,10 @@ async fn list_releases(
         r#"
         SELECT
             r.id,
+            r.copy_job_id,
             r.release_id,
             r.status,
+            r.is_auto,
             r.created_at,
             t.id AS tenant_id,
             t.name AS tenant_name,
@@ -259,9 +265,9 @@ async fn create_release(
 
     // Vytvoření release
     let release = sqlx::query_as::<_, Release>(
-        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by)
-         VALUES ($1, $2, 'draft', $3, $4)
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
+        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto)
+         VALUES ($1, $2, 'draft', $3, $4, false)
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
@@ -358,9 +364,9 @@ async fn create_release_global(
     }
 
     let release = sqlx::query_as::<_, Release>(
-        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by)
-         VALUES ($1, $2, 'draft', $3, $4)
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
+        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto)
+         VALUES ($1, $2, 'draft', $3, $4, false)
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
@@ -412,7 +418,7 @@ async fn update_release(
         "UPDATE releases
          SET status = $1, notes = $2
          WHERE id = $3
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, created_at",
+         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
     )
     .bind(&payload.status)
     .bind(&payload.notes)

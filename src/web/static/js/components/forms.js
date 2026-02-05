@@ -102,6 +102,70 @@ function showConfirmDialog(title, message, confirmText = 'Delete', cancelText = 
 }
 
 /**
+ * Zobrazí dialog s výběrem z možností
+ */
+function showSelectDialog(title, label, options = [], confirmText = 'Select', cancelText = 'Cancel') {
+    return new Promise((resolve) => {
+        const dialogHtml = `
+            <div class="modal modal-blur fade show" style="display: block;" id="select-modal">
+                <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
+                    <div class="modal-content">
+                        <div class="modal-body">
+                            <div class="modal-title">${title}</div>
+                            <div class="mt-2">
+                                <label class="form-label">${label}</label>
+                                <select class="form-select" id="select-input">
+                                    <option value="">Select...</option>
+                                    ${options.map(opt => `
+                                        <option value="${opt.value}">${opt.label}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-link link-secondary" data-bs-dismiss="modal" id="select-cancel-btn">
+                                ${cancelText}
+                            </button>
+                            <button type="button" class="btn btn-primary" id="select-confirm-btn">
+                                ${confirmText}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-backdrop fade show"></div>
+        `;
+
+        document.body.insertAdjacentHTML('beforeend', dialogHtml);
+
+        const modal = document.getElementById('select-modal');
+        const backdrop = document.querySelector('.modal-backdrop');
+        const confirmBtn = document.getElementById('select-confirm-btn');
+        const cancelBtn = document.getElementById('select-cancel-btn');
+        const selectInput = document.getElementById('select-input');
+
+        const cleanup = () => {
+            modal.remove();
+            backdrop.remove();
+        };
+
+        confirmBtn.addEventListener('click', () => {
+            const value = selectInput.value;
+            if (!value) {
+                return;
+            }
+            cleanup();
+            resolve(value);
+        });
+
+        cancelBtn.addEventListener('click', () => {
+            cleanup();
+            resolve(null);
+        });
+    });
+}
+
+/**
  * Vytvoří tenant form
  */
 function createTenantForm(tenant = null) {
@@ -557,6 +621,24 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
 
                 <div class="mb-3">
                     <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="allow_auto_release"
+                               ${target?.allow_auto_release ? 'checked' : ''}>
+                        <span class="form-check-label">Allow Dev/Test deploy from Copy Job (auto release)</span>
+                    </label>
+                    <small class="form-hint">Enables the Copy Job → Deploy shortcut for this target</small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="append_env_suffix"
+                               ${target?.append_env_suffix ? 'checked' : ''}>
+                        <span class="form-check-label">Append env suffix to git tag (e.g. -test)</span>
+                    </label>
+                    <small class="form-hint">Useful for monorepo deploys with multiple envs</small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-check">
                         <input class="form-check-input" type="checkbox" name="is_active"
                                ${target?.is_active !== false ? 'checked' : ''}>
                         <span class="form-check-label">Active</span>
@@ -589,6 +671,12 @@ async function handleFormSubmit(event, submitHandler) {
     // Convert checkbox values
     if (data.is_active !== undefined) {
         data.is_active = formData.get('is_active') === 'on';
+    }
+    if (data.allow_auto_release !== undefined) {
+        data.allow_auto_release = formData.get('allow_auto_release') === 'on';
+    }
+    if (data.append_env_suffix !== undefined) {
+        data.append_env_suffix = formData.get('append_env_suffix') === 'on';
     }
 
     // Clean up empty optional fields (convert empty strings to null or remove them)

@@ -83,6 +83,7 @@ pub struct Bundle {
     pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
+    pub auto_tag_enabled: bool,
     pub current_version: i32,
     pub created_at: DateTime<Utc>,
 }
@@ -212,6 +213,8 @@ pub struct Release {
     pub status: String,
     pub notes: Option<String>,
     pub created_by: Option<String>,
+    pub is_auto: bool,
+    pub auto_reason: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -229,6 +232,8 @@ pub struct DeployTarget {
     pub encjson_key_dir: Option<String>,
     #[serde(skip_serializing)]
     pub encjson_private_key_encrypted: Option<String>,
+    pub allow_auto_release: bool,
+    pub append_env_suffix: bool,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
 }

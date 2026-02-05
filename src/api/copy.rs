@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State, Query},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
     Json, Router,
 };
 use futures::stream::{self, BoxStream, Stream, StreamExt};
+use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -22,7 +23,8 @@ use crate::services::SkopeoService;
 /// Request pro spuštění copy operace
 #[derive(Debug, Deserialize)]
 pub struct CopyBundleRequest {
-    pub target_tag: String,
+    pub target_tag: Option<String>,
+    pub timezone_offset_minutes: Option<i32>,
 }
 
 /// Response s chybou
@@ -36,6 +38,16 @@ pub struct ErrorResponse {
 pub struct CopyJobResponse {
     pub job_id: Uuid,
     pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NextTagQuery {
+    pub tz_offset_minutes: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NextTagResponse {
+    pub tag: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +202,10 @@ pub fn router(state: CopyApiState) -> Router {
             post(copy_bundle_version),
         )
         .route(
+            "/bundles/{bundle_id}/versions/{version}/next-tag",
+            get(get_next_copy_tag),
+        )
+        .route(
             "/bundles/{bundle_id}/versions/{version}/precheck",
             post(precheck_copy_images),
         )
@@ -203,6 +219,22 @@ pub fn router(state: CopyApiState) -> Router {
         .route("/copy/jobs/{job_id}/logs/history", get(copy_job_logs_history))
         .route("/copy/jobs/{job_id}/progress", get(copy_job_progress_sse))
         .with_state(state)
+}
+
+fn local_date_from_offset(offset_minutes: Option<i32>) -> NaiveDate {
+    let offset = offset_minutes.unwrap_or(0) as i64;
+    let local = Utc::now() - Duration::minutes(offset);
+    local.date_naive()
+}
+
+fn format_tag(date: NaiveDate, counter: i32) -> String {
+    format!(
+        "{:04}.{:02}.{:02}.{:02}",
+        date.year(),
+        date.month(),
+        date.day(),
+        counter
+    )
 }
 
 fn apply_rename_rules(mut path: String, rules: &[RenameRule]) -> String {
@@ -357,6 +389,44 @@ async fn copy_bundle_version(
         }
     };
 
+    let target_tag = if bundle.auto_tag_enabled {
+        let date = local_date_from_offset(payload.timezone_offset_minutes);
+        let counter: i32 = sqlx::query_scalar(
+            r#"
+            INSERT INTO bundle_tag_counters (bundle_id, target_registry_id, date, counter)
+            VALUES ($1, $2, $3, 1)
+            ON CONFLICT (bundle_id, target_registry_id, date)
+            DO UPDATE SET counter = bundle_tag_counters.counter + 1, updated_at = now()
+            RETURNING counter
+            "#,
+        )
+        .bind(bundle.id)
+        .bind(bundle.target_registry_id)
+        .bind(date)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to generate target tag: {}", e),
+                }),
+            )
+        })?;
+        format_tag(date, counter)
+    } else {
+        let tag = payload.target_tag.clone().unwrap_or_default().trim().to_string();
+        if tag.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Target tag is required".to_string(),
+                }),
+            ));
+        }
+        tag
+    };
+
     // Vytvořit job
     let job_id = Uuid::new_v4();
     sqlx::query(
@@ -365,7 +435,7 @@ async fn copy_bundle_version(
     )
     .bind(job_id)
     .bind(bundle_version_id)
-    .bind(&payload.target_tag)
+    .bind(&target_tag)
     .bind(bundle.source_registry_id)
     .bind(bundle.target_registry_id)
     .execute(&state.pool)
@@ -403,7 +473,7 @@ async fn copy_bundle_version(
     let skopeo_clone = state.skopeo.clone();
     let log_state_clone = state.job_logs.clone();
     let cancel_flags = state.cancel_flags.clone();
-    let target_tag = payload.target_tag.clone();
+    let target_tag = target_tag.clone();
     let credentials_clone = credentials.clone();
 
     // Vytvořit snapshot image mappings pro tento job
@@ -628,6 +698,67 @@ async fn copy_bundle_version(
             message: format!("Copy job started for {} images", mapping_count),
         }),
     ))
+}
+
+/// GET /api/v1/bundles/{bundle_id}/versions/{version}/next-tag - Náhled dalšího tagu
+async fn get_next_copy_tag(
+    State(state): State<CopyApiState>,
+    Path((bundle_id, _version)): Path<(Uuid, i32)>,
+    Query(query): Query<NextTagQuery>,
+) -> Result<Json<NextTagResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let bundle = sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
+        .bind(bundle_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+    let Some(bundle) = bundle else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Bundle with id {} not found", bundle_id),
+            }),
+        ));
+    };
+
+    if !bundle.auto_tag_enabled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Auto tag is not enabled for this bundle".to_string(),
+            }),
+        ));
+    }
+
+    let date = local_date_from_offset(query.tz_offset_minutes);
+    let current: Option<i32> = sqlx::query_scalar(
+        "SELECT counter FROM bundle_tag_counters WHERE bundle_id = $1 AND target_registry_id = $2 AND date = $3",
+    )
+    .bind(bundle.id)
+    .bind(bundle.target_registry_id)
+    .bind(date)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get tag counter: {}", e),
+            }),
+        )
+    })?;
+
+    let next = current.unwrap_or(0) + 1;
+    let tag = format_tag(date, next);
+
+    Ok(Json(NextTagResponse { tag }))
 }
 
 /// POST /api/v1/bundles/{bundle_id}/versions/{version}/precheck - ověří zdrojové images
@@ -1332,8 +1463,8 @@ async fn start_copy_job(
         if !cancelled && failed == 0 && is_release_job {
             if let Some(release_id) = release_id {
                 let _ = sqlx::query(
-                    "INSERT INTO releases (copy_job_id, release_id, status, notes)
-                     VALUES ($1, $2, 'draft', $3)"
+                    "INSERT INTO releases (copy_job_id, release_id, status, notes, is_auto)
+                     VALUES ($1, $2, 'draft', $3, false)"
                 )
                 .bind(job_id)
                 .bind(&release_id)

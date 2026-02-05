@@ -18,6 +18,7 @@ class BundleWizard {
                 description: '',
                 source_registry_id: '',
                 target_registry_id: '',
+                auto_tag_enabled: false,
             },
             imageMappings: []
         };
@@ -167,6 +168,14 @@ class BundleWizard {
                     </div>
                 </div>
             </div>
+
+            <div class="mb-3">
+                <label class="form-check">
+                    <input class="form-check-input" type="checkbox" id="bundle-auto-tag" ${this.data.bundle.auto_tag_enabled ? 'checked' : ''}>
+                    <span class="form-check-label">Auto-generate target tag (YYYY.MM.DD.COUNTER)</span>
+                </label>
+                <small class="form-hint">Locks target tag input when starting copy jobs</small>
+            </div>
         `;
     }
 
@@ -277,6 +286,9 @@ class BundleWizard {
 
                         <dt class="col-4">Target Registry:</dt>
                         <dd class="col-8">${targetRegistry?.name || 'N/A'}</dd>
+
+                        <dt class="col-4">Auto Tag:</dt>
+                        <dd class="col-8">${this.data.bundle.auto_tag_enabled ? 'Enabled' : 'Disabled'}</dd>
                     </dl>
                 </div>
             </div>
@@ -324,6 +336,7 @@ class BundleWizard {
         this.data.bundle.description = document.getElementById('bundle-description').value;
         this.data.bundle.source_registry_id = document.getElementById('bundle-source-registry').value;
         this.data.bundle.target_registry_id = document.getElementById('bundle-target-registry').value;
+        this.data.bundle.auto_tag_enabled = document.getElementById('bundle-auto-tag')?.checked || false;
 
         if (!this.data.bundle.tenant_id || !this.data.bundle.name ||
             !this.data.bundle.source_registry_id || !this.data.bundle.target_registry_id) {
@@ -420,6 +433,7 @@ class BundleWizard {
             description: this.data.bundle.description,
             source_registry_id: this.data.bundle.source_registry_id,
             target_registry_id: this.data.bundle.target_registry_id,
+            auto_tag_enabled: this.data.bundle.auto_tag_enabled,
         });
 
         // Pak přidáme image mappings do verze 1
