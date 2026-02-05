@@ -744,6 +744,8 @@ router.on('/', async () => {
             </div>
         `;
 
+        window._exportMappings = [];
+
     } catch (error) {
         console.error('Failed to load dashboard:', error);
         content.innerHTML = `
@@ -2050,6 +2052,34 @@ router.on('/bundles/new', async (params, query) => {
                     renderWizard();
                 });
             });
+
+            const importBtn = document.getElementById('import-mappings-btn');
+            if (importBtn) {
+                importBtn.addEventListener('click', async () => {
+                    wizard.collectStep2Data();
+                    await showMappingImportModal({
+                        onApply: (rows) => {
+                            wizard.data.imageMappings = rows;
+                            renderWizard();
+                        },
+                    });
+                });
+            }
+
+            const clearBtn = document.getElementById('clear-mappings-btn');
+            if (clearBtn) {
+                clearBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog(
+                        'Clear all mappings?',
+                        'This will remove all image mappings from this bundle.',
+                        'Clear',
+                        'Cancel'
+                    );
+                    if (!confirmed) return;
+                    wizard.data.imageMappings = [];
+                    renderWizard();
+                });
+            }
         };
 
         renderWizard();
@@ -2726,6 +2756,34 @@ router.on('/bundles/:id/copy', async (params) => {
                     renderWizard();
                 });
             });
+
+            const importBtn = document.getElementById('import-mappings-btn');
+            if (importBtn) {
+                importBtn.addEventListener('click', async () => {
+                    wizard.collectStep2Data();
+                    await showMappingImportModal({
+                        onApply: (rows) => {
+                            wizard.data.imageMappings = rows;
+                            renderWizard();
+                        },
+                    });
+                });
+            }
+
+            const clearBtn = document.getElementById('clear-mappings-btn');
+            if (clearBtn) {
+                clearBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog(
+                        'Clear all mappings?',
+                        'This will remove all image mappings from this bundle.',
+                        'Clear',
+                        'Cancel'
+                    );
+                    if (!confirmed) return;
+                    wizard.data.imageMappings = [];
+                    renderWizard();
+                });
+            }
         };
 
         renderWizard();
@@ -2829,10 +2887,23 @@ router.on('/bundles/:id/versions/new', async (params) => {
                             `).join('')}
                         </div>
 
-                        <button type="button" class="btn btn-primary" id="add-mapping-btn">
-                            <i class="ti ti-plus"></i>
-                            Add Image Mapping
-                        </button>
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="button" class="btn btn-primary" id="add-mapping-btn">
+                                <i class="ti ti-plus"></i>
+                                Add Image Mapping
+                            </button>
+                            <button type="button" class="btn btn-outline-primary" id="import-mappings-btn">
+                                <i class="ti ti-file-import"></i>
+                                Import from CSV
+                            </button>
+                            <button type="button" class="btn btn-outline-danger" id="clear-mappings-btn">
+                                <i class="ti ti-trash"></i>
+                                Clear All
+                            </button>
+                        </div>
+                        <div class="text-secondary small mt-2">
+                            Import format: <code>source_image;source_tag;target_image;app_name;container_name</code>
+                        </div>
 
                         ${state.mappings.length === 0 ? `
                             <div class="alert alert-info mt-3">
@@ -2919,6 +2990,34 @@ router.on('/bundles/:id/versions/new', async (params) => {
                     }
                 });
             });
+
+            const importBtn = document.getElementById('import-mappings-btn');
+            if (importBtn) {
+                importBtn.addEventListener('click', async () => {
+                    collectMappings();
+                    await showMappingImportModal({
+                        onApply: (rows) => {
+                            state.mappings = rows;
+                            render();
+                        },
+                    });
+                });
+            }
+
+            const clearBtn = document.getElementById('clear-mappings-btn');
+            if (clearBtn) {
+                clearBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog(
+                        'Clear all mappings?',
+                        'This will remove all image mappings from this version.',
+                        'Clear',
+                        'Cancel'
+                    );
+                    if (!confirmed) return;
+                    state.mappings = [];
+                    render();
+                });
+            }
 
             const createBtn = document.getElementById('create-version-btn');
             createBtn.addEventListener('click', async () => {
@@ -3019,6 +3118,12 @@ router.on('/bundles/:id/versions/:version', async (params) => {
             <div class="card mb-3">
                 <div class="card-header">
                     <h3 class="card-title">Image Mappings</h3>
+                    <div class="card-actions">
+                        <button class="btn btn-sm btn-outline-primary" id="export-mappings-btn">
+                            <i class="ti ti-clipboard-copy"></i>
+                            Export to clipboard
+                        </button>
+                    </div>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table">
@@ -4979,6 +5084,299 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         } catch (error) {
             getApp().showError(error.message);
         }
+    });
+}
+
+async function copyMappingsToClipboard(mappings) {
+    if (!Array.isArray(mappings) || mappings.length === 0) {
+        getApp().showError('No mappings available to export');
+        return;
+    }
+    const rows = mappings.map(m => [
+        m.source_image || '',
+        m.source_tag || 'latest',
+        m.target_image || '',
+        m.app_name || '',
+        m.container_name || '',
+    ].join(';'));
+    const payload = rows.join('\n');
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(payload);
+            getApp().showSuccess('Mappings copied to clipboard');
+            return;
+        }
+    } catch (error) {
+        console.warn('Clipboard API failed, falling back to execCommand:', error);
+    }
+
+    try {
+        const textarea = document.createElement('textarea');
+        textarea.value = payload;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'absolute';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const success = document.execCommand('copy');
+        textarea.remove();
+        if (success) {
+            getApp().showSuccess('Mappings copied to clipboard');
+        } else {
+            window.prompt('Copy mappings:', payload);
+            getApp().showError('Clipboard unavailable. Copied to prompt.');
+        }
+    } catch (error) {
+        window.prompt('Copy mappings:', payload);
+        getApp().showError('Clipboard unavailable. Copied to prompt.');
+    }
+}
+
+if (!window._exportMappingsHandlerAttached) {
+    window._exportMappingsHandlerAttached = true;
+    document.addEventListener('click', async (event) => {
+        const btn = event.target.closest('#export-mappings-btn');
+        if (!btn) return;
+        let mappings = window._exportMappings;
+        if (!Array.isArray(mappings) || mappings.length === 0) {
+            try {
+                const parts = location.hash.replace(/^#\/?/, '').split('/');
+                if (parts[0] === 'bundles' && parts[2] === 'versions') {
+                    const bundleId = parts[1];
+                    const version = parseInt(parts[3], 10);
+                    if (bundleId && Number.isFinite(version)) {
+                        const fresh = await api.getImageMappings(bundleId, version);
+                        if (Array.isArray(fresh) && fresh.length > 0) {
+                            mappings = fresh;
+                            window._exportMappings = fresh;
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('Failed to fetch mappings on export:', error);
+            }
+        }
+        await copyMappingsToClipboard(Array.isArray(mappings) ? mappings : []);
+    });
+}
+
+function applyReplaceRules(value, rules) {
+    let result = value || '';
+    rules.forEach(rule => {
+        const find = rule.find?.trim();
+        if (!find) return;
+        const replace = rule.replace ?? '';
+        result = result.split(find).join(replace);
+    });
+    return result;
+}
+
+function parseMappingCsv(input, rules = []) {
+    const lines = input.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    if (lines.length === 0) {
+        return { rows: [], valid: [], invalid: [] };
+    }
+
+    let startIndex = 0;
+    const header = lines[0].toLowerCase();
+    if (header.includes('source_image') && header.includes('target_image')) {
+        startIndex = 1;
+    }
+
+    const rows = [];
+    for (let i = startIndex; i < lines.length; i++) {
+        const parts = lines[i].split(';').map(p => p.trim());
+        const sourceImage = parts[0] || '';
+        let sourceTag = parts[1] || '';
+        if (!sourceTag) sourceTag = 'latest';
+        const targetRaw = parts[2] || '';
+        const targetImage = applyReplaceRules(targetRaw, rules);
+        let appName = parts[3] || '';
+        const containerName = parts[4] || '';
+        if (!appName && targetImage) {
+            const segs = targetImage.split('/');
+            appName = segs[segs.length - 1] || '';
+        }
+
+        const valid = Boolean(sourceImage && targetImage && appName);
+        rows.push({
+            source_image: sourceImage,
+            source_tag: sourceTag,
+            target_image: targetImage,
+            app_name: appName,
+            container_name: containerName,
+            valid,
+        });
+    }
+
+    const valid = rows.filter(r => r.valid);
+    const invalid = rows.filter(r => !r.valid);
+    return { rows, valid, invalid };
+}
+
+async function showMappingImportModal({ onApply }) {
+    const modalHtml = `
+        <div class="modal modal-blur fade show" style="display: block;" id="import-mappings-modal">
+            <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Import Image Mappings</h5>
+                        <button type="button" class="btn-close" aria-label="Close" id="import-mappings-close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="mb-3">
+                            <label class="form-label">Paste CSV (semicolon-separated)</label>
+                            <textarea class="form-control" id="import-mappings-input" rows="6"
+                                placeholder="source_image;source_tag;target_image;app_name;container_name"></textarea>
+                            <div class="form-hint">Empty source_tag defaults to <code>latest</code>.</div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Replace rules (target_image only)</label>
+                            <div id="import-replace-rules"></div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary mt-2" id="import-add-rule">
+                                <i class="ti ti-plus"></i>
+                                Add rule
+                            </button>
+                        </div>
+                        <div class="mb-2">
+                            <div class="text-secondary small mb-1" id="import-summary">0 valid, 0 invalid</div>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table table-sm table-vcenter">
+                                <thead>
+                                    <tr>
+                                        <th>Source</th>
+                                        <th>Tag</th>
+                                        <th>Target</th>
+                                        <th>App</th>
+                                        <th>Container</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="import-preview-body">
+                                    <tr>
+                                        <td colspan="5" class="text-center text-secondary">No data yet</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link link-secondary" id="import-cancel-btn">Cancel</button>
+                        <button type="button" class="btn btn-primary" id="import-apply-btn" disabled>Import</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    const modal = document.getElementById('import-mappings-modal');
+    const backdrop = document.querySelector('.modal-backdrop');
+    const inputEl = document.getElementById('import-mappings-input');
+    const rulesEl = document.getElementById('import-replace-rules');
+    const addRuleBtn = document.getElementById('import-add-rule');
+    const previewBody = document.getElementById('import-preview-body');
+    const summaryEl = document.getElementById('import-summary');
+    const applyBtn = document.getElementById('import-apply-btn');
+    const cancelBtn = document.getElementById('import-cancel-btn');
+    const closeBtn = document.getElementById('import-mappings-close');
+
+    let rules = [{ find: '', replace: '' }];
+    let parsed = { valid: [] };
+
+    const cleanup = () => {
+        modal.remove();
+        backdrop.remove();
+    };
+
+    const renderRules = () => {
+        rulesEl.innerHTML = rules.map((rule, idx) => `
+            <div class="row g-2 align-items-end mb-2" data-rule-index="${idx}">
+                <div class="col-md-5">
+                    <input type="text" class="form-control form-control-sm rule-find" placeholder="Find"
+                           value="${rule.find || ''}">
+                </div>
+                <div class="col-md-5">
+                    <input type="text" class="form-control form-control-sm rule-replace" placeholder="Replace"
+                           value="${rule.replace || ''}">
+                </div>
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-sm btn-outline-danger w-100 rule-remove" ${rules.length === 1 ? 'disabled' : ''}>
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </div>
+            </div>
+        `).join('');
+
+        rulesEl.querySelectorAll('.rule-find').forEach((input, idx) => {
+            input.addEventListener('input', () => {
+                rules[idx].find = input.value;
+                updatePreview();
+            });
+        });
+        rulesEl.querySelectorAll('.rule-replace').forEach((input, idx) => {
+            input.addEventListener('input', () => {
+                rules[idx].replace = input.value;
+                updatePreview();
+            });
+        });
+        rulesEl.querySelectorAll('.rule-remove').forEach((btn, idx) => {
+            btn.addEventListener('click', () => {
+                if (rules.length === 1) return;
+                rules.splice(idx, 1);
+                renderRules();
+                updatePreview();
+            });
+        });
+    };
+
+    const updatePreview = () => {
+        parsed = parseMappingCsv(inputEl.value, rules);
+        const { rows, valid, invalid } = parsed;
+        summaryEl.textContent = `${valid.length} valid, ${invalid.length} invalid`;
+        applyBtn.disabled = valid.length === 0;
+
+        if (rows.length === 0) {
+            previewBody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary">No data yet</td></tr>';
+            return;
+        }
+
+        previewBody.innerHTML = rows.map(row => `
+            <tr class="${row.valid ? '' : 'table-danger'}">
+                <td><code class="small">${row.source_image || '-'}</code></td>
+                <td>${row.source_tag || '-'}</td>
+                <td><code class="small">${row.target_image || '-'}</code></td>
+                <td>${row.app_name || '-'}</td>
+                <td>${row.container_name || '-'}</td>
+            </tr>
+        `).join('');
+    };
+
+    renderRules();
+    updatePreview();
+
+    inputEl.addEventListener('input', updatePreview);
+    addRuleBtn.addEventListener('click', () => {
+        rules.push({ find: '', replace: '' });
+        renderRules();
+    });
+
+    const onCancel = () => cleanup();
+    cancelBtn.addEventListener('click', onCancel);
+    closeBtn.addEventListener('click', onCancel);
+
+    applyBtn.addEventListener('click', () => {
+        if (parsed.valid.length === 0) return;
+        onApply(parsed.valid.map(row => ({
+            source_image: row.source_image,
+            source_tag: row.source_tag,
+            target_image: row.target_image,
+            app_name: row.app_name,
+            container_name: row.container_name,
+        })));
+        cleanup();
     });
 }
 

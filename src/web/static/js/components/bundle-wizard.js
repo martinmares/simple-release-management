@@ -245,10 +245,23 @@ class BundleWizard {
                 `).join('')}
             </div>
 
-            <button type="button" class="btn btn-primary" id="add-mapping-btn">
-                <i class="ti ti-plus"></i>
-                Add Image Mapping
-            </button>
+            <div class="d-flex flex-wrap gap-2">
+                <button type="button" class="btn btn-primary" id="add-mapping-btn">
+                    <i class="ti ti-plus"></i>
+                    Add Image Mapping
+                </button>
+                <button type="button" class="btn btn-outline-primary" id="import-mappings-btn">
+                    <i class="ti ti-file-import"></i>
+                    Import from CSV
+                </button>
+                <button type="button" class="btn btn-outline-danger" id="clear-mappings-btn">
+                    <i class="ti ti-trash"></i>
+                    Clear All
+                </button>
+            </div>
+            <div class="text-secondary small mt-2">
+                Import format: <code>source_image;source_tag;target_image;app_name;container_name</code>
+            </div>
 
             ${this.data.imageMappings.length === 0 ? `
                 <div class="alert alert-info mt-3">
