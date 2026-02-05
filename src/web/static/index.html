@@ -82,6 +82,15 @@
                         </li>
 
                         <li class="nav-item">
+                            <a class="nav-link" href="#/git-repos" :class="{ 'active': currentRoute.startsWith('/git-repos') }">
+                                <span class="nav-link-icon d-md-none d-lg-inline-block">
+                                    <i class="ti ti-brand-git"></i>
+                                </span>
+                                <span class="nav-link-title">Git Repos</span>
+                            </a>
+                        </li>
+
+                        <li class="nav-item">
                             <a class="nav-link" href="#/bundles" :class="{ 'active': currentRoute.startsWith('/bundles') }">
                                 <span class="nav-link-icon d-md-none d-lg-inline-block">
                                     <i class="ti ti-package"></i>
