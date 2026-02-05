@@ -124,6 +124,9 @@ pub struct DeployJobSummary {
     pub tag_name: Option<String>,
     pub target_name: String,
     pub env_name: String,
+    pub is_auto: bool,
+    pub copy_job_id: Option<Uuid>,
+    pub bundle_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -587,9 +590,14 @@ async fn list_release_deploy_jobs(
     let jobs = sqlx::query_as::<_, DeployJobSummary>(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.status, dj.started_at, dj.completed_at,
-               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name
+               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name,
+               r.is_auto, r.copy_job_id, b.id as bundle_id
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
+        JOIN releases r ON r.id = dj.release_id
+        LEFT JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        LEFT JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        LEFT JOIN bundles b ON b.id = bv.bundle_id
         WHERE dj.release_id = $1
         ORDER BY dj.created_at DESC
         "#,
@@ -663,9 +671,14 @@ async fn get_deploy_job(
     let job = sqlx::query_as::<_, DeployJobSummary>(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.status, dj.started_at, dj.completed_at,
-               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name
+               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name,
+               r.is_auto, r.copy_job_id, b.id as bundle_id
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
+        JOIN releases r ON r.id = dj.release_id
+        LEFT JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        LEFT JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        LEFT JOIN bundles b ON b.id = bv.bundle_id
         WHERE dj.id = $1
         "#,
     )

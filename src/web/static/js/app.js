@@ -272,12 +272,23 @@ router.on('/', async () => {
 
     try {
         // Načíst všechna data paralelně
-        const [tenants, bundles, releases, registries] = await Promise.all([
+        const [tenants, bundles, releases, registries, copyJobs, deployJobs, gitRepos] = await Promise.all([
             api.getTenants(),
             api.getBundles(),
             api.getReleases(),
             api.getRegistries(),
+            api.getCopyJobs(),
+            api.getDeployments(),
+            api.getGitRepos(),
         ]);
+
+        const deployTargetsByTenant = await Promise.all(
+            tenants.map(async tenant => ({
+                tenant_id: tenant.id,
+                targets: await api.getDeployTargets(tenant.id),
+            }))
+        );
+        const deployTargets = deployTargetsByTenant.flatMap(entry => entry.targets);
 
         // Spočítat registry podle rolí
         const sourceRegistries = registries.filter(r => r.role === 'source' || r.role === 'both').length;
@@ -291,6 +302,16 @@ router.on('/', async () => {
         // Získat poslední bundles (top 5) s detaily
         const recentBundles = bundles
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(0, 5);
+
+        const recentCopyJobs = copyJobs
+            .filter(job => job.started_at)
+            .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
+            .slice(0, 5);
+
+        const recentDeployJobs = deployJobs
+            .filter(job => job.started_at)
+            .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
             .slice(0, 5);
 
         content.innerHTML = `
@@ -369,6 +390,80 @@ router.on('/', async () => {
                 </div>
             </div>
 
+            <div class="row row-deck row-cards mb-4">
+                <div class="col-sm-6 col-lg-3">
+                    <a href="#/copy-jobs" class="card card-sm card-link">
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <span class="bg-azure text-white avatar">
+                                        <i class="ti ti-copy"></i>
+                                    </span>
+                                </div>
+                                <div class="col">
+                                    <div class="font-weight-medium">${copyJobs.length}</div>
+                                    <div class="text-secondary">Copy Jobs</div>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
+                    <a href="#/deployments" class="card card-sm card-link">
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <span class="bg-indigo text-white avatar">
+                                        <i class="ti ti-rocket"></i>
+                                    </span>
+                                </div>
+                                <div class="col">
+                                    <div class="font-weight-medium">${deployJobs.length}</div>
+                                    <div class="text-secondary">Deploy Jobs</div>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
+                    <a href="#/git-repos" class="card card-sm card-link">
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <span class="bg-orange text-white avatar">
+                                        <i class="ti ti-brand-git"></i>
+                                    </span>
+                                </div>
+                                <div class="col">
+                                    <div class="font-weight-medium">${gitRepos.length}</div>
+                                    <div class="text-secondary">Git Repos</div>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
+                    <a href="#/tenants" class="card card-sm card-link">
+                        <div class="card-body">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <span class="bg-teal text-white avatar">
+                                        <i class="ti ti-target"></i>
+                                    </span>
+                                </div>
+                                <div class="col">
+                                    <div class="font-weight-medium">${deployTargets.length}</div>
+                                    <div class="text-secondary">Deploy Targets</div>
+                                </div>
+                            </div>
+                        </div>
+                    </a>
+                </div>
+            </div>
+
             <!-- Quick Actions & Registry Stats -->
             <div class="row mb-4">
                 <div class="col-md-8">
@@ -412,6 +507,12 @@ router.on('/', async () => {
                                     <a href="#/copy-jobs" class="btn btn-outline-cyan w-100">
                                         <i class="ti ti-copy me-2"></i>
                                         Copy Jobs
+                                    </a>
+                                </div>
+                                <div class="col-6 col-md-4">
+                                    <a href="#/deployments" class="btn btn-outline-indigo w-100">
+                                        <i class="ti ti-rocket me-2"></i>
+                                        Deployments
                                     </a>
                                 </div>
                             </div>
@@ -539,6 +640,92 @@ router.on('/', async () => {
                                                 </div>
                                                 <div class="col-auto">
                                                     <span class="badge bg-success text-success-fg">Released</span>
+                                                </div>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="row mt-3">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Recent Copy Jobs</h3>
+                            <div class="card-actions">
+                                <a href="#/copy-jobs" class="btn btn-sm btn-outline-primary">View All</a>
+                            </div>
+                        </div>
+                        <div class="card-body p-0">
+                            ${recentCopyJobs.length === 0 ? `
+                                <div class="empty p-4">
+                                    <p class="empty-title">No copy jobs yet</p>
+                                    <p class="empty-subtitle text-secondary">Start one from a bundle version</p>
+                                </div>
+                            ` : `
+                                <div class="list-group list-group-flush">
+                                    ${recentCopyJobs.map(job => `
+                                        <a href="#/copy-jobs/${job.job_id}" class="list-group-item list-group-item-action">
+                                            <div class="row align-items-center">
+                                                <div class="col text-truncate">
+                                                    <div class="text-reset d-block">${job.bundle_name}</div>
+                                                    <div class="text-secondary text-truncate mt-n1">
+                                                        ${job.target_tag}
+                                                    </div>
+                                                </div>
+                                                <div class="col-auto">
+                                                    <span class="badge ${
+                                                        job.status === 'success' ? 'bg-success text-success-fg' :
+                                                        job.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                                        job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                                        'bg-secondary text-secondary-fg'
+                                                    }">${job.status}</span>
+                                                </div>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            `}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 class="card-title">Recent Deploy Jobs</h3>
+                            <div class="card-actions">
+                                <a href="#/deployments" class="btn btn-sm btn-outline-primary">View All</a>
+                            </div>
+                        </div>
+                        <div class="card-body p-0">
+                            ${recentDeployJobs.length === 0 ? `
+                                <div class="empty p-4">
+                                    <p class="empty-title">No deployments yet</p>
+                                    <p class="empty-subtitle text-secondary">Run a deploy job from a release</p>
+                                </div>
+                            ` : `
+                                <div class="list-group list-group-flush">
+                                    ${recentDeployJobs.map(job => `
+                                        <a href="#/deploy-jobs/${job.id}" class="list-group-item list-group-item-action">
+                                            <div class="row align-items-center">
+                                                <div class="col text-truncate">
+                                                    <div class="text-reset d-block">${job.release_id}</div>
+                                                    <div class="text-secondary text-truncate mt-n1">
+                                                        ${job.target_name} (${job.env_name})
+                                                    </div>
+                                                </div>
+                                                <div class="col-auto">
+                                                    <span class="badge ${
+                                                        job.status === 'success' ? 'bg-success text-success-fg' :
+                                                        job.status === 'failed' ? 'bg-danger text-danger-fg' :
+                                                        job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                                        'bg-secondary text-secondary-fg'
+                                                    }">${job.status}</span>
                                                 </div>
                                             </div>
                                         </a>
@@ -2132,6 +2319,7 @@ router.on('/bundles/:id', async (params) => {
                             <table class="table table-vcenter card-table">
                                 <thead>
                                     <tr>
+                                        <th>Job</th>
                                         <th>Release</th>
                                         <th>Target</th>
                                         <th>Status</th>
@@ -2143,12 +2331,15 @@ router.on('/bundles/:id', async (params) => {
                                 <tbody>
                                     ${deployments.length === 0 ? `
                                         <tr>
-                                            <td colspan="6" class="text-center text-secondary py-4">
+                                            <td colspan="7" class="text-center text-secondary py-4">
                                                 No deployments yet.
                                             </td>
                                         </tr>
                                     ` : deployments.map(row => `
                                         <tr>
+                                            <td>
+                                                <a href="#/deploy-jobs/${row.id}"><code class="small">${row.id}</code></a>
+                                            </td>
                                             <td>
                                                 <a href="#/releases/${row.release_db_id}"><strong>${row.release_id}</strong></a>
                                                 ${row.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
@@ -3288,16 +3479,31 @@ router.on('/deploy-jobs/:id', async (params) => {
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
-                    <a href="#/releases/${job.release_id}" class="btn btn-ghost-secondary">
-                        <i class="ti ti-arrow-left"></i>
-                        Back to Image Release
-                    </a>
+                    ${job.is_auto && job.copy_job_id ? `
+                        <a href="#/copy-jobs/${job.copy_job_id}" class="btn btn-ghost-secondary">
+                            <i class="ti ti-arrow-left"></i>
+                            Back to Copy Job
+                        </a>
+                    ` : `
+                        <a href="#/releases/${job.release_id}" class="btn btn-ghost-secondary">
+                            <i class="ti ti-arrow-left"></i>
+                            Back to Image Release
+                        </a>
+                    `}
+                    ${job.is_auto && job.bundle_id ? `
+                        <a href="#/bundles/${job.bundle_id}" class="btn btn-link btn-sm ms-2">
+                            Bundle detail
+                        </a>
+                    ` : ''}
                 </div>
             </div>
 
             <div class="card mb-3">
                 <div class="card-header">
-                    <h3 class="card-title">Deploy Job Monitor</h3>
+                    <h3 class="card-title">
+                        Deploy Job Monitor
+                        ${job.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                    </h3>
                 </div>
                 <div class="card-body">
                     <dl class="row mb-0">
