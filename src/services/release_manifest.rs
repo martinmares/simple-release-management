@@ -76,7 +76,8 @@ pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Resul
         .into_iter()
         .map(|img| {
             let base_image = if let Some(base_url) = registry_base_url.as_ref() {
-                format!("{}/{}", base_url, img.target_image)
+                let base = normalize_registry_base(base_url);
+                format!("{}/{}", base, img.target_image)
             } else {
                 img.target_image
             };
@@ -95,4 +96,12 @@ pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Resul
         created_at: base.created_at,
         images,
     })
+}
+
+fn normalize_registry_base(base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    let without_scheme = trimmed
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    without_scheme.trim_end_matches('/').to_string()
 }

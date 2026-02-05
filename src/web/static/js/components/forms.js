@@ -279,10 +279,10 @@ function createRegistryForm(registry = null, tenants = []) {
 
                 <div class="mb-3">
                     <label class="form-label required">Base URL</label>
-                    <input type="url" class="form-control" name="base_url"
+                    <input type="text" class="form-control" name="base_url"
                            value="${registry?.base_url || ''}"
                            placeholder="https://registry.example.com" required>
-                    <small class="form-hint">Full URL to the registry (including https://)</small>
+                    <small class="form-hint">Hostname or URL (e.g. registry.example.com or https://registry.example.com)</small>
                 </div>
 
                 <div class="row">
