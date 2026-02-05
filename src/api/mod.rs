@@ -1,6 +1,7 @@
 pub mod bundles;
 pub mod copy;
 pub mod deploy;
+pub mod git_repos;
 pub mod registries;
 pub mod releases;
 pub mod tenants;
@@ -15,9 +16,15 @@ pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
         encryption_secret,
     };
 
+    let git_repo_state = git_repos::GitRepoApiState {
+        pool: pool.clone(),
+        encryption_secret: registry_state.encryption_secret.clone(),
+    };
+
     let api_v1 = Router::new()
         .nest("/tenants", tenants::router(pool.clone()))
         .merge(registries::router(registry_state))
+        .merge(git_repos::router(git_repo_state))
         .merge(bundles::router(pool.clone()))
         .merge(releases::router(pool.clone()));
 

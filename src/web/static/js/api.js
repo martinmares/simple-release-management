@@ -161,6 +161,31 @@ class ApiClient {
         return this.delete(`/registries/${id}`);
     }
 
+    // ==================== GIT REPOSITORIES ====================
+
+    async getGitRepos(tenantId = null) {
+        if (tenantId) {
+            return this.get(`/tenants/${tenantId}/git-repos`);
+        }
+        return this.get('/git-repos');
+    }
+
+    async getGitRepo(id) {
+        return this.get(`/git-repos/${id}`);
+    }
+
+    async createGitRepo(tenantId, data) {
+        return this.post(`/tenants/${tenantId}/git-repos`, data);
+    }
+
+    async updateGitRepo(id, data) {
+        return this.put(`/git-repos/${id}`, data);
+    }
+
+    async deleteGitRepo(id) {
+        return this.delete(`/git-repos/${id}`);
+    }
+
     // ==================== BUNDLES ====================
 
     async getBundles(tenantId = null) {

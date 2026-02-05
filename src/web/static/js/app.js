@@ -700,11 +700,12 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles, deployTargets] = await Promise.all([
+        const [tenant, registries, bundles, deployTargets, gitRepos] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
             api.getDeployTargets(params.id),
+            api.getGitRepos(params.id),
         ]);
 
         content.innerHTML = `
@@ -815,6 +816,35 @@ router.on('/tenants/:id', async (params) => {
                                     `).join('')}
                                 </div>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="card mb-3">
+                        <div class="card-header">
+                            <h3 class="card-title">Git Repos</h3>
+                            <div class="card-actions">
+                                <a href="#/git-repos/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                    <i class="ti ti-plus"></i>
+                                    Add
+                                </a>
+                            </div>
+                        </div>
+                        <div class="list-group list-group-flush">
+                            ${gitRepos.length === 0 ? `
+                                <div class="list-group-item text-center text-secondary py-4">
+                                    No git repositories yet
+                                </div>
+                            ` : gitRepos.map(repo => `
+                                <a href="#/git-repos/${repo.id}/edit" class="list-group-item list-group-item-action">
+                                    <div class="d-flex align-items-center">
+                                        <div class="flex-fill">
+                                            <div>${repo.name}</div>
+                                            <div class="text-secondary small">${repo.repo_url}</div>
+                                        </div>
+                                        <span class="badge bg-secondary-lt text-secondary-fg">${repo.default_branch || 'main'}</span>
+                                    </div>
+                                </a>
+                            `).join('')}
                         </div>
                     </div>
 
@@ -1050,6 +1080,189 @@ router.on('/registries', async () => {
     }
 });
 
+// ==================== GIT REPOSITORIES ROUTES ====================
+
+router.on('/git-repos', async () => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const [repos, tenants] = await Promise.all([
+            api.getGitRepos(),
+            api.getTenants(),
+        ]);
+
+        const tenantMap = {};
+        tenants.forEach(t => tenantMap[t.id] = t);
+
+        const renderRepos = (rows, searchQuery = '', selectedTenant = '') => `
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Git Repositories</h3>
+                    <div class="card-actions">
+                        <a href="#/git-repos/new" class="btn btn-primary">
+                            <i class="ti ti-plus"></i>
+                            New Git Repo
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body border-bottom py-3">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="ti ti-search"></i>
+                                </span>
+                                <input type="text" class="form-control" placeholder="Search by name or url..."
+                                       id="git-repos-search" value="${searchQuery}">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <select class="form-select" id="git-repos-tenant">
+                                <option value="">All Tenants</option>
+                                ${tenants.map(t => `
+                                    <option value="${t.id}" ${selectedTenant === t.id ? 'selected' : ''}>
+                                        ${t.name}
+                                    </option>
+                                `).join('')}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Tenant</th>
+                                <th>URL</th>
+                                <th>Branch</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows.length === 0 ? `
+                                <tr>
+                                    <td colspan="4" class="text-center text-secondary py-5">
+                                        No git repositories yet.
+                                    </td>
+                                </tr>
+                            ` : rows.map(repo => `
+                                <tr>
+                                    <td><a href="#/git-repos/${repo.id}/edit"><strong>${repo.name}</strong></a></td>
+                                    <td>${tenantMap[repo.tenant_id]?.name || 'Unknown'}</td>
+                                    <td><code class="small">${repo.repo_url}</code></td>
+                                    <td><span class="badge bg-secondary-lt text-secondary-fg">${repo.default_branch || 'main'}</span></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+
+        content.innerHTML = renderRepos(repos);
+        const searchEl = document.getElementById('git-repos-search');
+
+        const applyFilters = () => {
+            const q = searchEl.value.trim().toLowerCase();
+            const tenantId = document.getElementById('git-repos-tenant').value;
+            const filtered = repos.filter(r => {
+                const nameOk = !q || r.name.toLowerCase().includes(q) || r.repo_url.toLowerCase().includes(q);
+                const tenantOk = !tenantId || r.tenant_id === tenantId;
+                return nameOk && tenantOk;
+            });
+            content.innerHTML = renderRepos(filtered, q, tenantId);
+            document.getElementById('git-repos-search').addEventListener('input', applyFilters);
+            document.getElementById('git-repos-tenant').addEventListener('change', applyFilters);
+        };
+
+        searchEl.addEventListener('input', applyFilters);
+        document.getElementById('git-repos-tenant').addEventListener('change', applyFilters);
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load git repositories: ${error.message}
+            </div>
+        `;
+    }
+});
+
+router.on('/git-repos/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const tenants = await api.getTenants();
+        content.innerHTML = createGitRepoForm(null, tenants);
+
+        if (query.tenant_id) {
+            const select = document.querySelector('select[name="tenant_id"]');
+            if (select) {
+                select.value = query.tenant_id;
+                select.disabled = true;
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'tenant_id';
+                hidden.value = query.tenant_id;
+                select.parentElement.appendChild(hidden);
+            }
+        }
+
+        document.getElementById('git-repo-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                const tenantId = data.tenant_id;
+                delete data.tenant_id;
+                await api.createGitRepo(tenantId, data);
+                getApp().showSuccess('Git repository created successfully');
+                router.navigate('/git-repos');
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load form: ${error.message}
+            </div>
+        `;
+    }
+});
+
+router.on('/git-repos/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const [repo, tenants] = await Promise.all([
+            api.getGitRepo(params.id),
+            api.getTenants(),
+        ]);
+        content.innerHTML = createGitRepoForm(repo, tenants);
+
+        const tenantSelect = document.querySelector('select[name="tenant_id"]');
+        if (tenantSelect) {
+            tenantSelect.disabled = true;
+            const hidden = document.createElement('input');
+            hidden.type = 'hidden';
+            hidden.name = 'tenant_id';
+            hidden.value = repo.tenant_id;
+            tenantSelect.parentElement.appendChild(hidden);
+        }
+
+        document.getElementById('git-repo-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                await api.updateGitRepo(params.id, data);
+                getApp().showSuccess('Git repository updated successfully');
+                router.navigate('/git-repos');
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load git repository: ${error.message}
+            </div>
+        `;
+    }
+});
+
 // Registry Detail
 router.on('/registries/:id', async (params) => {
     const content = document.getElementById('app-content');
@@ -1221,8 +1434,12 @@ router.on('/deploy-targets/new', async (params, query) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const tenants = await api.getTenants();
-        content.innerHTML = createDeployTargetForm(null, tenants, []);
+        const [tenants, gitRepos] = await Promise.all([
+            api.getTenants(),
+            api.getGitRepos(),
+        ]);
+        const scopedRepos = query.tenant_id ? gitRepos.filter(r => r.tenant_id === query.tenant_id) : gitRepos;
+        content.innerHTML = createDeployTargetForm(null, tenants, scopedRepos, []);
 
         if (query.tenant_id) {
             const select = document.querySelector('select[name=\"tenant_id\"]');
@@ -1263,13 +1480,15 @@ router.on('/deploy-targets/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [response, tenants] = await Promise.all([
+        const [response, tenants, gitRepos] = await Promise.all([
             api.getDeployTarget(params.id),
             api.getTenants(),
+            api.getGitRepos(),
         ]);
         const target = response.target || response;
         const encjsonKeys = response.encjson_keys || [];
-        content.innerHTML = createDeployTargetForm(target, tenants, encjsonKeys);
+        const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
+        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys);
 
         attachEncjsonKeyHandlers();
 

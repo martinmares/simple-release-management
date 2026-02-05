@@ -328,20 +328,111 @@ function createRegistryForm(registry = null, tenants = []) {
 }
 
 /**
- * Vytvoří deploy target form
+ * Vytvoří git repository form
  */
-function createDeployTargetForm(target = null, tenants = [], encjsonKeys = []) {
-    const isEdit = !!target;
-    const gitAuthTypes = [
+function createGitRepoForm(repo = null, tenants = []) {
+    const isEdit = !!repo;
+    const authTypes = [
         { value: 'none', label: 'None' },
         { value: 'ssh', label: 'SSH Key' },
         { value: 'token', label: 'HTTPS Token' },
     ];
 
+    return `
+        <form id="git-repo-form" class="card" x-data="{ gitAuth: '${repo?.git_auth_type || 'none'}' }">
+            <div class="card-header">
+                <h3 class="card-title">${isEdit ? 'Edit Git Repository' : 'New Git Repository'}</h3>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label required">Tenant</label>
+                    <select class="form-select" name="tenant_id" required>
+                        <option value="">Select tenant...</option>
+                        ${tenants.map(t => `
+                            <option value="${t.id}" ${isEdit && repo.tenant_id === t.id ? 'selected' : ''}>
+                                ${t.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Name</label>
+                    <input type="text" class="form-control" name="name"
+                           value="${repo?.name || ''}"
+                           placeholder="tsm-environments" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Repository URL</label>
+                    <input type="text" class="form-control" name="repo_url"
+                           value="${repo?.repo_url || ''}"
+                           placeholder="git@host:org/repo.git" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Default Branch</label>
+                    <input type="text" class="form-control" name="default_branch"
+                           value="${repo?.default_branch || 'main'}"
+                           placeholder="main">
+                </div>
+
+                <hr class="my-4">
+                <h4>Git Auth</h4>
+
+                <div class="mb-3">
+                    <label class="form-label required">Auth Type</label>
+                    <select class="form-select" name="git_auth_type" x-model="gitAuth" required>
+                        ${authTypes.map(type => `
+                            <option value="${type.value}" ${repo?.git_auth_type === type.value ? 'selected' : ''}>
+                                ${type.label}
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
+
+                <div class="mb-3" x-show="gitAuth === 'token'">
+                    <label class="form-label">Git Username</label>
+                    <input type="text" class="form-control" name="git_username"
+                           value="${repo?.git_username || ''}"
+                           placeholder="git username">
+                </div>
+
+                <div class="mb-3" x-show="gitAuth === 'token'">
+                    <label class="form-label">Git Token</label>
+                    <input type="password" class="form-control" name="git_token"
+                           placeholder="${isEdit ? 'Leave blank to keep existing token' : 'token'}">
+                </div>
+
+                <div class="mb-3" x-show="gitAuth === 'ssh'">
+                    <label class="form-label">SSH Private Key</label>
+                    <textarea class="form-control" name="git_ssh_key" rows="5"
+                              placeholder="${isEdit ? 'Leave blank to keep existing key' : '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea>
+                </div>
+            </div>
+            <div class="card-footer text-end">
+                <div class="d-flex">
+                    <a href="#/git-repos" class="btn btn-link">Cancel</a>
+                    <button type="submit" class="btn btn-primary ms-auto">
+                        <i class="ti ti-check me-2"></i>
+                        ${isEdit ? 'Update Git Repo' : 'Create Git Repo'}
+                    </button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+/**
+ * Vytvoří deploy target form
+ */
+function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = []) {
+    const isEdit = !!target;
     const keys = encjsonKeys.length > 0 ? encjsonKeys : [{ public_key: '', has_private: false }];
+    const selectedTenantId = target?.tenant_id || '';
 
     return `
-        <form id="deploy-target-form" class="card" x-data="{ gitAuth: '${target?.git_auth_type || 'none'}' }">
+        <form id="deploy-target-form" class="card">
             <div class="card-header">
                 <h3 class="card-title">${isEdit ? 'Edit Deploy Target' : 'New Deploy Target'}</h3>
             </div>
@@ -381,72 +472,45 @@ function createDeployTargetForm(target = null, tenants = [], encjsonKeys = []) {
                 <h4>Repositories</h4>
 
                 <div class="mb-3">
-                    <label class="form-label required">Environments Repo URL</label>
-                    <input type="text" class="form-control" name="environments_repo_url"
-                           value="${target?.environments_repo_url || ''}"
-                           placeholder="git@host:org/tsm-environments.git" required>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Environments Branch</label>
-                    <input type="text" class="form-control" name="environments_branch"
-                           value="${target?.environments_branch || 'main'}"
-                           placeholder="main">
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label required">Deploy Repo URL</label>
-                    <input type="text" class="form-control" name="deploy_repo_url"
-                           value="${target?.deploy_repo_url || ''}"
-                           placeholder="git@host:org/tsm-deploy.git" required>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Deploy Branch</label>
-                    <input type="text" class="form-control" name="deploy_branch"
-                           value="${target?.deploy_branch || 'main'}"
-                           placeholder="main">
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Deploy Path</label>
-                    <input type="text" class="form-control" name="deploy_path"
-                           value="${target?.deploy_path || ''}"
-                           placeholder="deploy/${target?.env_name || ''}">
-                    <small class="form-hint">e.g. deploy/&lt;env&gt;</small>
-                </div>
-
-                <hr class="my-4">
-                <h4>Git Auth</h4>
-
-                <div class="mb-3">
-                    <label class="form-label required">Auth Type</label>
-                    <select class="form-select" name="git_auth_type" x-model="gitAuth" required>
-                        ${gitAuthTypes.map(type => `
-                            <option value="${type.value}" ${target?.git_auth_type === type.value ? 'selected' : ''}>
-                                ${type.label}
+                    <label class="form-label required">Environments Repository</label>
+                    <select class="form-select" name="env_repo_id" required>
+                        <option value="">Select repository...</option>
+                        ${gitRepos.map(repo => `
+                            <option value="${repo.id}" ${target?.env_repo_id === repo.id ? 'selected' : ''}>
+                                ${repo.name}
                             </option>
                         `).join('')}
                     </select>
+                    <small class="form-hint">Manage repositories in Git Repositories</small>
                 </div>
 
-                <div class="mb-3" x-show="gitAuth === 'token'">
-                    <label class="form-label">Git Username</label>
-                    <input type="text" class="form-control" name="git_username"
-                           value="${target?.git_username || ''}"
-                           placeholder="git username">
+                <div class="mb-3">
+                    <label class="form-label">Environment Repo Path</label>
+                    <input type="text" class="form-control" name="env_repo_path"
+                           value="${target?.env_repo_path || target?.env_name || ''}"
+                           placeholder="test">
+                    <small class="form-hint">Path relative to repo root</small>
                 </div>
 
-                <div class="mb-3" x-show="gitAuth === 'token'">
-                    <label class="form-label">Git Token</label>
-                    <input type="password" class="form-control" name="git_token"
-                           placeholder="${isEdit ? 'Leave blank to keep existing token' : 'token'}">
+                <div class="mb-3">
+                    <label class="form-label required">Deploy Repository</label>
+                    <select class="form-select" name="deploy_repo_id" required>
+                        <option value="">Select repository...</option>
+                        ${gitRepos.map(repo => `
+                            <option value="${repo.id}" ${target?.deploy_repo_id === repo.id ? 'selected' : ''}>
+                                ${repo.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                    <small class="form-hint">Manage repositories in Git Repositories</small>
                 </div>
 
-                <div class="mb-3" x-show="gitAuth === 'ssh'">
-                    <label class="form-label">SSH Private Key</label>
-                    <textarea class="form-control" name="git_ssh_key" rows="5"
-                              placeholder="${isEdit ? 'Leave blank to keep existing key' : '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea>
+                <div class="mb-3">
+                    <label class="form-label">Deploy Repo Path</label>
+                    <input type="text" class="form-control" name="deploy_repo_path"
+                           value="${target?.deploy_repo_path || ''}"
+                           placeholder="deploy/${target?.env_name || ''}">
+                    <small class="form-hint">e.g. deploy/&lt;env&gt;</small>
                 </div>
 
                 <hr class="my-4">

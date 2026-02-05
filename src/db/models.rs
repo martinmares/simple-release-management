@@ -222,11 +222,25 @@ pub struct DeployTarget {
     pub tenant_id: Uuid,
     pub name: String,
     pub env_name: String,
-    pub environments_repo_url: String,
-    pub environments_branch: String,
-    pub deploy_repo_url: String,
-    pub deploy_branch: String,
-    pub deploy_path: String,
+    pub env_repo_id: Option<Uuid>,
+    pub env_repo_path: Option<String>,
+    pub deploy_repo_id: Option<Uuid>,
+    pub deploy_repo_path: Option<String>,
+    pub encjson_key_dir: Option<String>,
+    #[serde(skip_serializing)]
+    pub encjson_private_key_encrypted: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Git repository configuration per tenant
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct GitRepository {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub name: String,
+    pub repo_url: String,
+    pub default_branch: String,
     pub git_auth_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub git_username: Option<String>,
@@ -234,10 +248,6 @@ pub struct DeployTarget {
     pub git_token_encrypted: Option<String>,
     #[serde(skip_serializing)]
     pub git_ssh_key_encrypted: Option<String>,
-    pub encjson_key_dir: Option<String>,
-    #[serde(skip_serializing)]
-    pub encjson_private_key_encrypted: Option<String>,
-    pub is_active: bool,
     pub created_at: DateTime<Utc>,
 }
 

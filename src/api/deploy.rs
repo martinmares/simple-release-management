@@ -27,7 +27,7 @@ use walkdir::WalkDir;
 
 use crate::{
     crypto,
-    db::models::{DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, Release},
+    db::models::{DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, GitRepository, Release},
     services::release_manifest::build_release_manifest,
 };
 
@@ -46,15 +46,10 @@ pub struct DeployApiState {
 pub struct CreateDeployTargetRequest {
     pub name: String,
     pub env_name: String,
-    pub environments_repo_url: String,
-    pub environments_branch: Option<String>,
-    pub deploy_repo_url: String,
-    pub deploy_branch: Option<String>,
-    pub deploy_path: Option<String>,
-    pub git_auth_type: String,
-    pub git_username: Option<String>,
-    pub git_token: Option<String>,
-    pub git_ssh_key: Option<String>,
+    pub env_repo_id: Uuid,
+    pub env_repo_path: Option<String>,
+    pub deploy_repo_id: Uuid,
+    pub deploy_repo_path: Option<String>,
     pub encjson_key_dir: Option<String>,
     pub encjson_private_key: Option<String>,
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
@@ -65,15 +60,10 @@ pub struct CreateDeployTargetRequest {
 pub struct UpdateDeployTargetRequest {
     pub name: String,
     pub env_name: String,
-    pub environments_repo_url: String,
-    pub environments_branch: Option<String>,
-    pub deploy_repo_url: String,
-    pub deploy_branch: Option<String>,
-    pub deploy_path: Option<String>,
-    pub git_auth_type: String,
-    pub git_username: Option<String>,
-    pub git_token: Option<String>,
-    pub git_ssh_key: Option<String>,
+    pub env_repo_id: Uuid,
+    pub env_repo_path: Option<String>,
+    pub deploy_repo_id: Uuid,
+    pub deploy_repo_path: Option<String>,
     pub encjson_key_dir: Option<String>,
     pub encjson_private_key: Option<String>,
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
@@ -236,58 +226,56 @@ async fn create_deploy_target(
             }),
         ));
     }
-    if !["none", "ssh", "token"].contains(&payload.git_auth_type.as_str()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
+    // Validate git repositories belong to tenant
+    let env_repo_ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM git_repositories WHERE id = $1 AND tenant_id = $2)",
+    )
+    .bind(payload.env_repo_id)
+    .bind(tenant_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
-                error: "Invalid git_auth_type (use none, ssh, token)".to_string(),
+                error: format!("Database error: {}", e),
             }),
-        ));
-    }
-    if payload.git_auth_type == "token" && (payload.git_username.as_deref().unwrap_or("").is_empty() || payload.git_token.as_deref().unwrap_or("").is_empty()) {
+        )
+    })?;
+
+    if !env_repo_ok {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Git token auth requires username and token".to_string(),
-            }),
-        ));
-    }
-    if payload.git_auth_type == "ssh" && payload.git_ssh_key.as_deref().unwrap_or("").is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Git SSH auth requires a private key".to_string(),
+                error: "Environment repository not found for tenant".to_string(),
             }),
         ));
     }
 
-    let git_token_encrypted = match payload.git_token {
-        Some(token) if !token.trim().is_empty() => Some(
-            crypto::encrypt(&token, &state.encryption_secret).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to encrypt git token: {}", e),
-                    }),
-                )
-            })?,
-        ),
-        _ => None,
-    };
+    let deploy_repo_ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM git_repositories WHERE id = $1 AND tenant_id = $2)",
+    )
+    .bind(payload.deploy_repo_id)
+    .bind(tenant_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
 
-    let git_ssh_key_encrypted = match payload.git_ssh_key {
-        Some(key) if !key.trim().is_empty() => Some(
-            crypto::encrypt(&key, &state.encryption_secret).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to encrypt git ssh key: {}", e),
-                    }),
-                )
-            })?,
-        ),
-        _ => None,
-    };
+    if !deploy_repo_ok {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy repository not found for tenant".to_string(),
+            }),
+        ));
+    }
 
     let encjson_private_key_encrypted = match payload.encjson_private_key {
         Some(key) if !key.trim().is_empty() => Some(
@@ -303,30 +291,27 @@ async fn create_deploy_target(
         _ => None,
     };
 
-    let deploy_path = payload.deploy_path.unwrap_or_else(|| format!("deploy/{}", payload.env_name));
+    let env_repo_path = payload.env_repo_path.unwrap_or_else(|| payload.env_name.clone());
+    let deploy_repo_path = payload
+        .deploy_repo_path
+        .unwrap_or_else(|| format!("deploy/{}", payload.env_name));
 
     let target = sqlx::query_as::<_, DeployTarget>(
         r#"
         INSERT INTO deploy_targets
-        (tenant_id, name, env_name, environments_repo_url, environments_branch,
-         deploy_repo_url, deploy_branch, deploy_path, git_auth_type, git_username,
-         git_token_encrypted, git_ssh_key_encrypted, encjson_key_dir, encjson_private_key_encrypted, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        (tenant_id, name, env_name, env_repo_id, env_repo_path,
+         deploy_repo_id, deploy_repo_path, encjson_key_dir, encjson_private_key_encrypted, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
         "#,
     )
     .bind(tenant_id)
     .bind(&payload.name)
     .bind(&payload.env_name)
-    .bind(&payload.environments_repo_url)
-    .bind(payload.environments_branch.unwrap_or_else(|| "main".to_string()))
-    .bind(&payload.deploy_repo_url)
-    .bind(payload.deploy_branch.unwrap_or_else(|| "main".to_string()))
-    .bind(&deploy_path)
-    .bind(&payload.git_auth_type)
-    .bind(&payload.git_username)
-    .bind(&git_token_encrypted)
-    .bind(&git_ssh_key_encrypted)
+    .bind(payload.env_repo_id)
+    .bind(&env_repo_path)
+    .bind(payload.deploy_repo_id)
+    .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
     .bind(payload.is_active.unwrap_or(true))
@@ -361,53 +346,70 @@ async fn update_deploy_target(
             }),
         ));
     }
-    if !["none", "ssh", "token"].contains(&payload.git_auth_type.as_str()) {
+    let target_tenant = sqlx::query_scalar::<_, Uuid>(
+        "SELECT tenant_id FROM deploy_targets WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let env_repo_ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM git_repositories WHERE id = $1 AND tenant_id = $2)",
+    )
+    .bind(payload.env_repo_id)
+    .bind(target_tenant)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if !env_repo_ok {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Invalid git_auth_type (use none, ssh, token)".to_string(),
+                error: "Environment repository not found for tenant".to_string(),
             }),
         ));
     }
-    if payload.git_auth_type == "token" && payload.git_username.as_deref().unwrap_or("").is_empty() && payload.git_token.as_deref().unwrap_or("").is_empty() {
+
+    let deploy_repo_ok = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM git_repositories WHERE id = $1 AND tenant_id = $2)",
+    )
+    .bind(payload.deploy_repo_id)
+    .bind(target_tenant)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if !deploy_repo_ok {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Git token auth requires username and token (or keep existing secrets)".to_string(),
+                error: "Deploy repository not found for tenant".to_string(),
             }),
         ));
     }
-    if payload.git_auth_type == "ssh" && payload.git_ssh_key.as_deref().unwrap_or("").is_empty() {
-        // allow keeping existing key on update by providing none
-    }
-
-    let git_token_encrypted = match payload.git_token {
-        Some(token) if !token.trim().is_empty() => Some(
-            crypto::encrypt(&token, &state.encryption_secret).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to encrypt git token: {}", e),
-                    }),
-                )
-            })?,
-        ),
-        _ => None,
-    };
-
-    let git_ssh_key_encrypted = match payload.git_ssh_key {
-        Some(key) if !key.trim().is_empty() => Some(
-            crypto::encrypt(&key, &state.encryption_secret).map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to encrypt git ssh key: {}", e),
-                    }),
-                )
-            })?,
-        ),
-        _ => None,
-    };
 
     let encjson_private_key_encrypted = match payload.encjson_private_key {
         Some(key) if !key.trim().is_empty() => Some(
@@ -423,40 +425,33 @@ async fn update_deploy_target(
         _ => None,
     };
 
-    let deploy_path = payload.deploy_path.unwrap_or_else(|| format!("deploy/{}", payload.env_name));
+    let env_repo_path = payload.env_repo_path.unwrap_or_else(|| payload.env_name.clone());
+    let deploy_repo_path = payload
+        .deploy_repo_path
+        .unwrap_or_else(|| format!("deploy/{}", payload.env_name));
 
     let target = sqlx::query_as::<_, DeployTarget>(
         r#"
         UPDATE deploy_targets
         SET name = $1,
             env_name = $2,
-            environments_repo_url = $3,
-            environments_branch = $4,
-            deploy_repo_url = $5,
-            deploy_branch = $6,
-            deploy_path = $7,
-            git_auth_type = $8,
-            git_username = COALESCE($9, git_username),
-            git_token_encrypted = COALESCE($10, git_token_encrypted),
-            git_ssh_key_encrypted = COALESCE($11, git_ssh_key_encrypted),
-            encjson_key_dir = $12,
-            encjson_private_key_encrypted = COALESCE($13, encjson_private_key_encrypted),
-            is_active = $14
-        WHERE id = $15
+            env_repo_id = $3,
+            env_repo_path = $4,
+            deploy_repo_id = $5,
+            deploy_repo_path = $6,
+            encjson_key_dir = $7,
+            encjson_private_key_encrypted = COALESCE($8, encjson_private_key_encrypted),
+            is_active = $9
+        WHERE id = $10
         RETURNING *
         "#,
     )
     .bind(&payload.name)
     .bind(&payload.env_name)
-    .bind(&payload.environments_repo_url)
-    .bind(payload.environments_branch.unwrap_or_else(|| "main".to_string()))
-    .bind(&payload.deploy_repo_url)
-    .bind(payload.deploy_branch.unwrap_or_else(|| "main".to_string()))
-    .bind(&deploy_path)
-    .bind(&payload.git_auth_type)
-    .bind(&payload.git_username)
-    .bind(&git_token_encrypted)
-    .bind(&git_ssh_key_encrypted)
+    .bind(payload.env_repo_id)
+    .bind(&env_repo_path)
+    .bind(payload.deploy_repo_id)
+    .bind(&deploy_repo_path)
     .bind(&payload.encjson_key_dir)
     .bind(&encjson_private_key_encrypted)
     .bind(payload.is_active.unwrap_or(true))
@@ -862,10 +857,23 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let env_repo_path = temp_dir.path().join("environments");
     let deploy_repo_path = temp_dir.path().join("deploy");
 
-    let git_env = build_git_env(&state, &target, temp_dir.path())?;
+    let env_repo_id = target.env_repo_id.ok_or_else(|| anyhow::anyhow!("Deploy target missing env_repo_id"))?;
+    let deploy_repo_id = target.deploy_repo_id.ok_or_else(|| anyhow::anyhow!("Deploy target missing deploy_repo_id"))?;
 
-    run_git_clone(&target.environments_repo_url, &target.environments_branch, &env_repo_path, &git_env, &log_tx).await?;
-    run_git_clone(&target.deploy_repo_url, &target.deploy_branch, &deploy_repo_path, &git_env, &log_tx).await?;
+    let env_repo = sqlx::query_as::<_, GitRepository>("SELECT * FROM git_repositories WHERE id = $1")
+        .bind(env_repo_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let deploy_repo = sqlx::query_as::<_, GitRepository>("SELECT * FROM git_repositories WHERE id = $1")
+        .bind(deploy_repo_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+    let git_env_env = build_git_env_for_repo(&state, &env_repo, temp_dir.path())?;
+    let git_env_deploy = build_git_env_for_repo(&state, &deploy_repo, temp_dir.path())?;
+
+    run_git_clone(&env_repo.repo_url, &env_repo.default_branch, &env_repo_path, &git_env_env, &log_tx).await?;
+    run_git_clone(&deploy_repo.repo_url, &deploy_repo.default_branch, &deploy_repo_path, &git_env_deploy, &log_tx).await?;
 
     let release_manifest = build_release_manifest(&state.pool, release.id).await?;
     let manifest_path = temp_dir.path().join("release-manifest.yml");
@@ -874,7 +882,12 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .await
         .with_context(|| format!("Failed to write release manifest to {}", manifest_path.display()))?;
 
-    let deploy_rel_path = target.deploy_path.trim().trim_start_matches('/');
+    let deploy_rel_path = target
+        .deploy_repo_path
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .trim_start_matches('/');
     let deploy_path = if deploy_rel_path.is_empty() {
         deploy_repo_path.clone()
     } else {
@@ -943,14 +956,14 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let diff_info = collect_deploy_diff(&deploy_repo_path, deploy_rel_path, &log_tx).await?;
 
     if let Some(diff) = diff_info {
-        run_git_commit_and_push(
-            &deploy_repo_path,
-            deploy_rel_path,
-            &release.release_id,
-            &target.deploy_repo_url,
-            &git_env,
-            &log_tx,
-        )
+    run_git_commit_and_push(
+        &deploy_repo_path,
+        deploy_rel_path,
+        &release.release_id,
+        &deploy_repo.repo_url,
+        &git_env_deploy,
+        &log_tx,
+    )
         .await?;
 
         let _ = sqlx::query(
@@ -965,7 +978,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         let _ = log_tx.send("No deploy changes detected; skipping git commit/push/tag".to_string());
     }
 
-    let commit_sha = get_git_head_sha(&deploy_repo_path, &git_env).await.ok();
+    let commit_sha = get_git_head_sha(&deploy_repo_path, &git_env_deploy).await.ok();
 
     sqlx::query(
         "UPDATE deploy_jobs SET status = 'success', completed_at = NOW(), commit_sha = $1, tag_name = $2 WHERE id = $3",
@@ -980,17 +993,17 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     Ok(())
 }
 
-fn build_git_env(
+fn build_git_env_for_repo(
     state: &DeployApiState,
-    target: &DeployTarget,
+    repo: &GitRepository,
     temp_root: &FsPath,
 ) -> anyhow::Result<HashMap<String, String>> {
     let mut env = HashMap::new();
     env.insert("GIT_TERMINAL_PROMPT".to_string(), "0".to_string());
 
-    match target.git_auth_type.as_str() {
+    match repo.git_auth_type.as_str() {
         "ssh" => {
-            if let Some(enc_key) = &target.git_ssh_key_encrypted {
+            if let Some(enc_key) = &repo.git_ssh_key_encrypted {
                 let mut key = crypto::decrypt(enc_key, &state.encryption_secret)?;
                 // Normalize key formatting in case it was stored with escaped newlines.
                 if key.contains("\\n") {
@@ -1000,7 +1013,7 @@ fn build_git_env(
                     key = key.replace("\r\n", "\n");
                 }
                 let key = if key.ends_with('\n') { key } else { format!("{key}\n") };
-                let key_path = temp_root.join("git_ssh_key");
+                let key_path = temp_root.join(format!("git_ssh_key_{}", repo.id));
                 std::fs::write(&key_path, key.as_bytes())
                     .with_context(|| format!("Failed to write git ssh key {}", key_path.display()))?;
                 #[cfg(unix)]
@@ -1018,7 +1031,7 @@ fn build_git_env(
             }
         }
         "token" => {
-            if let (Some(enc_token), Some(username)) = (&target.git_token_encrypted, &target.git_username) {
+            if let (Some(enc_token), Some(username)) = (&repo.git_token_encrypted, &repo.git_username) {
                 let token = crypto::decrypt(enc_token, &state.encryption_secret)?;
                 env.insert("SRM_GIT_TOKEN".to_string(), token);
                 env.insert("SRM_GIT_USERNAME".to_string(), username.clone());
@@ -1093,7 +1106,11 @@ async fn build_env_file(
     log_tx: &broadcast::Sender<String>,
     temp_root: &FsPath,
 ) -> anyhow::Result<()> {
-    let env_dir = env_repo_path.join(&target.env_name);
+    let env_subdir = target
+        .env_repo_path
+        .as_deref()
+        .unwrap_or(&target.env_name);
+    let env_dir = env_repo_path.join(env_subdir);
     let secured = env_dir.join("env.secured.json");
     let unsecured = env_dir.join("env.unsecured.json");
 
