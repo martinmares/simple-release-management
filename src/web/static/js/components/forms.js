@@ -490,15 +490,26 @@ function createGitRepoForm(repo = null, tenants = []) {
 /**
  * Vytvoří deploy target form
  */
-function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = []) {
-    const isEdit = !!target;
+function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], options = {}) {
+    const isEdit = options.isEdit ?? !!target;
+    const title = options.title || (isEdit ? 'Edit Deploy Target' : 'New Deploy Target');
+    const submitLabel = options.submitLabel || (isEdit ? 'Update Deploy Target' : 'Create Deploy Target');
+    const copyLink = options.copyLink || '';
     const keys = encjsonKeys.length > 0 ? encjsonKeys : [{ public_key: '', has_private: false }];
     const selectedTenantId = target?.tenant_id || '';
 
     return `
         <form id="deploy-target-form" class="card">
             <div class="card-header">
-                <h3 class="card-title">${isEdit ? 'Edit Deploy Target' : 'New Deploy Target'}</h3>
+                <h3 class="card-title">${title}</h3>
+                ${copyLink ? `
+                    <div class="card-actions">
+                        <a href="${copyLink}" class="btn btn-sm btn-outline-primary">
+                            <i class="ti ti-copy"></i>
+                            Copy
+                        </a>
+                    </div>
+                ` : ''}
             </div>
             <div class="card-body">
                 <div class="mb-3">
@@ -646,11 +657,17 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
                 </div>
             </div>
             <div class="card-footer text-end">
-                <div class="d-flex">
+                <div class="d-flex gap-2">
                     <a href="#/tenants" class="btn btn-link">Cancel</a>
+                    ${isEdit ? `
+                        <button type="button" class="btn btn-outline-danger" id="delete-deploy-target-btn">
+                            <i class="ti ti-trash"></i>
+                            Delete
+                        </button>
+                    ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
-                        ${isEdit ? 'Update Deploy Target' : 'Create Deploy Target'}
+                        ${submitLabel}
                     </button>
                 </div>
             </div>

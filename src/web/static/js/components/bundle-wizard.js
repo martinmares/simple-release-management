@@ -20,8 +20,10 @@ class BundleWizard {
                 target_registry_id: '',
                 auto_tag_enabled: false,
             },
-            imageMappings: []
+            imageMappings: [],
+            replaceRules: [{ find: '', replace: '' }]
         };
+        this.replaceRulesApplied = false;
     }
 
     /**
@@ -176,6 +178,7 @@ class BundleWizard {
                 </label>
                 <small class="form-hint">Locks target tag input when starting copy jobs</small>
             </div>
+
         `;
     }
 
@@ -188,6 +191,21 @@ class BundleWizard {
             <p class="text-secondary mb-3">
                 Define which images to include in this bundle and how they map from source to target.
             </p>
+
+            ${this.options.enableReplaceRules ? `
+                <hr class="my-3">
+                <h4 class="mb-2">Replace Rules (target image only)</h4>
+                <div class="text-secondary small mb-2">
+                    Use rules to update target image paths (e.g. project prefix). Click "Apply" to update all rows.
+                </div>
+                ${this.renderReplaceRules()}
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    <button type="button" class="btn btn-outline-secondary" id="apply-replace-btn">
+                        <i class="ti ti-repeat"></i>
+                        Apply replace rules
+                    </button>
+                </div>
+            ` : ''}
 
             <div id="mappings-list" class="mb-3">
                 ${this.data.imageMappings.map((mapping, index) => `
@@ -250,6 +268,10 @@ class BundleWizard {
                     <i class="ti ti-plus"></i>
                     Add Image Mapping
                 </button>
+                <button type="button" class="btn btn-outline-secondary" id="export-mappings-btn">
+                    <i class="ti ti-clipboard-copy"></i>
+                    Export
+                </button>
                 <button type="button" class="btn btn-outline-primary" id="import-mappings-btn">
                     <i class="ti ti-file-import"></i>
                     Import from CSV
@@ -269,6 +291,34 @@ class BundleWizard {
                     Add at least one image mapping to continue
                 </div>
             ` : ''}
+        `;
+    }
+
+    renderReplaceRules() {
+        return `
+            <div id="replace-rules-list">
+                ${this.data.replaceRules.map((rule, index) => `
+                    <div class="row g-2 align-items-end mb-2" data-replace-index="${index}">
+                        <div class="col-md-5">
+                            <input type="text" class="form-control form-control-sm replace-find"
+                                   placeholder="Find" value="${rule.find || ''}">
+                        </div>
+                        <div class="col-md-5">
+                            <input type="text" class="form-control form-control-sm replace-replace"
+                                   placeholder="Replace" value="${rule.replace || ''}">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="button" class="btn btn-sm btn-outline-danger w-100 replace-remove" ${this.data.replaceRules.length === 1 ? 'disabled' : ''}>
+                                <i class="ti ti-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="replace-add-btn">
+                <i class="ti ti-plus"></i>
+                Add rule
+            </button>
         `;
     }
 
@@ -350,7 +400,6 @@ class BundleWizard {
         this.data.bundle.source_registry_id = document.getElementById('bundle-source-registry').value;
         this.data.bundle.target_registry_id = document.getElementById('bundle-target-registry').value;
         this.data.bundle.auto_tag_enabled = document.getElementById('bundle-auto-tag')?.checked || false;
-
         if (!this.data.bundle.tenant_id || !this.data.bundle.name ||
             !this.data.bundle.source_registry_id || !this.data.bundle.target_registry_id) {
             throw new Error('Please fill in all required fields');
@@ -405,6 +454,44 @@ class BundleWizard {
 
         // Keep only valid mappings
         this.data.imageMappings = validMappings;
+    }
+
+    collectReplaceRules() {
+        const rows = document.querySelectorAll('[data-replace-index]');
+        const rules = [];
+        rows.forEach(row => {
+            const find = row.querySelector('.replace-find')?.value || '';
+            const replace = row.querySelector('.replace-replace')?.value || '';
+            if (find.trim()) {
+                rules.push({ find, replace });
+            }
+        });
+        this.data.replaceRules = rules.length > 0 ? rules : [{ find: '', replace: '' }];
+    }
+
+    applyReplaceRulesToMappings() {
+        if (!this.options.enableReplaceRules) return;
+        const rules = this.data.replaceRules || [];
+        if (!rules.length) return;
+        this.data.imageMappings = this.data.imageMappings.map(mapping => {
+            let target = mapping.target_image || '';
+            rules.forEach(rule => {
+                const find = rule.find?.trim();
+                if (!find) return;
+                const replace = rule.replace ?? '';
+                target = target.split(find).join(replace);
+            });
+            let appName = mapping.app_name || '';
+            if (!appName && target) {
+                const parts = target.split('/');
+                appName = parts[parts.length - 1] || '';
+            }
+            return {
+                ...mapping,
+                target_image: target,
+                app_name: appName,
+            };
+        });
     }
 
     /**

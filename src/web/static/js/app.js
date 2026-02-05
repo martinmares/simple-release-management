@@ -1012,10 +1012,14 @@ router.on('/tenants/:id', async (params) => {
                                             No deploy targets yet
                                         </div>
                                     ` : deployTargets.map(target => `
-                                        <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                            <div class="d-flex align-items-center">
+                                        <div class="list-group-item">
+                                            <div class="d-flex align-items-center gap-3">
                                                 <div class="flex-fill">
-                                                    <div>${target.name}</div>
+                                                    <div>
+                                                        <a href="#/deploy-targets/${target.id}/edit" class="text-reset">
+                                                            ${target.name}
+                                                        </a>
+                                                    </div>
                                                     ${(() => {
                                                         const envRepo = gitRepoById.get(target.env_repo_id);
                                                         const envUrl = envRepo?.repo_url || '-';
@@ -1033,11 +1037,17 @@ router.on('/tenants/:id', async (params) => {
                                                         `;
                                                     })()}
                                                 </div>
-                                                <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                                    ${target.is_active ? 'active' : 'inactive'}
-                                                </span>
+                                                <div class="d-flex flex-column align-items-end gap-2">
+                                                    <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                                        ${target.is_active ? 'active' : 'inactive'}
+                                                    </span>
+                                                    <a href="#/deploy-targets/new?tenant_id=${tenant.id}&amp;copy_from=${target.id}" class="btn btn-sm btn-outline-primary">
+                                                        <i class="ti ti-copy"></i>
+                                                        Copy
+                                                    </a>
+                                                </div>
                                             </div>
-                                        </a>
+                                        </div>
                                     `).join('')}
                                 </div>
                             </div>
@@ -1663,19 +1673,53 @@ router.on('/deploy-targets/new', async (params, query) => {
             api.getTenants(),
             api.getGitRepos(),
         ]);
-        const scopedRepos = query.tenant_id ? gitRepos.filter(r => r.tenant_id === query.tenant_id) : gitRepos;
-        content.innerHTML = createDeployTargetForm(null, tenants, scopedRepos, []);
+        let prefillTarget = null;
+        let encjsonKeys = [];
+        let tenantId = query.tenant_id || null;
+        let formOptions = {};
+        let copyFromId = null;
 
-        if (query.tenant_id) {
+        if (query.copy_from) {
+            const response = await api.getDeployTarget(query.copy_from);
+            const source = response.target || response;
+            encjsonKeys = response.encjson_keys || [];
+            prefillTarget = {
+                ...source,
+                name: `Copy of ${source.name}`,
+            };
+            tenantId = source.tenant_id;
+            copyFromId = source.id;
+            formOptions = {
+                isEdit: false,
+                title: 'Copy Deploy Target',
+                submitLabel: 'Create Copy',
+            };
+        }
+
+        const scopedRepos = tenantId ? gitRepos.filter(r => r.tenant_id === tenantId) : gitRepos;
+        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, formOptions);
+
+        if (tenantId) {
             const select = document.querySelector('select[name=\"tenant_id\"]');
             if (select) {
-                select.value = query.tenant_id;
+                select.value = tenantId;
                 select.disabled = true;
                 const hidden = document.createElement('input');
                 hidden.type = 'hidden';
                 hidden.name = 'tenant_id';
-                hidden.value = query.tenant_id;
+                hidden.value = tenantId;
                 select.parentElement.appendChild(hidden);
+            }
+        }
+
+        if (copyFromId) {
+            const form = document.getElementById('deploy-target-form');
+            if (form) {
+                const hidden = document.createElement('input');
+                hidden.type = 'hidden';
+                hidden.name = 'copy_from_target_id';
+                hidden.value = copyFromId;
+                form.appendChild(hidden);
             }
         }
 
@@ -1683,9 +1727,19 @@ router.on('/deploy-targets/new', async (params, query) => {
 
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
-                data.encjson_keys = collectEncjsonKeys();
+                const collectedKeys = collectEncjsonKeys();
+                const keysWithPrivate = collectedKeys.filter(k => k.private_key && k.private_key.trim() !== '');
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
+                if (data.copy_from_target_id) {
+                    if (keysWithPrivate.length > 0) {
+                        data.encjson_keys = keysWithPrivate;
+                    } else {
+                        delete data.encjson_keys;
+                    }
+                } else {
+                    data.encjson_keys = collectedKeys;
+                }
                 await api.createDeployTarget(tenantId, data);
                 getApp().showSuccess('Deploy target created successfully');
                 router.navigate(`/tenants/${tenantId}`);
@@ -1713,9 +1767,32 @@ router.on('/deploy-targets/:id/edit', async (params) => {
         const target = response.target || response;
         const encjsonKeys = response.encjson_keys || [];
         const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
-        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys);
+        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, {
+            isEdit: true,
+            copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
+        });
 
         attachEncjsonKeyHandlers();
+
+        const deleteBtn = document.getElementById('delete-deploy-target-btn');
+        if (deleteBtn) {
+            deleteBtn.addEventListener('click', async () => {
+                const confirmed = await showConfirmDialog(
+                    'Delete Deploy Target?',
+                    `Are you sure you want to delete "${target.name}"? This is only allowed if it has no deploy jobs.`,
+                    'Delete',
+                    'Cancel'
+                );
+                if (!confirmed) return;
+                try {
+                    await api.deleteDeployTarget(params.id);
+                    getApp().showSuccess('Deploy target deleted successfully');
+                    router.navigate(`/tenants/${target.tenant_id}`);
+                } catch (error) {
+                    getApp().showError(error.message);
+                }
+            });
+        }
 
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -2031,6 +2108,14 @@ router.on('/bundles/new', async (params, query) => {
                     wizard.collectStep2Data();
                     wizard.addMapping();
                     renderWizard();
+                });
+            }
+
+            const exportBtn = document.getElementById('export-mappings-btn');
+            if (exportBtn) {
+                exportBtn.addEventListener('click', async () => {
+                    wizard.collectStep2Data();
+                    await copyMappingsToClipboard(wizard.data.imageMappings);
                 });
             }
 
@@ -2614,6 +2699,7 @@ router.on('/bundles/:id/copy', async (params) => {
             title: 'Copy Bundle',
             createLabel: 'Create Copy',
             tenantLocked: true,
+            enableReplaceRules: false,
         });
 
         wizard.data.bundle.tenant_id = bundle.tenant_id;
@@ -2741,6 +2827,14 @@ router.on('/bundles/:id/copy', async (params) => {
                 });
             }
 
+            const exportBtn = document.getElementById('export-mappings-btn');
+            if (exportBtn) {
+                exportBtn.addEventListener('click', async () => {
+                    wizard.collectStep2Data();
+                    await copyMappingsToClipboard(wizard.data.imageMappings);
+                });
+            }
+
             document.querySelectorAll('.mapping-remove').forEach((btn, index) => {
                 btn.addEventListener('click', () => {
                     wizard.collectStep2Data();
@@ -2756,6 +2850,42 @@ router.on('/bundles/:id/copy', async (params) => {
                     renderWizard();
                 });
             });
+
+            const replaceAddBtn = document.getElementById('replace-add-btn');
+            if (replaceAddBtn) {
+                replaceAddBtn.addEventListener('click', () => {
+                    wizard.collectReplaceRules();
+                    wizard.data.replaceRules.push({ find: '', replace: '' });
+                    renderWizard();
+                });
+            }
+
+            document.querySelectorAll('.replace-remove').forEach((btn, index) => {
+                btn.addEventListener('click', () => {
+                    wizard.collectReplaceRules();
+                    if (wizard.data.replaceRules.length > 1) {
+                        wizard.data.replaceRules.splice(index, 1);
+                        renderWizard();
+                    }
+                });
+            });
+
+            const applyReplaceBtn = document.getElementById('apply-replace-btn');
+            if (applyReplaceBtn) {
+                applyReplaceBtn.addEventListener('click', async () => {
+                    const confirmed = await showConfirmDialog(
+                        'Apply replace rules?',
+                        'This will update all target image paths.',
+                        'Apply',
+                        'Cancel'
+                    );
+                    if (!confirmed) return;
+                    wizard.collectReplaceRules();
+                    wizard.collectStep2Data();
+                    wizard.applyReplaceRulesToMappings();
+                    renderWizard();
+                });
+            }
 
             const importBtn = document.getElementById('import-mappings-btn');
             if (importBtn) {
@@ -3232,6 +3362,13 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                 await runAutoDeployFromCopyJob(jobId, bundle?.tenant_id, targetTag);
             });
         });
+
+        const exportBtn = document.getElementById('export-mappings-btn');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', async () => {
+                await copyMappingsToClipboard(mappings);
+            });
+        }
 
     } catch (error) {
         content.innerHTML = `
@@ -5130,34 +5267,6 @@ async function copyMappingsToClipboard(mappings) {
         window.prompt('Copy mappings:', payload);
         getApp().showError('Clipboard unavailable. Copied to prompt.');
     }
-}
-
-if (!window._exportMappingsHandlerAttached) {
-    window._exportMappingsHandlerAttached = true;
-    document.addEventListener('click', async (event) => {
-        const btn = event.target.closest('#export-mappings-btn');
-        if (!btn) return;
-        let mappings = window._exportMappings;
-        if (!Array.isArray(mappings) || mappings.length === 0) {
-            try {
-                const parts = location.hash.replace(/^#\/?/, '').split('/');
-                if (parts[0] === 'bundles' && parts[2] === 'versions') {
-                    const bundleId = parts[1];
-                    const version = parseInt(parts[3], 10);
-                    if (bundleId && Number.isFinite(version)) {
-                        const fresh = await api.getImageMappings(bundleId, version);
-                        if (Array.isArray(fresh) && fresh.length > 0) {
-                            mappings = fresh;
-                            window._exportMappings = fresh;
-                        }
-                    }
-                }
-            } catch (error) {
-                console.warn('Failed to fetch mappings on export:', error);
-            }
-        }
-        await copyMappingsToClipboard(Array.isArray(mappings) ? mappings : []);
-    });
 }
 
 function applyReplaceRules(value, rules) {
