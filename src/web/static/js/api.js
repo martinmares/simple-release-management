@@ -426,10 +426,11 @@ class ApiClient {
         return this.post(`/tenants/${tenantId}/deploy-targets`, data);
     }
 
-    async startAutoDeployFromCopyJob(copyJobId, deployTargetId) {
+    async startAutoDeployFromCopyJob(copyJobId, deployTargetId, dryRun = true) {
         return this.post(`/deploy/jobs/from-copy`, {
             copy_job_id: copyJobId,
             deploy_target_id: deployTargetId,
+            dry_run: dryRun,
         });
     }
 
@@ -484,6 +485,18 @@ class ApiClient {
             return JSON.parse(text);
         } catch (e) {
             return null;
+        }
+    }
+
+    async getDeployJobImages(jobId) {
+        try {
+            const response = await fetch(`${this.baseUrl}/deploy/jobs/${jobId}/images`);
+            if (!response.ok) return [];
+            const text = await response.text();
+            if (!text) return [];
+            return JSON.parse(text);
+        } catch (e) {
+            return [];
         }
     }
 }

@@ -490,12 +490,13 @@ function createGitRepoForm(repo = null, tenants = []) {
 /**
  * Vytvoří deploy target form
  */
-function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], options = {}) {
+function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], envVars = [], options = {}) {
     const isEdit = options.isEdit ?? !!target;
     const title = options.title || (isEdit ? 'Edit Deploy Target' : 'New Deploy Target');
     const submitLabel = options.submitLabel || (isEdit ? 'Update Deploy Target' : 'Create Deploy Target');
     const copyLink = options.copyLink || '';
     const keys = encjsonKeys.length > 0 ? encjsonKeys : [{ public_key: '', has_private: false }];
+    const vars = envVars.length > 0 ? envVars : [{ source_key: '', target_key: '' }];
     const selectedTenantId = target?.tenant_id || '';
 
     return `
@@ -646,6 +647,58 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
                         <span class="form-check-label">Append env suffix to git tag (e.g. -test)</span>
                     </label>
                     <small class="form-hint">Useful for monorepo deploys with multiple envs</small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Release manifest mode</label>
+                    <select class="form-select" name="release_manifest_mode">
+                        <option value="match_digest" ${target?.release_manifest_mode === 'match_digest' || !target?.release_manifest_mode ? 'selected' : ''}>
+                            Match entries (digest preferred)
+                        </option>
+                        <option value="match_tag" ${target?.release_manifest_mode === 'match_tag' ? 'selected' : ''}>
+                            Match entries (tag only)
+                        </option>
+                        <option value="strict_digest" ${target?.release_manifest_mode === 'strict_digest' ? 'selected' : ''}>
+                            Strict (digest required)
+                        </option>
+                        <option value="strict_tag" ${target?.release_manifest_mode === 'strict_tag' ? 'selected' : ''}>
+                            Strict (tag required)
+                        </option>
+                    </select>
+                    <small class="form-hint">Controls how release manifest overrides container images</small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Release env var mappings</label>
+                    <div class="text-secondary small mb-2">
+                        SRM exports <code>SIMPLE_RELEASE_ID</code>. Map it to your product variable (e.g. <code>TSM_RELEASE_ID</code>).
+                        Examples: <code>SIMPLE_RELEASE_ID → TSM_RELEASE_ID</code>, <code>SIMPLE_RELEASE_ID → APP_RELEASE</code>.
+                    </div>
+                    <div id="deploy-env-vars-list">
+                        ${vars.map((item, index) => `
+                            <div class="row g-2 align-items-end mb-2" data-env-var-index="${index}">
+                                <div class="col-md-5">
+                                    <input type="text" class="form-control form-control-sm env-var-source"
+                                           value="${item.source_key || ''}"
+                                           placeholder="SIMPLE_RELEASE_ID">
+                                </div>
+                                <div class="col-md-5">
+                                    <input type="text" class="form-control form-control-sm env-var-target"
+                                           value="${item.target_key || ''}"
+                                           placeholder="TSM_RELEASE_ID">
+                                </div>
+                                <div class="col-md-2">
+                                    <button type="button" class="btn btn-sm btn-outline-danger w-100 env-var-remove" ${vars.length === 1 ? 'disabled' : ''}>
+                                        <i class="ti ti-trash"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="deploy-env-var-add-btn">
+                        <i class="ti ti-plus"></i>
+                        Add mapping
+                    </button>
                 </div>
 
                 <div class="mb-3">

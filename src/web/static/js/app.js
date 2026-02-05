@@ -1675,6 +1675,7 @@ router.on('/deploy-targets/new', async (params, query) => {
         ]);
         let prefillTarget = null;
         let encjsonKeys = [];
+        let envVars = [];
         let tenantId = query.tenant_id || null;
         let formOptions = {};
         let copyFromId = null;
@@ -1683,6 +1684,7 @@ router.on('/deploy-targets/new', async (params, query) => {
             const response = await api.getDeployTarget(query.copy_from);
             const source = response.target || response;
             encjsonKeys = response.encjson_keys || [];
+            envVars = response.env_vars || [];
             prefillTarget = {
                 ...source,
                 name: `Copy of ${source.name}`,
@@ -1697,7 +1699,7 @@ router.on('/deploy-targets/new', async (params, query) => {
         }
 
         const scopedRepos = tenantId ? gitRepos.filter(r => r.tenant_id === tenantId) : gitRepos;
-        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, formOptions);
+        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, envVars, formOptions);
 
         if (tenantId) {
             const select = document.querySelector('select[name=\"tenant_id\"]');
@@ -1724,11 +1726,13 @@ router.on('/deploy-targets/new', async (params, query) => {
         }
 
         attachEncjsonKeyHandlers();
+        attachDeployEnvVarHandlers();
 
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 const collectedKeys = collectEncjsonKeys();
                 const keysWithPrivate = collectedKeys.filter(k => k.private_key && k.private_key.trim() !== '');
+                data.env_vars = collectDeployEnvVars();
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
                 if (data.copy_from_target_id) {
@@ -1736,6 +1740,9 @@ router.on('/deploy-targets/new', async (params, query) => {
                         data.encjson_keys = keysWithPrivate;
                     } else {
                         delete data.encjson_keys;
+                    }
+                    if (!data.env_vars || data.env_vars.length === 0) {
+                        delete data.env_vars;
                     }
                 } else {
                     data.encjson_keys = collectedKeys;
@@ -1766,13 +1773,15 @@ router.on('/deploy-targets/:id/edit', async (params) => {
         ]);
         const target = response.target || response;
         const encjsonKeys = response.encjson_keys || [];
+        const envVars = response.env_vars || [];
         const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
-        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, {
+        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, envVars, {
             isEdit: true,
             copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
         });
 
         attachEncjsonKeyHandlers();
+        attachDeployEnvVarHandlers();
 
         const deleteBtn = document.getElementById('delete-deploy-target-btn');
         if (deleteBtn) {
@@ -1797,6 +1806,7 @@ router.on('/deploy-targets/:id/edit', async (params) => {
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 data.encjson_keys = collectEncjsonKeys();
+                data.env_vars = collectDeployEnvVars();
                 await api.updateDeployTarget(params.id, data);
                 getApp().showSuccess('Deploy target updated successfully');
                 router.navigate(`/tenants/${target.tenant_id}`);
@@ -1866,6 +1876,61 @@ function attachEncjsonKeyHandlers() {
             </div>
         `;
         list.appendChild(card);
+        attachRemove();
+    });
+
+    attachRemove();
+}
+
+function collectDeployEnvVars() {
+    const rows = document.querySelectorAll('[data-env-var-index]');
+    const vars = [];
+    rows.forEach(row => {
+        const source = row.querySelector('.env-var-source')?.value?.trim() || '';
+        const target = row.querySelector('.env-var-target')?.value?.trim() || '';
+        if (source && target) {
+            vars.push({
+                source_key: source,
+                target_key: target,
+            });
+        }
+    });
+    return vars;
+}
+
+function attachDeployEnvVarHandlers() {
+    const list = document.getElementById('deploy-env-vars-list');
+    const addBtn = document.getElementById('deploy-env-var-add-btn');
+    if (!list || !addBtn) return;
+
+    const attachRemove = () => {
+        list.querySelectorAll('.env-var-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const row = btn.closest('[data-env-var-index]');
+                if (row) row.remove();
+            });
+        });
+    };
+
+    addBtn.addEventListener('click', () => {
+        const index = list.querySelectorAll('[data-env-var-index]').length;
+        const row = document.createElement('div');
+        row.className = 'row g-2 align-items-end mb-2';
+        row.setAttribute('data-env-var-index', index.toString());
+        row.innerHTML = `
+            <div class="col-md-5">
+                <input type="text" class="form-control form-control-sm env-var-source" placeholder="SIMPLE_RELEASE_ID">
+            </div>
+            <div class="col-md-5">
+                <input type="text" class="form-control form-control-sm env-var-target" placeholder="TSM_RELEASE_ID">
+            </div>
+            <div class="col-md-2">
+                <button type="button" class="btn btn-sm btn-outline-danger w-100 env-var-remove">
+                    <i class="ti ti-trash"></i>
+                </button>
+            </div>
+        `;
+        list.appendChild(row);
         attachRemove();
     });
 
@@ -3617,6 +3682,15 @@ router.on('/releases/:id', async (params) => {
                             </button>
                         </div>
                     </div>
+                    <div class="form-check mt-3">
+                        <input class="form-check-input" type="checkbox" id="deploy-dry-run" checked>
+                        <label class="form-check-label" for="deploy-dry-run">
+                            Dry run (no git commit/push/tag)
+                        </label>
+                        <div class="text-warning small mt-1 d-none" id="deploy-dry-run-warning">
+                            Dry run disabled: changes will be committed and pushed to git.
+                        </div>
+                    </div>
                     ${release.tenant_id ? `
                         <div class="text-secondary small mt-2">
                             Manage deploy targets in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
@@ -3656,7 +3730,10 @@ router.on('/releases/:id', async (params) => {
                                 </tr>
                             ` : deployJobs.map(job => `
                                 <tr>
-                                    <td>${job.target_name} (${job.env_name})</td>
+                                    <td>
+                                        ${job.target_name} (${job.env_name})
+                                        ${job.dry_run ? '<span class="badge bg-azure-lt text-azure-fg ms-2">dry-run</span>' : ''}
+                                    </td>
                                     <td>
                                         <span class="badge ${
                                             job.status === 'success' ? 'bg-success text-success-fg' :
@@ -3691,10 +3768,21 @@ router.on('/releases/:id', async (params) => {
             });
         });
 
+        const dryRunCheckbox = document.getElementById('deploy-dry-run');
+        const dryRunWarning = document.getElementById('deploy-dry-run-warning');
+        if (dryRunCheckbox && dryRunWarning) {
+            const syncWarning = () => {
+                dryRunWarning.classList.toggle('d-none', dryRunCheckbox.checked);
+            };
+            dryRunCheckbox.addEventListener('change', syncWarning);
+            syncWarning();
+        }
+
         const buildDeployBtn = document.getElementById('build-deploy-btn');
         if (buildDeployBtn) {
             buildDeployBtn.addEventListener('click', async () => {
                 const targetId = document.getElementById('deploy-target-select').value;
+                const dryRun = document.getElementById('deploy-dry-run')?.checked ?? true;
                 if (!targetId) {
                     getApp().showError('Select a deploy target');
                     return;
@@ -3703,6 +3791,7 @@ router.on('/releases/:id', async (params) => {
                     const response = await api.createDeployJob({
                         release_id: release.id,
                         deploy_target_id: targetId,
+                        dry_run: dryRun,
                     });
                     getApp().showSuccess('Deploy job started');
                     window.location.hash = `#/deploy-jobs/${response.job_id}`;
@@ -3727,10 +3816,11 @@ router.on('/deploy-jobs/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [job, logHistory, diffInfo] = await Promise.all([
+        const [job, logHistory, diffInfo, imageRows] = await Promise.all([
             api.getDeployJob(params.id),
             api.getDeployJobLogHistory(params.id),
             api.getDeployJobDiff(params.id),
+            api.getDeployJobImages(params.id),
         ]);
 
         content.innerHTML = `
@@ -3777,6 +3867,9 @@ router.on('/deploy-jobs/:id', async (params) => {
                             'bg-secondary text-secondary-fg'
                         }">${job.status}</span></dd>
 
+                        <dt class="col-4">Dry run:</dt>
+                        <dd class="col-8">${job.dry_run ? '<span class="badge bg-azure-lt text-azure-fg">enabled</span>' : '<span class="badge bg-yellow-lt text-yellow-fg">disabled</span>'}</dd>
+
                         <dt class="col-4">Started:</dt>
                         <dd class="col-8">${new Date(job.started_at).toLocaleString('cs-CZ')}</dd>
 
@@ -3819,6 +3912,34 @@ router.on('/deploy-jobs/:id', async (params) => {
                         <div class="text-secondary small mb-1">Diff</div>
                         <div id="deploy-diff-content"></div>
                     </div>
+                </div>
+            </div>
+            ` : ''}
+
+            ${Array.isArray(imageRows) && imageRows.length ? `
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">Deployed Images</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Container</th>
+                                <th>Image</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${imageRows.map(row => `
+                                <tr>
+                                    <td><code class="small">${escapeHtml(row.file_path)}</code></td>
+                                    <td>${escapeHtml(row.container_name)}</td>
+                                    <td><code class="small">${escapeHtml(row.image)}</code></td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
                 </div>
             </div>
             ` : ''}
@@ -5004,7 +5125,10 @@ router.on('/deployments', async () => {
                                         <td>
                                             <a href="#/bundles/${row.bundle_id}">${row.bundle_name}</a>
                                         </td>
-                                        <td>${row.target_name} (${row.env_name})</td>
+                                        <td>
+                                            ${row.target_name} (${row.env_name})
+                                            ${row.dry_run ? '<span class="badge bg-azure-lt text-azure-fg ms-2">dry-run</span>' : ''}
+                                        </td>
                                         <td>
                                             <span class="badge ${
                                                 row.status === 'success' ? 'bg-success text-success-fg' :
@@ -5153,6 +5277,15 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
                                 `).join('')}
                             </select>
                         </div>
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" id="auto-deploy-dry-run" checked>
+                            <label class="form-check-label" for="auto-deploy-dry-run">
+                                Dry run (no git commit/push/tag)
+                            </label>
+                            <div class="text-warning small mt-1 d-none" id="auto-deploy-warning">
+                                Dry run disabled: changes will be committed and pushed to git.
+                            </div>
+                        </div>
                     </div>
                     <div class="modal-footer">
                         <button type="button" class="btn btn-link link-secondary" id="auto-deploy-cancel">
@@ -5177,6 +5310,8 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
     const labelEl = modal.querySelector('label.form-label');
     const confirmBtn = document.getElementById('auto-deploy-confirm');
     const cancelBtn = document.getElementById('auto-deploy-cancel');
+    const dryRunCheckbox = document.getElementById('auto-deploy-dry-run');
+    const dryRunWarning = document.getElementById('auto-deploy-warning');
 
     const cleanup = () => {
         modal.remove();
@@ -5206,16 +5341,25 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         updateTitle(target);
     });
 
+    if (dryRunCheckbox && dryRunWarning) {
+        const syncWarning = () => {
+            dryRunWarning.classList.toggle('d-none', dryRunCheckbox.checked);
+        };
+        dryRunCheckbox.addEventListener('change', syncWarning);
+        syncWarning();
+    }
+
     cancelBtn.addEventListener('click', () => {
         cleanup();
     });
 
     confirmBtn.addEventListener('click', async () => {
         const targetId = select.value;
+        const dryRun = dryRunCheckbox?.checked ?? true;
         if (!targetId) return;
         cleanup();
         try {
-            const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId);
+            const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId, dryRun);
             getApp().showSuccess('Deploy job started');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {

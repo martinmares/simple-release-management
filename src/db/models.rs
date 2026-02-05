@@ -234,8 +234,17 @@ pub struct DeployTarget {
     pub encjson_private_key_encrypted: Option<String>,
     pub allow_auto_release: bool,
     pub append_env_suffix: bool,
+    pub release_manifest_mode: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployTargetEnvVar {
+    pub id: Uuid,
+    pub deploy_target_id: Uuid,
+    pub source_key: String,
+    pub target_key: String,
 }
 
 /// Git repository configuration per tenant
@@ -279,6 +288,7 @@ pub struct DeployJob {
     pub error_message: Option<String>,
     pub commit_sha: Option<String>,
     pub tag_name: Option<String>,
+    pub dry_run: bool,
     pub created_at: DateTime<Utc>,
 }
 

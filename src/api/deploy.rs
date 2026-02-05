@@ -8,9 +8,10 @@ use axum::{
 use anyhow::Context;
 use futures::stream;
 use serde::{Deserialize, Serialize};
+use serde_yaml_ng::Value as YamlValue;
 use sqlx::PgPool;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path as FsPath, PathBuf},
     sync::Arc,
@@ -27,8 +28,11 @@ use walkdir::WalkDir;
 
 use crate::{
     crypto,
-    db::models::{DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, GitRepository, Release},
-    services::release_manifest::build_release_manifest,
+    db::models::{
+        DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, DeployTargetEnvVar, GitRepository,
+        Release,
+    },
+    services::release_manifest::{build_release_manifest, ReleaseManifest},
 };
 
 #[derive(Clone)]
@@ -55,8 +59,10 @@ pub struct CreateDeployTargetRequest {
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
     pub allow_auto_release: Option<bool>,
     pub append_env_suffix: Option<bool>,
+    pub release_manifest_mode: Option<String>,
     pub is_active: Option<bool>,
     pub copy_from_target_id: Option<Uuid>,
+    pub env_vars: Option<Vec<DeployTargetEnvVarInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,19 +78,23 @@ pub struct UpdateDeployTargetRequest {
     pub encjson_keys: Option<Vec<EncjsonKeyInput>>,
     pub allow_auto_release: Option<bool>,
     pub append_env_suffix: Option<bool>,
+    pub release_manifest_mode: Option<String>,
     pub is_active: Option<bool>,
+    pub env_vars: Option<Vec<DeployTargetEnvVarInput>>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDeployJobRequest {
     pub release_id: Uuid,
     pub deploy_target_id: Uuid,
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AutoDeployFromCopyJobRequest {
     pub copy_job_id: Uuid,
     pub deploy_target_id: Uuid,
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -93,11 +103,18 @@ pub struct EncjsonKeyInput {
     pub private_key: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct DeployTargetEnvVarInput {
+    pub source_key: String,
+    pub target_key: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct DeployTargetWithKeys {
     #[serde(flatten)]
     pub target: DeployTarget,
     pub encjson_keys: Vec<EncjsonKeySummary>,
+    pub env_vars: Vec<DeployTargetEnvVar>,
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +145,7 @@ pub struct DeployJobSummary {
     pub is_auto: bool,
     pub copy_job_id: Option<Uuid>,
     pub bundle_id: Option<Uuid>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -148,6 +166,14 @@ pub struct DeployJobListRow {
     pub bundle_name: String,
     pub tenant_id: Uuid,
     pub tenant_name: String,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DeployJobImageRow {
+    pub file_path: String,
+    pub container_name: String,
+    pub image: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +193,7 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
         .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
         .route("/deploy/jobs/{id}/diff", get(deploy_job_diff))
+        .route("/deploy/jobs/{id}/images", get(deploy_job_images))
         .with_state(state)
 }
 
@@ -226,6 +253,21 @@ async fn get_deploy_target(
                 )
             })?;
 
+            let env_vars = sqlx::query_as::<_, DeployTargetEnvVar>(
+                "SELECT * FROM deploy_target_env_vars WHERE deploy_target_id = $1 ORDER BY target_key",
+            )
+            .bind(target.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
+
             let summaries = keys
                 .into_iter()
                 .map(|k| EncjsonKeySummary {
@@ -237,6 +279,7 @@ async fn get_deploy_target(
             Ok(Json(DeployTargetWithKeys {
                 target,
                 encjson_keys: summaries,
+                env_vars,
             }))
         }
         None => Err((
@@ -335,8 +378,9 @@ async fn create_deploy_target(
         r#"
         INSERT INTO deploy_targets
         (tenant_id, name, env_name, env_repo_id, env_repo_path,
-         deploy_repo_id, deploy_repo_path, deploy_path, encjson_key_dir, encjson_private_key_encrypted, allow_auto_release, append_env_suffix, is_active)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         deploy_repo_id, deploy_repo_path, deploy_path, encjson_key_dir, encjson_private_key_encrypted,
+         allow_auto_release, append_env_suffix, release_manifest_mode, is_active)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         RETURNING *
         "#,
     )
@@ -352,6 +396,7 @@ async fn create_deploy_target(
     .bind(&encjson_private_key_encrypted)
     .bind(payload.allow_auto_release.unwrap_or(false))
     .bind(payload.append_env_suffix.unwrap_or(false))
+    .bind(payload.release_manifest_mode.clone().unwrap_or_else(|| "match_digest".to_string()))
     .bind(payload.is_active.unwrap_or(true))
     .fetch_one(&state.pool)
     .await
@@ -397,6 +442,31 @@ async fn create_deploy_target(
             INSERT INTO deploy_target_encjson_keys (deploy_target_id, public_key, private_key_encrypted)
             SELECT $1, public_key, private_key_encrypted
             FROM deploy_target_encjson_keys
+            WHERE deploy_target_id = $2
+            "#,
+        )
+        .bind(target.id)
+        .bind(source_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    if let Some(env_vars) = payload.env_vars {
+        store_deploy_target_env_vars(&state, target.id, env_vars).await?;
+    } else if let Some(source_id) = payload.copy_from_target_id {
+        sqlx::query(
+            r#"
+            INSERT INTO deploy_target_env_vars (deploy_target_id, source_key, target_key)
+            SELECT $1, source_key, target_key
+            FROM deploy_target_env_vars
             WHERE deploy_target_id = $2
             "#,
         )
@@ -528,8 +598,9 @@ async fn update_deploy_target(
             encjson_private_key_encrypted = COALESCE($9, encjson_private_key_encrypted),
             allow_auto_release = $10,
             append_env_suffix = $11,
-            is_active = $12
-        WHERE id = $13
+            release_manifest_mode = $12,
+            is_active = $13
+        WHERE id = $14
         RETURNING *
         "#,
     )
@@ -544,6 +615,7 @@ async fn update_deploy_target(
     .bind(&encjson_private_key_encrypted)
     .bind(payload.allow_auto_release.unwrap_or(false))
     .bind(payload.append_env_suffix.unwrap_or(false))
+    .bind(payload.release_manifest_mode.clone().unwrap_or_else(|| "match_digest".to_string()))
     .bind(payload.is_active.unwrap_or(true))
     .bind(id)
     .fetch_optional(&state.pool)
@@ -561,6 +633,9 @@ async fn update_deploy_target(
         Some(target) => {
             if let Some(keys) = payload.encjson_keys {
                 store_encjson_keys(&state, target.id, keys).await?;
+            }
+            if let Some(env_vars) = payload.env_vars {
+                store_deploy_target_env_vars(&state, target.id, env_vars).await?;
             }
             Ok(Json(target))
         }
@@ -665,7 +740,7 @@ async fn list_release_deploy_jobs(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name,
-               r.is_auto, r.copy_job_id, b.id as bundle_id
+               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
         JOIN releases r ON r.id = dj.release_id
@@ -712,7 +787,8 @@ async fn list_deploy_jobs(
             b.id as bundle_id,
             b.name as bundle_name,
             t.id as tenant_id,
-            t.name as tenant_name
+            t.name as tenant_name,
+            dj.dry_run
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
         JOIN releases r ON r.id = dj.release_id
@@ -746,7 +822,7 @@ async fn get_deploy_job(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, dt.env_name,
-               r.is_auto, r.copy_job_id, b.id as bundle_id
+               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
         JOIN releases r ON r.id = dj.release_id
@@ -831,7 +907,13 @@ async fn create_deploy_job(
         ));
     }
 
-    let job_id = enqueue_deploy_job(&state, payload.release_id, payload.deploy_target_id).await?;
+    let job_id = enqueue_deploy_job(
+        &state,
+        payload.release_id,
+        payload.deploy_target_id,
+        payload.dry_run.unwrap_or(true),
+    )
+    .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -985,7 +1067,8 @@ async fn auto_deploy_from_copy_job(
         }
     };
 
-    let job_id = enqueue_deploy_job(&state, release.id, payload.deploy_target_id).await?;
+    let dry_run = payload.dry_run.unwrap_or(true);
+    let job_id = enqueue_deploy_job(&state, release.id, payload.deploy_target_id, dry_run).await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -1000,14 +1083,16 @@ async fn enqueue_deploy_job(
     state: &DeployApiState,
     release_id: Uuid,
     deploy_target_id: Uuid,
+    dry_run: bool,
 ) -> Result<Uuid, (StatusCode, Json<ErrorResponse>)> {
     let job_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deploy_jobs (id, release_id, deploy_target_id, status) VALUES ($1, $2, $3, 'pending')",
+        "INSERT INTO deploy_jobs (id, release_id, deploy_target_id, status, dry_run) VALUES ($1, $2, $3, 'pending', $4)",
     )
     .bind(job_id)
     .bind(release_id)
     .bind(deploy_target_id)
+    .bind(dry_run)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1165,6 +1250,79 @@ async fn store_encjson_keys(
     Ok(())
 }
 
+async fn store_deploy_target_env_vars(
+    state: &DeployApiState,
+    deploy_target_id: Uuid,
+    vars: Vec<DeployTargetEnvVarInput>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let mut cleaned = Vec::new();
+    for item in vars {
+        let source_key = item.source_key.trim().to_string();
+        let target_key = item.target_key.trim().to_string();
+        if source_key.is_empty() || target_key.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Env var mapping must include source and target keys".to_string(),
+                }),
+            ));
+        }
+        cleaned.push((source_key, target_key));
+    }
+
+    let mut tx = state.pool.begin().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    sqlx::query("DELETE FROM deploy_target_env_vars WHERE deploy_target_id = $1")
+        .bind(deploy_target_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+    for (source_key, target_key) in cleaned {
+        sqlx::query(
+            "INSERT INTO deploy_target_env_vars (deploy_target_id, source_key, target_key) VALUES ($1, $2, $3)",
+        )
+        .bind(deploy_target_id)
+        .bind(&source_key)
+        .bind(&target_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    tx.commit().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(())
+}
+
 async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::Sender<String>) -> anyhow::Result<()> {
     let _ = log_tx.send(format!("Starting deploy job {}", job_id));
 
@@ -1188,6 +1346,9 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .fetch_one(&state.pool)
         .await?;
 
+    let env_var_rows = load_deploy_target_env_vars(&state.pool, target.id).await?;
+    let mapped_vars = build_release_env_var_map(&env_var_rows, &release, &log_tx);
+
     let temp_dir = TempDir::new()?;
     let env_repo_path = temp_dir.path().join("environments");
     let deploy_repo_path = temp_dir.path().join("deploy");
@@ -1210,7 +1371,15 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     run_git_clone(&env_repo.repo_url, &env_repo.default_branch, &env_repo_path, &git_env_env, &log_tx).await?;
     run_git_clone(&deploy_repo.repo_url, &deploy_repo.default_branch, &deploy_repo_path, &git_env_deploy, &log_tx).await?;
 
-    let release_manifest = build_release_manifest(&state.pool, release.id).await?;
+    let mut release_manifest = build_release_manifest(&state.pool, release.id).await?;
+    apply_release_manifest_mode(
+        target.release_manifest_mode.as_deref().unwrap_or("match_digest"),
+        &mut release_manifest,
+        &env_repo_path,
+        &target.env_name,
+        target.env_repo_path.as_deref(),
+    )
+    .await?;
     let manifest_path = temp_dir.path().join("release-manifest.yml");
     let yaml = serde_yaml_ng::to_string(&release_manifest)?;
     tokio::fs::write(&manifest_path, yaml)
@@ -1236,7 +1405,13 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
 
     clean_deploy_output(&deploy_path).await?;
 
-    let kube_build_env = build_kube_build_env(&target, &release, &manifest_path, &env_repo_path)?;
+    let kube_build_env = build_kube_build_env(
+        &target,
+        &release,
+        &manifest_path,
+        &env_repo_path,
+        &mapped_vars,
+    )?;
     run_command_logged(
         &state.kube_build_app_path,
         &["-e", &target.env_name, "-t", deploy_path.to_string_lossy().as_ref(), "-r", manifest_path.to_string_lossy().as_ref()],
@@ -1258,9 +1433,23 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     .await?;
 
     let env_file_path = temp_dir.path().join("release.env");
-    build_env_file(&state, &target, &env_repo_path, &env_file_path, &release, &log_tx, temp_dir.path()).await?;
+    build_env_file(
+        &state,
+        &target,
+        &env_repo_path,
+        &env_file_path,
+        &release,
+        &env_var_rows,
+        &log_tx,
+        temp_dir.path(),
+    )
+    .await?;
 
     apply_env_to_outputs(&state, &deploy_path, &env_file_path, &log_tx).await?;
+
+    if let Err(err) = collect_and_store_deploy_images(&state.pool, job_id, &deploy_path, &log_tx).await {
+        let _ = log_tx.send(format!("Failed to collect deploy images (ignored): {}", err));
+    }
 
     let kubeconform_path = state.kubeconform_path.trim();
     if kubeconform_path.is_empty() {
@@ -1296,16 +1485,6 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     };
 
     if let Some(diff) = diff_info {
-    run_git_commit_and_push(
-        &deploy_repo_path,
-        deploy_rel_path,
-        &tag_name,
-        &deploy_repo.repo_url,
-        &git_env_deploy,
-        &log_tx,
-    )
-        .await?;
-
         let _ = sqlx::query(
             "INSERT INTO deploy_job_diffs (deploy_job_id, files_changed, diff_patch) VALUES ($1, $2, $3)",
         )
@@ -1314,11 +1493,29 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .bind(diff.diff_patch)
         .execute(&state.pool)
         .await;
+
+        if job.dry_run {
+            let _ = log_tx.send("Dry run enabled: skipping git add/commit/push/tag".to_string());
+        } else {
+            run_git_commit_and_push(
+                &deploy_repo_path,
+                deploy_rel_path,
+                &tag_name,
+                &deploy_repo.repo_url,
+                &git_env_deploy,
+                &log_tx,
+            )
+            .await?;
+        }
     } else {
         let _ = log_tx.send("No deploy changes detected; skipping git commit/push/tag".to_string());
     }
 
-    let commit_sha = get_git_head_sha(&deploy_repo_path, &git_env_deploy).await.ok();
+    let commit_sha = if job.dry_run {
+        None
+    } else {
+        get_git_head_sha(&deploy_repo_path, &git_env_deploy).await.ok()
+    };
 
     sqlx::query(
         "UPDATE deploy_jobs SET status = 'success', completed_at = NOW(), commit_sha = $1, tag_name = $2 WHERE id = $3",
@@ -1422,18 +1619,22 @@ fn build_kube_build_env(
     release: &Release,
     manifest_path: &FsPath,
     env_repo_path: &FsPath,
+    mapped_vars: &HashMap<String, String>,
 ) -> anyhow::Result<HashMap<String, String>> {
     let mut env = HashMap::new();
     env.insert(
         "ENVIRONMENTS_DIR".to_string(),
         env_repo_path.to_string_lossy().to_string(),
     );
-    env.insert("TSM_RELEASE_ID".to_string(), release.release_id.clone());
+    env.insert("SIMPLE_RELEASE_ID".to_string(), release.release_id.clone());
     env.insert(
         "SRM_RELEASE_MANIFEST".to_string(),
         manifest_path.to_string_lossy().to_string(),
     );
     env.insert("BUILD_ENV".to_string(), target.env_name.clone());
+    for (key, value) in mapped_vars {
+        env.insert(key.clone(), value.clone());
+    }
     Ok(env)
 }
 
@@ -1443,6 +1644,7 @@ async fn build_env_file(
     env_repo_path: &FsPath,
     env_file_path: &FsPath,
     release: &Release,
+    env_vars: &[DeployTargetEnvVar],
     log_tx: &broadcast::Sender<String>,
     temp_root: &FsPath,
 ) -> anyhow::Result<()> {
@@ -1469,12 +1671,53 @@ async fn build_env_file(
         combined.push_str(&output);
     }
 
-    combined.push_str(&format!("TSM_RELEASE_ID={}\n", release.release_id));
+    combined.push_str(&format!("SIMPLE_RELEASE_ID={}\n", release.release_id));
+    for (key, value) in build_release_env_var_map(env_vars, release, log_tx) {
+        combined.push_str(&format!("{}={}\n", key, value));
+    }
 
     tokio::fs::write(env_file_path, combined)
         .await
         .with_context(|| format!("Failed to write env file {}", env_file_path.display()))?;
     Ok(())
+}
+
+async fn load_deploy_target_env_vars(pool: &PgPool, deploy_target_id: Uuid) -> anyhow::Result<Vec<DeployTargetEnvVar>> {
+    let rows = sqlx::query_as::<_, DeployTargetEnvVar>(
+        "SELECT * FROM deploy_target_env_vars WHERE deploy_target_id = $1 ORDER BY target_key",
+    )
+    .bind(deploy_target_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+fn build_release_env_var_map(
+    env_vars: &[DeployTargetEnvVar],
+    release: &Release,
+    log_tx: &broadcast::Sender<String>,
+) -> HashMap<String, String> {
+    let mut mapped = HashMap::new();
+    for item in env_vars {
+        let source_key = item.source_key.trim();
+        let target_key = item.target_key.trim();
+        if source_key.is_empty() || target_key.is_empty() {
+            continue;
+        }
+        let value = match source_key {
+            "SIMPLE_RELEASE_ID" => Some(release.release_id.clone()),
+            _ => None,
+        };
+        if let Some(val) = value {
+            mapped.insert(target_key.to_string(), val);
+        } else {
+            let _ = log_tx.send(format!(
+                "Release env mapping ignored (unsupported source_key): {} -> {}",
+                source_key, target_key
+            ));
+        }
+    }
+    mapped
 }
 
 async fn run_encjson_dotenv(
@@ -1683,6 +1926,185 @@ async fn clean_deploy_output(deploy_path: &FsPath) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn apply_release_manifest_mode(
+    mode: &str,
+    manifest: &mut ReleaseManifest,
+    env_repo_root: &FsPath,
+    env_name: &str,
+    env_repo_path: Option<&str>,
+) -> anyhow::Result<()> {
+    let normalized = mode.trim().to_lowercase();
+    let strict = normalized.starts_with("strict");
+    let tag_only = normalized.ends_with("tag");
+    let digest_required = normalized.ends_with("digest") && strict;
+
+    if strict {
+        let expected = load_env_app_container_pairs(env_repo_root, env_name, env_repo_path).await?;
+        let actual: HashSet<(String, String)> = manifest
+            .images
+            .iter()
+            .map(|img| (img.app_name.clone(), img.container_name.clone().unwrap_or_default()))
+            .collect();
+        let missing: Vec<String> = expected
+            .difference(&actual)
+            .map(|(app, cont)| {
+                if cont.is_empty() {
+                    app.to_string()
+                } else {
+                    format!("{}:{}", app, cont)
+                }
+            })
+            .collect();
+        if !missing.is_empty() {
+            return Err(anyhow::anyhow!(
+                "Release manifest is missing mappings for: {}",
+                missing.join(", ")
+            ));
+        }
+    }
+
+    for img in &mut manifest.images {
+        if tag_only {
+            img.digest = None;
+        }
+        if digest_required && img.digest.as_deref().unwrap_or("").is_empty() {
+            return Err(anyhow::anyhow!(
+                "Release manifest requires digest for {}:{}",
+                img.app_name,
+                img.container_name.clone().unwrap_or_else(|| "-".to_string())
+            ));
+        }
+        if normalized == "strict_tag" && img.tag.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "Release manifest requires tag for {}:{}",
+                img.app_name,
+                img.container_name.clone().unwrap_or_else(|| "-".to_string())
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+async fn load_env_app_container_pairs(
+    env_repo_root: &FsPath,
+    env_name: &str,
+    env_repo_path: Option<&str>,
+) -> anyhow::Result<HashSet<(String, String)>> {
+    let env_subdir = env_repo_path.unwrap_or(env_name).trim().trim_start_matches('/');
+    let apps_dir = env_repo_root.join(env_subdir).join("apps");
+    let mut defaults = Vec::new();
+    if apps_dir.exists() {
+        for entry in WalkDir::new(&apps_dir).max_depth(1) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy();
+            if name.starts_with('_') && (name.ends_with(".yml") || name.ends_with(".yaml")) {
+                defaults.push(entry.path().to_path_buf());
+            }
+        }
+    }
+
+    let mut default_content = String::new();
+    for file in defaults {
+        if let Ok(text) = tokio::fs::read_to_string(&file).await {
+            default_content.push_str("\n");
+            default_content.push_str(&text);
+        }
+    }
+
+    let mut pairs = HashSet::new();
+    for entry in WalkDir::new(&apps_dir).max_depth(1) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy();
+        if name.starts_with('_') || !(name.ends_with(".yml") || name.ends_with(".yaml")) {
+            continue;
+        }
+        let raw = tokio::fs::read_to_string(entry.path()).await?;
+        let mut content = format!("{}{}", raw, default_content);
+        content = apply_env_placeholders(&content);
+        let vars = extract_vars(&content);
+        for (key, value) in vars {
+            content = apply_var_placeholder(&content, &key, &value);
+        }
+        let yaml: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)?;
+        let app_name = yaml
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if app_name.is_empty() {
+            continue;
+        }
+        let mut containers = Vec::new();
+        if let Some(list) = yaml.get("containers").and_then(|v| v.as_sequence()) {
+            for item in list {
+                if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                    containers.push(name.to_string());
+                }
+            }
+        }
+        if containers.is_empty() {
+            pairs.insert((app_name, String::new()));
+        } else {
+            for c in containers {
+                pairs.insert((app_name.clone(), c));
+            }
+        }
+    }
+
+    Ok(pairs)
+}
+
+fn apply_env_placeholders(content: &str) -> String {
+    let mut result = content.to_string();
+    for (key, value) in std::env::vars() {
+        result = apply_placeholder(&result, "env", &key, &value);
+    }
+    result
+}
+
+fn extract_vars(content: &str) -> Vec<(String, String)> {
+    let Ok(yaml) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(content) else {
+        return Vec::new();
+    };
+    let Some(vars) = yaml.get("vars").and_then(|v| v.as_sequence()) else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    for item in vars {
+        let key = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let value = item.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if !key.is_empty() {
+            pairs.push((key, value));
+        }
+    }
+    pairs
+}
+
+fn apply_var_placeholder(content: &str, key: &str, value: &str) -> String {
+    apply_placeholder(content, "var", key, value)
+}
+
+fn apply_placeholder(content: &str, kind: &str, key: &str, value: &str) -> String {
+    let mut result = content.to_string();
+    let patterns = [
+        format!("{{{{{kind}:{key}}}}}"),
+        format!("{{{{ {kind}:{key} }}}}"),
+        format!("{{{{{kind}: {key}}}}}"),
+        format!("{{{{ {kind}: {key} }}}}"),
+    ];
+    for pattern in patterns {
+        result = result.replace(&pattern, value);
+    }
+    result
+}
+
 async fn run_command_logged(
     program: &str,
     args: &[&str],
@@ -1780,6 +2202,151 @@ async fn collect_deploy_diff(
     Ok(Some(DeployDiffSnapshot { files_changed, diff_patch }))
 }
 
+async fn collect_and_store_deploy_images(
+    pool: &PgPool,
+    job_id: Uuid,
+    deploy_path: &FsPath,
+    log_tx: &broadcast::Sender<String>,
+) -> anyhow::Result<()> {
+    let rows = collect_deploy_images(deploy_path, log_tx).await?;
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM deploy_job_images WHERE deploy_job_id = $1")
+        .bind(job_id)
+        .execute(&mut *tx)
+        .await?;
+
+    if rows.is_empty() {
+        let _ = log_tx.send("No deploy images detected (deployments folder empty)".to_string());
+        tx.commit().await?;
+        return Ok(());
+    }
+
+    for row in rows {
+        sqlx::query(
+            "INSERT INTO deploy_job_images (deploy_job_id, file_path, container_name, image) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(job_id)
+        .bind(row.file_path)
+        .bind(row.container_name)
+        .bind(row.image)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn collect_deploy_images(
+    deploy_path: &FsPath,
+    log_tx: &broadcast::Sender<String>,
+) -> anyhow::Result<Vec<DeployJobImageRow>> {
+    let deployments_dir = deploy_path.join("deployments");
+    if !deployments_dir.exists() {
+        let _ = log_tx.send("Deployments directory not found; skipping image list".to_string());
+        return Ok(Vec::new());
+    }
+
+    let mut rows = Vec::new();
+    for entry in WalkDir::new(&deployments_dir).into_iter().filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+        if ext != "yml" && ext != "yaml" {
+            continue;
+        }
+
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(text) => text,
+            Err(err) => {
+                let _ = log_tx.send(format!("Failed to read {}: {}", path.display(), err));
+                continue;
+            }
+        };
+
+        let rel_path = path
+            .strip_prefix(deploy_path)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        for doc in serde_yaml_ng::Deserializer::from_str(&content) {
+            let value = match YamlValue::deserialize(doc) {
+                Ok(val) => val,
+                Err(err) => {
+                    let _ = log_tx.send(format!("Failed to parse YAML {}: {}", path.display(), err));
+                    continue;
+                }
+            };
+
+            let mut containers = Vec::new();
+            collect_containers_from_doc(&value, &mut containers);
+            for (name, image) in containers {
+                rows.push(DeployJobImageRow {
+                    file_path: rel_path.clone(),
+                    container_name: name,
+                    image,
+                });
+            }
+        }
+    }
+
+    Ok(rows)
+}
+
+fn collect_containers_from_doc(doc: &YamlValue, output: &mut Vec<(String, String)>) {
+    if let Some(kind) = yaml_string(doc.get("kind")) {
+        if kind == "List" {
+            if let Some(items) = doc.get("items").and_then(|v| v.as_sequence()) {
+                for item in items {
+                    collect_containers_from_doc(item, output);
+                }
+            }
+            return;
+        }
+    }
+
+    let paths: &[&[&str]] = &[
+        &["spec", "template", "spec"],
+        &["spec", "jobTemplate", "spec", "template", "spec"],
+        &["spec"],
+    ];
+
+    for path in paths {
+        if let Some(spec) = yaml_at_path(doc, path) {
+            collect_containers_from_spec(spec, output);
+        }
+    }
+}
+
+fn collect_containers_from_spec(spec: &YamlValue, output: &mut Vec<(String, String)>) {
+    for key in ["containers", "initContainers"] {
+        if let Some(seq) = spec.get(key).and_then(|v| v.as_sequence()) {
+            for item in seq {
+                let name = yaml_string(item.get("name")).unwrap_or("").trim().to_string();
+                let image = yaml_string(item.get("image")).unwrap_or("").trim().to_string();
+                if !name.is_empty() && !image.is_empty() {
+                    output.push((name, image));
+                }
+            }
+        }
+    }
+}
+
+fn yaml_at_path<'a>(value: &'a YamlValue, path: &[&str]) -> Option<&'a YamlValue> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn yaml_string(value: Option<&YamlValue>) -> Option<&str> {
+    value.and_then(|v| v.as_str())
+}
+
 async fn deploy_job_logs_sse(
     State(state): State<DeployApiState>,
     Path(job_id): Path<Uuid>,
@@ -1853,4 +2420,26 @@ async fn deploy_job_diff(
     })?;
 
     Ok(Json(row))
+}
+
+async fn deploy_job_images(
+    State(state): State<DeployApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Result<Json<Vec<DeployJobImageRow>>, (StatusCode, Json<ErrorResponse>)> {
+    let rows = sqlx::query_as::<_, DeployJobImageRow>(
+        "SELECT file_path, container_name, image FROM deploy_job_images WHERE deploy_job_id = $1 ORDER BY file_path, container_name",
+    )
+    .bind(job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load deploy job images: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(rows))
 }
