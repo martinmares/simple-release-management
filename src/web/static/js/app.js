@@ -2345,7 +2345,7 @@ router.on('/bundles/:id', async (params) => {
         const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry, registries] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
-            api.getBundleReleases(params.id),
+            api.getReleases(),
             api.getBundleDeployments(params.id),
             bundle.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
@@ -2364,9 +2364,13 @@ router.on('/bundles/:id', async (params) => {
         const latestSuccessJob = copyJobs
             .filter(job => job.status === 'success' && !job.is_release_job)
             .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
-        const latestRelease = releases
-            .slice()
-            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+        const releasesForBundle = (releases || []).filter(r => r.bundle_id === bundle.id);
+        const releaseByCopyJobId = new Map();
+        releasesForBundle.forEach(r => {
+            if (!releaseByCopyJobId.has(r.copy_job_id)) {
+                releaseByCopyJobId.set(r.copy_job_id, r);
+            }
+        });
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -2494,41 +2498,6 @@ router.on('/bundles/:id', async (params) => {
 
                     <div class="card mt-3">
                         <div class="card-header">
-                            <h3 class="card-title">Image Releases</h3>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table table-vcenter card-table">
-                                <thead>
-                                    <tr>
-                                    <th>Image Release ID</th>
-                                        <th>Status</th>
-                                        <th>Created</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${releases.length === 0 ? `
-                                        <tr>
-                                            <td colspan="3" class="text-center text-secondary py-4">
-                                                No releases yet.
-                                            </td>
-                                        </tr>
-                                    ` : releases.map(release => `
-                                        <tr>
-                                            <td>
-                                                <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
-                                                ${release.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
-                                            </td>
-                                            <td><span class="badge bg-blue text-blue-fg">${release.status}</span></td>
-                                            <td>${new Date(release.created_at).toLocaleDateString('cs-CZ')}</td>
-                                        </tr>
-                                    `).join('')}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <div class="card mt-3">
-                        <div class="card-header">
                             <h3 class="card-title">
                                 <i class="ti ti-copy me-2"></i>
                                 Copy History
@@ -2540,6 +2509,7 @@ router.on('/bundles/:id', async (params) => {
                                     <tr>
                                         <th>Version</th>
                                         <th>Target Tag</th>
+                                        <th>Release</th>
                                         <th>Status</th>
                                         <th>Started</th>
                                         <th>Completed</th>
@@ -2550,7 +2520,7 @@ router.on('/bundles/:id', async (params) => {
                                 <tbody>
                                     ${copyJobs.length === 0 ? `
                                         <tr>
-                                            <td colspan="7" class="text-center text-secondary py-4">
+                                            <td colspan="8" class="text-center text-secondary py-4">
                                                 No copy jobs yet.
                                             </td>
                                         </tr>
@@ -2566,6 +2536,18 @@ router.on('/bundles/:id', async (params) => {
                                                     <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}</div>
                                                     <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                                                 </div>
+                                            </td>
+                                            <td>
+                                                ${(() => {
+                                                    const release = releaseByCopyJobId.get(job.job_id);
+                                                    if (!release) {
+                                                        return '<span class="text-secondary">-</span>';
+                                                    }
+                                                    return `
+                                                        <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
+                                                        ${release.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
+                                                    `;
+                                                })()}
                                             </td>
                                             <td>
                                                 <span class="badge ${
@@ -3737,6 +3719,13 @@ router.on('/releases/:id', async (params) => {
             api.getReleaseDeployTargets(params.id),
             api.getReleaseDeployJobs(params.id),
         ]);
+        const copyJob = release.copy_job_id ? await api.getCopyJobStatus(release.copy_job_id).catch(() => null) : null;
+        const bundle = copyJob?.bundle_id ? await api.getBundle(copyJob.bundle_id).catch(() => null) : null;
+        const tenant = bundle?.tenant_id ? await api.getTenant(bundle.tenant_id).catch(() => null) : null;
+        const [sourceRegistry, targetRegistry] = await Promise.all([
+            copyJob?.source_registry_id ? api.getRegistry(copyJob.source_registry_id).catch(() => null) : null,
+            copyJob?.target_registry_id ? api.getRegistry(copyJob.target_registry_id).catch(() => null) : null,
+        ]);
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -3757,6 +3746,13 @@ router.on('/releases/:id', async (params) => {
                     </h3>
                 </div>
                 <div class="card-body">
+                    <div class="text-secondary small mb-3">
+                        <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
+                        <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
+                        <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
+                        <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
+                        <div>${release.copy_job_id ? `Copy Job: <a href="#/copy-jobs/${release.copy_job_id}"><code>${release.copy_job_id}</code></a>` : 'Copy Job: -'}</div>
+                    </div>
                     <dl class="row mb-0">
                         <dt class="col-4">Notes:</dt>
                         <dd class="col-8">${release.notes || '-'}</dd>
@@ -3798,34 +3794,10 @@ router.on('/releases/:id', async (params) => {
                     <h3 class="card-title">Build Deploy</h3>
                 </div>
                 <div class="card-body">
-                    <div class="row g-2 align-items-end">
-                        <div class="col-md-6">
-                            <label class="form-label required">Deploy Target</label>
-                            <select class="form-select" id="deploy-target-select">
-                                <option value="">Select target...</option>
-                                ${deployTargets.map(target => `
-                                    <option value="${target.id}">
-                                        ${target.name} (${target.env_name})
-                                    </option>
-                                `).join('')}
-                            </select>
-                        </div>
-                        <div class="col-md-3">
-                            <button class="btn btn-primary w-100" id="build-deploy-btn">
-                                <i class="ti ti-rocket"></i>
-                                Build Deploy
-                            </button>
-                        </div>
-                    </div>
-                    <div class="form-check mt-3">
-                        <input class="form-check-input" type="checkbox" id="deploy-dry-run" checked>
-                        <label class="form-check-label" for="deploy-dry-run">
-                            Dry run (no git commit/push/tag)
-                        </label>
-                        <div class="text-warning small mt-1 d-none" id="deploy-dry-run-warning">
-                            Dry run disabled: changes will be committed and pushed to git.
-                        </div>
-                    </div>
+                    <button class="btn btn-primary" id="build-deploy-btn">
+                        <i class="ti ti-rocket"></i>
+                        Build Deploy
+                    </button>
                     ${release.tenant_id ? `
                         <div class="text-secondary small mt-2">
                             Manage deploy targets in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
@@ -3903,36 +3875,10 @@ router.on('/releases/:id', async (params) => {
             });
         });
 
-        const dryRunCheckbox = document.getElementById('deploy-dry-run');
-        const dryRunWarning = document.getElementById('deploy-dry-run-warning');
-        if (dryRunCheckbox && dryRunWarning) {
-            const syncWarning = () => {
-                dryRunWarning.classList.toggle('d-none', dryRunCheckbox.checked);
-            };
-            dryRunCheckbox.addEventListener('change', syncWarning);
-            syncWarning();
-        }
-
         const buildDeployBtn = document.getElementById('build-deploy-btn');
         if (buildDeployBtn) {
             buildDeployBtn.addEventListener('click', async () => {
-                const targetId = document.getElementById('deploy-target-select').value;
-                const dryRun = document.getElementById('deploy-dry-run')?.checked ?? true;
-                if (!targetId) {
-                    getApp().showError('Select a deploy target');
-                    return;
-                }
-                try {
-                    const response = await api.createDeployJob({
-                        release_id: release.id,
-                        deploy_target_id: targetId,
-                        dry_run: dryRun,
-                    });
-                    getApp().showSuccess('Deploy job started');
-                    window.location.hash = `#/deploy-jobs/${response.job_id}`;
-                } catch (err) {
-                    getApp().showError(err.message);
-                }
+                await runDeployFromRelease(release, deployTargets);
             });
         }
 
@@ -4705,6 +4651,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
             api.getCopyJobLogHistory(params.jobId),
             api.getReleases(),
         ]);
+        const linkedRelease = releaseList.find(r => r.copy_job_id === initialStatus.job_id);
         const bundle = initialStatus.bundle_id ? await api.getBundle(initialStatus.bundle_id).catch(() => null) : null;
         const [tenant, sourceRegistry, targetRegistry] = await Promise.all([
             bundle?.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
@@ -4762,12 +4709,13 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                     <span class="badge bg-azure-lt text-azure-fg ms-2">validate-only</span>
                                 ` : ''}
                             </h3>
-                            <div class="text-secondary small">
-                                <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
-                                <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
-                                <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
-                                <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
-                            </div>
+                        <div class="text-secondary small">
+                            <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
+                            <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
+                            <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
+                            <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
+                            ${linkedRelease ? `<div>Image Release: <a href="#/releases/${linkedRelease.id}"><code>${linkedRelease.release_id}</code></a></div>` : ''}
+                        </div>
                         </div>
                         <div class="card-subtitle">Job ID: ${status.job_id}</div>
                     </div>
@@ -5586,6 +5534,123 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         cleanup();
         try {
             const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId, dryRun);
+            getApp().showSuccess('Deploy job started');
+            router.navigate(`/deploy-jobs/${response.job_id}`);
+        } catch (error) {
+            getApp().showError(error.message);
+        }
+    });
+}
+
+async function runDeployFromRelease(release, deployTargets) {
+    const eligible = deployTargets.filter(t => t.is_active !== false);
+    if (eligible.length === 0) {
+        getApp().showError('No active deploy targets for this release');
+        return;
+    }
+
+    const dialogHtml = `
+        <div class="modal modal-blur fade show" style="display: block;" id="release-deploy-modal">
+            <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-body">
+                        <div class="modal-title" id="release-deploy-title">Deploy Target</div>
+                        <div class="mt-2">
+                            <label class="form-label">Deploy Target</label>
+                            <select class="form-select" id="release-deploy-select">
+                                <option value="">Select...</option>
+                                ${eligible.map(t => `
+                                    <option value="${t.id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" id="release-deploy-dry-run" checked>
+                            <label class="form-check-label" for="release-deploy-dry-run">
+                                Dry run (no git commit/push/tag)
+                            </label>
+                            <div class="text-warning small mt-1 d-none" id="release-deploy-warning">
+                                Dry run disabled: changes will be committed and pushed to git.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link link-secondary" id="release-deploy-cancel">
+                            Cancel
+                        </button>
+                        <button type="button" class="btn btn-primary" id="release-deploy-confirm" disabled>
+                            Start Deploy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', dialogHtml);
+
+    const modal = document.getElementById('release-deploy-modal');
+    const backdrop = document.querySelector('.modal-backdrop');
+    const select = document.getElementById('release-deploy-select');
+    const titleEl = document.getElementById('release-deploy-title');
+    const labelEl = modal.querySelector('label.form-label');
+    const confirmBtn = document.getElementById('release-deploy-confirm');
+    const cancelBtn = document.getElementById('release-deploy-cancel');
+    const dryRunCheckbox = document.getElementById('release-deploy-dry-run');
+    const dryRunWarning = document.getElementById('release-deploy-warning');
+
+    const cleanup = () => {
+        modal.remove();
+        backdrop.remove();
+    };
+
+    const updateTitle = (target) => {
+        if (!target) {
+            titleEl.textContent = 'Deploy Target';
+            if (labelEl) {
+                labelEl.textContent = 'Deploy Target';
+            }
+            return;
+        }
+        const tagPreview = release?.release_id
+            ? (target.append_env_suffix ? `${release.release_id}-${target.env_name}` : release.release_id)
+            : null;
+        titleEl.textContent = 'Deploy Target';
+        if (labelEl) {
+            labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
+        }
+    };
+
+    select.addEventListener('change', () => {
+        const target = eligible.find(t => t.id === select.value);
+        confirmBtn.disabled = !target;
+        updateTitle(target);
+    });
+
+    if (dryRunCheckbox && dryRunWarning) {
+        const syncWarning = () => {
+            dryRunWarning.classList.toggle('d-none', dryRunCheckbox.checked);
+        };
+        dryRunCheckbox.addEventListener('change', syncWarning);
+        syncWarning();
+    }
+
+    cancelBtn.addEventListener('click', () => {
+        cleanup();
+    });
+
+    confirmBtn.addEventListener('click', async () => {
+        const targetId = select.value;
+        const dryRun = dryRunCheckbox?.checked ?? true;
+        if (!targetId) return;
+        cleanup();
+        try {
+            const response = await api.createDeployJob({
+                release_id: release.id,
+                deploy_target_id: targetId,
+                dry_run: dryRun,
+            });
             getApp().showSuccess('Deploy job started');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
