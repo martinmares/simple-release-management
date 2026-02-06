@@ -940,10 +940,15 @@ router.on('/tenants/:id', async (params) => {
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
         const registryEnvPathsById = new Map();
+        const registryEnvAccessById = new Map();
         if (registries.length > 0) {
             await Promise.all(registries.map(async (reg) => {
-                const paths = await api.getRegistryEnvironmentPaths(reg.id).catch(() => []);
+                const [paths, access] = await Promise.all([
+                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
+                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
+                ]);
                 registryEnvPathsById.set(reg.id, paths);
+                registryEnvAccessById.set(reg.id, access);
             }));
         }
         const activeDeployTargets = deployTargets.filter(t => !t.is_archived);
@@ -1046,7 +1051,13 @@ router.on('/tenants/:id', async (params) => {
                                         </div>
                                     ` : registries.map(reg => {
                                         const envPaths = registryEnvPathsById.get(reg.id) || [];
+                                        const envAccess = registryEnvAccessById.get(reg.id) || [];
                                         const envPathMap = new Map(envPaths.map(p => [p.environment_id, p]));
+                                        const envAccessMap = new Map(envAccess.map(a => [a.environment_id, a.is_enabled]));
+                                        const enabledEnvs = environments.filter(env => {
+                                            if (!envAccessMap.has(env.id)) return true;
+                                            return envAccessMap.get(env.id) !== false;
+                                        });
                                         return `
                                         <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
                                             <div class="d-flex align-items-start gap-2">
@@ -1069,10 +1080,10 @@ router.on('/tenants/:id', async (params) => {
                                                             <div><code class="small">${reg.default_project_path || '-'}</code></div>
                                                         </div>
                                                         <div class="col-md-6">
-                                                            ${environments.length > 0 ? `
+                                                            ${enabledEnvs.length > 0 ? `
                                                                 <div class="text-secondary small mb-1">Environment paths</div>
                                                                 <div class="d-flex flex-column gap-1">
-                                                                    ${environments.map(env => {
+                                                                    ${enabledEnvs.map(env => {
                                                                         const entry = envPathMap.get(env.id);
                                                                         const src = entry?.source_project_path_override || '-';
                                                                         const trg = entry?.target_project_path_override || '-';
@@ -2640,11 +2651,9 @@ function collectRegistryEnvironmentCredentials() {
         }
         const entry = map.get(environmentId);
         entry.auth_type = authType;
-        const row = select.closest('[data-env-cred-row]');
-        if (!row) return;
-        entry.username = row.querySelector('.env-cred-username')?.value || '';
-        entry.password = row.querySelector('.env-cred-password')?.value || '';
-        entry.token = row.querySelector('.env-cred-token')?.value || '';
+        entry.username = document.querySelector(`.env-cred-username[data-env-id="${environmentId}"]`)?.value || '';
+        entry.password = document.querySelector(`.env-cred-password[data-env-id="${environmentId}"]`)?.value || '';
+        entry.token = document.querySelector(`.env-cred-token[data-env-id="${environmentId}"]`)?.value || '';
     });
     return Array.from(map.values());
 }
