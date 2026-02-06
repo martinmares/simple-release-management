@@ -4921,20 +4921,27 @@ router.on('/releases/new', async (params, query) => {
             return;
         }
 
-        const [job, images, registries] = await Promise.all([
+        const [job, images] = await Promise.all([
             api.getCopyJobStatus(query.copy_job_id),
             api.getCopyJobImages(query.copy_job_id),
-            api.getRegistries(),
         ]);
         const bundle = await api.getBundle(job.bundle_id).catch(() => null);
+        const registries = bundle?.tenant_id
+            ? await api.getRegistries(bundle.tenant_id).catch(() => [])
+            : await api.getRegistries().catch(() => []);
         const environments = bundle?.tenant_id
             ? await api.getEnvironments(bundle.tenant_id).catch(() => [])
             : [];
         const envPathsByRegistry = new Map();
+        const envAccessByRegistry = new Map();
         if (environments.length > 0) {
             await Promise.all(registries.map(async (reg) => {
-                const paths = await api.getRegistryEnvironmentPaths(reg.id).catch(() => []);
+                const [paths, access] = await Promise.all([
+                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
+                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
+                ]);
                 envPathsByRegistry.set(reg.id, paths);
+                envAccessByRegistry.set(reg.id, access);
             }));
         }
 
@@ -4951,6 +4958,17 @@ router.on('/releases/new', async (params, query) => {
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
+        if (state.environmentId) {
+            const eligible = registries.filter(reg => {
+                if (reg.role !== 'target' && reg.role !== 'both') return false;
+                const accessList = envAccessByRegistry.get(reg.id) || [];
+                const access = accessList.find(a => a.environment_id === state.environmentId);
+                return access?.is_enabled !== false;
+            });
+            if (eligible.length === 0) {
+                getApp().showError('Selected environment has no available target registry');
+            }
+        }
 
         const applyRules = (path) => {
             let out = path;
@@ -4988,6 +5006,15 @@ router.on('/releases/new', async (params, query) => {
             const sourceRegistry = registries.find(r => r.id === job.target_registry_id);
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
+            const environmentId = state.environmentId;
+            const eligibleRegistries = environments.length > 0
+                ? registries.filter(reg => {
+                    if (reg.role !== 'target' && reg.role !== 'both') return false;
+                    const accessList = envAccessByRegistry.get(reg.id) || [];
+                    const access = accessList.find(a => a.environment_id === environmentId);
+                    return access?.is_enabled !== false;
+                })
+                : registries.filter(reg => reg.role === 'target' || reg.role === 'both');
 
             content.innerHTML = `
                 <div class="card">
@@ -5042,7 +5069,7 @@ router.on('/releases/new', async (params, query) => {
                                     <label class="form-label required">Target Registry</label>
                                     <select class="form-select" id="release-target-registry">
                                         <option value="">Select target...</option>
-                                        ${registries.map(r => `
+                                        ${eligibleRegistries.map(r => `
                                             <option value="${r.id}" ${state.targetRegistryId === r.id ? 'selected' : ''}>
                                                 ${r.name} (${r.base_url})
                                             </option>
@@ -5181,7 +5208,21 @@ router.on('/releases/new', async (params, query) => {
             if (envSelect) {
                 envSelect.addEventListener('change', (e) => {
                     state.environmentId = e.target.value;
-                    updatePreview();
+                    const eligible = environments.length > 0
+                        ? registries.filter(reg => {
+                            if (reg.role !== 'target' && reg.role !== 'both') return false;
+                            const accessList = envAccessByRegistry.get(reg.id) || [];
+                            const access = accessList.find(a => a.environment_id === state.environmentId);
+                            return access?.is_enabled !== false;
+                        })
+                        : registries.filter(reg => reg.role === 'target' || reg.role === 'both');
+                    if (!eligible.find(r => r.id === state.targetRegistryId)) {
+                        state.targetRegistryId = '';
+                    }
+                    if (eligible.length === 0) {
+                        getApp().showError('Selected environment has no available target registry');
+                    }
+                    render();
                 });
             }
             document.querySelectorAll('input[name="source-ref-mode"]').forEach(input => {
