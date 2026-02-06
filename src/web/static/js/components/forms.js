@@ -314,104 +314,6 @@ function createRegistryForm(registry = null, tenants = [], environments = [], en
                     <small class="form-hint">Optional path prefix for Release Images targets (no leading slash)</small>
                 </div>
 
-                ${environments.length > 0 ? `
-                <hr class="my-4">
-                <h4>Environment project paths</h4>
-                <div class="text-secondary small mb-2">
-                    Source/Target can differ. Leave empty to use default.
-                </div>
-                ${environments.map(env => {
-                    const envPaths = envPathMap.get(env.id) || {};
-                    return `
-                    <div class="row g-2 align-items-center mb-2">
-                        <div class="col-md-3">
-                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                            <span class="text-secondary small ms-2">${env.slug}</span>
-                        </div>
-                        <div class="col-md-4">
-                            <input type="text" class="form-control env-project-path"
-                                   data-env-id="${env.id}" data-role="source"
-                                   value="${envPaths.source || ''}"
-                                   placeholder="source path">
-                        </div>
-                        <div class="col-md-4">
-                            <input type="text" class="form-control env-project-path"
-                                   data-env-id="${env.id}" data-role="target"
-                                   value="${envPaths.target || ''}"
-                                   placeholder="target path">
-                        </div>
-                        <div class="col-md-1 text-secondary small">src / tgt</div>
-                    </div>
-                    `;
-                }).join('')}
-                ` : ''}
-
-                ${environments.length > 0 ? `
-                <hr class="my-4">
-                <h4>Environment availability</h4>
-                <div class="text-secondary small mb-2">
-                    Uncheck to disable this registry for the environment. Defaults to enabled.
-                </div>
-                ${environments.map(env => {
-                    const enabled = envAccessMap.has(env.id) ? envAccessMap.get(env.id) : true;
-                    return `
-                    <div class="row g-2 align-items-center mb-2">
-                        <div class="col-md-4">
-                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                            <span class="text-secondary small ms-2">${env.slug}</span>
-                        </div>
-                        <div class="col-md-8">
-                            <label class="form-check">
-                                <input class="form-check-input env-access-toggle" type="checkbox" data-env-id="${env.id}" ${enabled ? 'checked' : ''}>
-                                <span class="form-check-label">Enabled for this environment</span>
-                            </label>
-                        </div>
-                    </div>
-                    `;
-                }).join('')}
-                ` : ''}
-
-                ${environments.length > 0 ? `
-                <hr class="my-4">
-                <h4>Environment credentials (override)</h4>
-                <div class="text-secondary small mb-2">
-                    Leave empty to use registry default credentials. For updates, leave password/token blank to keep existing.
-                </div>
-                ${environments.map(env => {
-                    const envCred = envCredMap.get(env.id) || {};
-                    return `
-                    <div class="row g-2 align-items-end mb-2" data-env-cred-row>
-                        <div class="col-md-3">
-                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                            <span class="text-secondary small ms-2">${env.slug}</span>
-                        </div>
-                        <div class="col-md-2">
-                            <select class="form-select form-select-sm env-cred-auth" data-env-id="${env.id}">
-                                <option value="">Use default</option>
-                                ${authTypes.map(type => `
-                                    <option value="${type.value}" ${envCred.auth_type === type.value ? 'selected' : ''}>${type.label}</option>
-                                `).join('')}
-                            </select>
-                        </div>
-                        <div class="col-md-2">
-                            <input type="text" class="form-control form-control-sm env-cred-username"
-                                   placeholder="username"
-                                   value="${envCred.username || ''}">
-                        </div>
-                        <div class="col-md-2">
-                            <input type="password" class="form-control form-control-sm env-cred-password"
-                                   placeholder="${envCred.has_password ? 'Leave blank to keep' : 'password'}">
-                        </div>
-                        <div class="col-md-2">
-                            <input type="password" class="form-control form-control-sm env-cred-token"
-                                   placeholder="${envCred.has_token ? 'Leave blank to keep' : 'token'}">
-                        </div>
-                        <div class="col-md-1 text-secondary small">auth</div>
-                    </div>
-                    `;
-                }).join('')}
-                ` : ''}
-
                 <div class="row">
                     <div class="col-md-6">
                         <div class="mb-3">
@@ -441,6 +343,131 @@ function createRegistryForm(registry = null, tenants = [], environments = [], en
                         </div>
                     </div>
                 </div>
+
+                ${environments.length > 0 ? `
+                <hr class="my-4">
+                <h4>Environment settings</h4>
+                <div class="text-secondary small mb-2">
+                    Configure availability, project paths, and credentials per environment.
+                    Leave paths empty to use defaults. For credentials, leave password/token blank to keep existing.
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter table-sm">
+                        <thead>
+                            <tr>
+                                <td class="w-1"></td>
+                                ${environments.map(env => `
+                                    <td>
+                                        <div class="d-flex flex-column gap-1">
+                                            <span class="badge env-badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                            <span class="text-secondary small">${env.slug}</span>
+                                        </div>
+                                    </td>
+                                `).join('')}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="text-secondary small">Available</td>
+                                ${environments.map(env => {
+                                    const enabled = envAccessMap.has(env.id) ? envAccessMap.get(env.id) : true;
+                                    return `
+                                    <td>
+                                        <label class="form-check m-0">
+                                            <input class="form-check-input env-access-toggle" type="checkbox" data-env-id="${env.id}" ${enabled ? 'checked' : ''}>
+                                        </label>
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Source path</td>
+                                ${environments.map(env => {
+                                    const envPaths = envPathMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <input type="text" class="form-control form-control-sm env-project-path"
+                                               data-env-id="${env.id}" data-role="source"
+                                               value="${envPaths.source || ''}"
+                                               placeholder="source path">
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Target path</td>
+                                ${environments.map(env => {
+                                    const envPaths = envPathMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <input type="text" class="form-control form-control-sm env-project-path"
+                                               data-env-id="${env.id}" data-role="target"
+                                               value="${envPaths.target || ''}"
+                                               placeholder="target path">
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Auth type</td>
+                                ${environments.map(env => {
+                                    const envCred = envCredMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <select class="form-select form-select-sm env-cred-auth" data-env-id="${env.id}">
+                                            <option value="">Use default</option>
+                                            ${authTypes.map(type => `
+                                                <option value="${type.value}" ${envCred.auth_type === type.value ? 'selected' : ''}>${type.label}</option>
+                                            `).join('')}
+                                        </select>
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Username</td>
+                                ${environments.map(env => {
+                                    const envCred = envCredMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <input type="text" class="form-control form-control-sm env-cred-username"
+                                               data-env-id="${env.id}"
+                                               placeholder="username"
+                                               value="${envCred.username || ''}">
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Password</td>
+                                ${environments.map(env => {
+                                    const envCred = envCredMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <input type="password" class="form-control form-control-sm env-cred-password"
+                                               data-env-id="${env.id}"
+                                               placeholder="${envCred.has_password ? 'Leave blank to keep' : 'password'}">
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                            <tr>
+                                <td class="text-secondary small">Token</td>
+                                ${environments.map(env => {
+                                    const envCred = envCredMap.get(env.id) || {};
+                                    return `
+                                    <td>
+                                        <input type="password" class="form-control form-control-sm env-cred-token"
+                                               data-env-id="${env.id}"
+                                               placeholder="${envCred.has_token ? 'Leave blank to keep' : 'token'}">
+                                    </td>
+                                    `;
+                                }).join('')}
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+                ` : ''}
 
                 <hr class="my-4">
                 <h4>Authentication</h4>
@@ -753,7 +780,7 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], envi
                                         data-bs-toggle="tab"
                                         data-bs-target="#deploy-env-pane-${env.id}"
                                         type="button">
-                                    <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                    <span class="badge env-badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
                                     <span class="text-secondary small ms-2">${env.slug}</span>
                                 </button>
                             </li>
