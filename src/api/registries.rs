@@ -160,6 +160,7 @@ pub struct CreateRegistryRequest {
     pub is_active: Option<bool>,
     pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
     pub environment_credentials: Option<Vec<EnvironmentRegistryCredentialInput>>,
+    pub environment_access: Option<Vec<EnvironmentRegistryAccessInput>>,
 }
 
 /// Request pro update registry
@@ -179,6 +180,7 @@ pub struct UpdateRegistryRequest {
     pub is_active: Option<bool>,
     pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
     pub environment_credentials: Option<Vec<EnvironmentRegistryCredentialInput>>,
+    pub environment_access: Option<Vec<EnvironmentRegistryAccessInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,6 +197,12 @@ pub struct EnvironmentRegistryCredentialInput {
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnvironmentRegistryAccessInput {
+    pub environment_id: Uuid,
+    pub is_enabled: bool,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -215,6 +223,14 @@ pub struct EnvironmentRegistryCredentialView {
     pub username: Option<String>,
     pub has_password: bool,
     pub has_token: bool,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EnvironmentRegistryAccessView {
+    pub environment_id: Uuid,
+    pub env_name: String,
+    pub env_slug: String,
+    pub is_enabled: bool,
 }
 
 /// Response s chybou
@@ -239,6 +255,10 @@ pub fn router(state: RegistryApiState) -> Router {
         .route(
             "/registries/{id}/environment-credentials",
             get(get_registry_environment_credentials),
+        )
+        .route(
+            "/registries/{id}/environment-access",
+            get(get_registry_environment_access),
         )
         .with_state(state)
 }
@@ -421,6 +441,86 @@ async fn upsert_environment_credentials(
                 }),
             )
         })?;
+    }
+
+    Ok(())
+}
+
+async fn upsert_environment_access(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    registry_id: Uuid,
+    access: &[EnvironmentRegistryAccessInput],
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if access.is_empty() {
+        return Ok(());
+    }
+
+    let env_ids: Vec<Uuid> = access.iter().map(|p| p.environment_id).collect();
+    let valid_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM environments WHERE tenant_id = $1 AND id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(&env_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if valid_ids.len() != env_ids.len() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment does not belong to tenant".to_string(),
+            }),
+        ));
+    }
+
+    for entry in access {
+        if entry.is_enabled {
+            sqlx::query(
+                "DELETE FROM environment_registry_access WHERE environment_id = $1 AND registry_id = $2",
+            )
+            .bind(entry.environment_id)
+            .bind(registry_id)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
+        } else {
+            sqlx::query(
+                r#"
+                INSERT INTO environment_registry_access (environment_id, registry_id, is_enabled)
+                VALUES ($1, $2, FALSE)
+                ON CONFLICT (environment_id, registry_id)
+                DO UPDATE SET is_enabled = FALSE
+                "#,
+            )
+            .bind(entry.environment_id)
+            .bind(registry_id)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
+        }
     }
 
     Ok(())
@@ -816,6 +916,9 @@ async fn create_registry(
         )
         .await?;
     }
+    if let Some(access) = payload.environment_access.as_ref() {
+        upsert_environment_access(&state.pool, tenant_id, registry.id, access).await?;
+    }
 
     Ok((StatusCode::CREATED, Json(registry)))
 }
@@ -1049,6 +1152,9 @@ async fn update_registry(
                 )
                 .await?;
             }
+            if let Some(access) = payload.environment_access.as_ref() {
+                upsert_environment_access(&state.pool, registry.tenant_id, registry.id, access).await?;
+            }
             Ok(Json(registry))
         }
         None => Err((
@@ -1145,6 +1251,40 @@ async fn get_registry_environment_credentials(
         FROM environments e
         LEFT JOIN environment_registry_credentials erc
           ON erc.environment_id = e.id AND erc.registry_id = $1
+        WHERE e.tenant_id = (SELECT tenant_id FROM registries WHERE id = $1)
+        ORDER BY e.slug ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(rows))
+}
+
+/// GET /api/v1/registries/{id}/environment-access - Seznam env access flags
+async fn get_registry_environment_access(
+    State(state): State<RegistryApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<EnvironmentRegistryAccessView>>, (StatusCode, Json<ErrorResponse>)> {
+    let rows = sqlx::query_as::<_, EnvironmentRegistryAccessView>(
+        r#"
+        SELECT
+            e.id AS environment_id,
+            e.name AS env_name,
+            e.slug AS env_slug,
+            COALESCE(era.is_enabled, TRUE) AS is_enabled
+        FROM environments e
+        LEFT JOIN environment_registry_access era
+          ON era.environment_id = e.id AND era.registry_id = $1
         WHERE e.tenant_id = (SELECT tenant_id FROM registries WHERE id = $1)
         ORDER BY e.slug ASC
         "#,

@@ -301,6 +301,15 @@ pub struct EnvironmentRegistryCredential {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnvironmentRegistryAccess {
+    pub id: Uuid,
+    pub environment_id: Uuid,
+    pub registry_id: Uuid,
+    pub is_enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct DeployTargetEnvVar {
     pub id: Uuid,
     pub deploy_target_id: Uuid,

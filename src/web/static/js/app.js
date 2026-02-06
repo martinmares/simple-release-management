@@ -1832,7 +1832,7 @@ router.on('/registries/new', async (params, query) => {
         if (query.tenant_id) {
             environments = await api.getEnvironments(query.tenant_id).catch(() => []);
         }
-        content.innerHTML = createRegistryForm(null, tenants, environments, [], []);
+        content.innerHTML = createRegistryForm(null, tenants, environments, [], [], []);
 
         // Pre-select tenant if provided in query
         if (query.tenant_id) {
@@ -1846,6 +1846,7 @@ router.on('/registries/new', async (params, query) => {
                 delete data.tenant_id;
                 data.environment_paths = collectRegistryEnvironmentPaths();
                 data.environment_credentials = collectRegistryEnvironmentCredentials();
+                data.environment_access = collectRegistryEnvironmentAccess();
                 await api.createRegistry(tenantId, data);
                 getApp().showSuccess('Registry created successfully');
                 router.navigate('/registries');
@@ -1865,11 +1866,12 @@ router.on('/registries/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [registry, tenants, envPaths, envCreds] = await Promise.all([
+        const [registry, tenants, envPaths, envCreds, envAccess] = await Promise.all([
             api.getRegistry(params.id),
             api.getTenants(),
             api.getRegistryEnvironmentPaths(params.id).catch(() => []),
             api.getRegistryEnvironmentCredentials(params.id).catch(() => []),
+            api.getRegistryEnvironmentAccess(params.id).catch(() => []),
         ]);
         const environments = await api.getEnvironments(registry.tenant_id).catch(() => []);
         content.innerHTML = `
@@ -1881,13 +1883,14 @@ router.on('/registries/:id/edit', async (params) => {
                     </a>
                 </div>
             </div>
-            ${createRegistryForm(registry, tenants, environments, envPaths, envCreds)}
+            ${createRegistryForm(registry, tenants, environments, envPaths, envCreds, envAccess)}
         `;
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 data.environment_paths = collectRegistryEnvironmentPaths();
                 data.environment_credentials = collectRegistryEnvironmentCredentials();
+                data.environment_access = collectRegistryEnvironmentAccess();
                 await api.updateRegistry(params.id, data);
                 getApp().showSuccess('Registry updated successfully');
                 router.navigate(`/tenants/${registry.tenant_id}`);
@@ -2644,6 +2647,20 @@ function collectRegistryEnvironmentCredentials() {
         entry.token = row.querySelector('.env-cred-token')?.value || '';
     });
     return Array.from(map.values());
+}
+
+function collectRegistryEnvironmentAccess() {
+    const inputs = document.querySelectorAll('.env-access-toggle');
+    const list = [];
+    inputs.forEach(input => {
+        const environmentId = input.dataset.envId;
+        if (!environmentId) return;
+        list.push({
+            environment_id: environmentId,
+            is_enabled: input.checked,
+        });
+    });
+    return list;
 }
 
 function attachDeployEnvVarHandlers() {
@@ -5282,20 +5299,25 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [mappings, environments, sourceRegistry, targetRegistry] = await Promise.all([
+        const [mappings, environments, sourceRegistry, targetRegistry, registries] = await Promise.all([
             api.getImageMappings(params.id, params.version),
             bundle.tenant_id ? api.getEnvironments(bundle.tenant_id) : Promise.resolve([]),
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : Promise.resolve(null),
             bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : Promise.resolve(null),
+            api.getRegistries(bundle.tenant_id).catch(() => []),
         ]);
+        const registryMap = new Map((registries || []).map(r => [r.id, r]));
         const envPathsByRegistry = new Map();
-        if (sourceRegistry?.id) {
-            const paths = await api.getRegistryEnvironmentPaths(sourceRegistry.id).catch(() => []);
-            envPathsByRegistry.set(sourceRegistry.id, paths);
-        }
-        if (targetRegistry?.id && targetRegistry.id !== sourceRegistry?.id) {
-            const paths = await api.getRegistryEnvironmentPaths(targetRegistry.id).catch(() => []);
-            envPathsByRegistry.set(targetRegistry.id, paths);
+        const envAccessByRegistry = new Map();
+        if ((registries || []).length > 0) {
+            await Promise.all((registries || []).map(async (reg) => {
+                const [paths, access] = await Promise.all([
+                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
+                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
+                ]);
+                envPathsByRegistry.set(reg.id, paths);
+                envAccessByRegistry.set(reg.id, access);
+            }));
         }
 
         const autoTagEnabled = !!bundle.auto_tag_enabled;
@@ -5343,6 +5365,24 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                             `).join('')}
                         </select>
                         <small class="form-hint">Required for environment-specific registry paths.</small>
+                    </div>
+
+                    <div class="mb-3 d-none" id="registry-selection">
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <label class="form-label required">Source Registry</label>
+                                <select class="form-select" id="copy-source-registry">
+                                    <option value="">Select...</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label required">Target Registry</label>
+                                <select class="form-select" id="copy-target-registry">
+                                    <option value="">Select...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <small class="form-hint">Shown only when multiple registries are enabled for the selected environment.</small>
                     </div>
 
                     <div class="list-group mb-3" id="copy-preview-list">
@@ -5394,17 +5434,74 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             return `${defaultPath}/${rest}`;
         };
 
+        const getEnabledRegistryIds = (envId) => {
+            const enabled = [];
+            for (const reg of registries || []) {
+                const accessList = envAccessByRegistry.get(reg.id) || [];
+                const access = accessList.find(a => a.environment_id === envId);
+                if (access?.is_enabled === false) {
+                    continue;
+                }
+                enabled.push(reg.id);
+            }
+            return enabled;
+        };
+
+        const updateRegistrySelects = () => {
+            const envId = document.getElementById('environment-select')?.value || '';
+            const container = document.getElementById('registry-selection');
+            const sourceSelect = document.getElementById('copy-source-registry');
+            const targetSelect = document.getElementById('copy-target-registry');
+            if (!envId || !container || !sourceSelect || !targetSelect) return;
+
+            const enabledIds = getEnabledRegistryIds(envId);
+            if (enabledIds.length <= 1) {
+                container.classList.add('d-none');
+                if (enabledIds.length === 1) {
+                    container.dataset.sourceRegistryId = enabledIds[0];
+                    container.dataset.targetRegistryId = enabledIds[0];
+                    sourceSelect.value = enabledIds[0];
+                    targetSelect.value = enabledIds[0];
+                } else {
+                    container.dataset.sourceRegistryId = '';
+                    container.dataset.targetRegistryId = '';
+                    sourceSelect.value = '';
+                    targetSelect.value = '';
+                }
+                return;
+            }
+
+            container.classList.remove('d-none');
+            const options = enabledIds.map(id => {
+                const reg = registryMap.get(id);
+                return `<option value="${id}">${reg?.name || id}</option>`;
+            }).join('');
+            sourceSelect.innerHTML = `<option value=\"\">Select...</option>${options}`;
+            targetSelect.innerHTML = `<option value=\"\">Select...</option>${options}`;
+            container.dataset.sourceRegistryId = '';
+            container.dataset.targetRegistryId = '';
+        };
+
         const updatePreview = () => {
             const envId = document.getElementById('environment-select')?.value || '';
+            const sourceSelect = document.getElementById('copy-source-registry');
+            const targetSelect = document.getElementById('copy-target-registry');
+            const selectionBox = document.getElementById('registry-selection');
+            const fallbackSourceId = selectionBox?.dataset?.sourceRegistryId || sourceRegistry?.id;
+            const fallbackTargetId = selectionBox?.dataset?.targetRegistryId || targetRegistry?.id;
+            const sourceId = sourceSelect?.value || fallbackSourceId;
+            const targetId = targetSelect?.value || fallbackTargetId;
+            const sourceReg = sourceId ? registryMap.get(sourceId) : sourceRegistry;
+            const targetReg = targetId ? registryMap.get(targetId) : targetRegistry;
             content.querySelectorAll('[data-preview-source]').forEach(el => {
                 const raw = el.getAttribute('data-preview-source') || '';
                 const tag = el.getAttribute('data-preview-source-tag') || '';
-                const path = applyProjectPath(raw, sourceRegistry, envId, 'source');
+                const path = applyProjectPath(raw, sourceReg, envId, 'source');
                 el.textContent = `${path}:${tag}`;
             });
             content.querySelectorAll('[data-preview-target]').forEach(el => {
                 const raw = el.getAttribute('data-preview-target') || '';
-                const path = applyProjectPath(raw, targetRegistry, envId, 'target');
+                const path = applyProjectPath(raw, targetReg, envId, 'target');
                 const suffix = el.querySelector('span')?.outerHTML || '<span class="text-primary">[tag]</span>';
                 el.innerHTML = `${path}:${suffix}`;
             });
@@ -5453,13 +5550,16 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 getApp().showError('Please select an environment');
                 return null;
             }
+            const sourceSelect = document.getElementById('copy-source-registry');
+            const selectionBox = document.getElementById('registry-selection');
+            const sourceRegistryId = sourceSelect?.value || selectionBox?.dataset?.sourceRegistryId || null;
             const btn = document.getElementById('precheck-btn');
             if (btn) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
             }
             try {
-                const result = await api.precheckCopyImages(params.id, params.version, envId);
+                const result = await api.precheckCopyImages(params.id, params.version, envId, sourceRegistryId);
                 renderPrecheck(result);
                 return result;
             } catch (error) {
@@ -5480,7 +5580,11 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
 
         const envSelect = document.getElementById('environment-select');
         if (envSelect) {
-            envSelect.addEventListener('change', updatePreview);
+            envSelect.addEventListener('change', () => {
+                updateRegistrySelects();
+                updatePreview();
+            });
+            updateRegistrySelects();
             updatePreview();
         }
 
@@ -5506,6 +5610,17 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 getApp().showError('Please select an environment');
                 return;
             }
+            const sourceSelect = document.getElementById('copy-source-registry');
+            const targetSelect = document.getElementById('copy-target-registry');
+            const selectionBox = document.getElementById('registry-selection');
+            const sourceRegistryId = sourceSelect?.value || selectionBox?.dataset?.sourceRegistryId || null;
+            const targetRegistryId = targetSelect?.value || selectionBox?.dataset?.targetRegistryId || null;
+            if (selectionBox && !selectionBox.classList.contains('d-none')) {
+                if (!sourceRegistryId || !targetRegistryId) {
+                    getApp().showError('Please select source and target registries');
+                    return;
+                }
+            }
 
             const precheck = await runPrecheck();
             if (precheck && precheck.failed && precheck.failed.length > 0) {
@@ -5519,7 +5634,15 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
 
             try {
                 const tzOffset = new Date().getTimezoneOffset();
-                const response = await api.startCopyJob(params.id, params.version, targetTag, tzOffset, envId);
+                const response = await api.startCopyJob(
+                    params.id,
+                    params.version,
+                    targetTag,
+                    tzOffset,
+                    envId,
+                    sourceRegistryId,
+                    targetRegistryId,
+                );
                 getApp().showSuccess('Copy job started successfully');
                 router.navigate(`/copy-jobs/${response.job_id}`);
             } catch (error) {

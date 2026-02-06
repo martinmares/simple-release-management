@@ -165,6 +165,10 @@ class ApiClient {
         return this.get(`/registries/${id}/environment-credentials`);
     }
 
+    async getRegistryEnvironmentAccess(id) {
+        return this.get(`/registries/${id}/environment-access`);
+    }
+
     async deleteRegistry(id) {
         return this.delete(`/registries/${id}`);
     }
@@ -267,11 +271,13 @@ class ApiClient {
 
     // ==================== COPY OPERATIONS ====================
 
-    async startCopyJob(bundleId, version, targetTag, timezoneOffsetMinutes = null, environmentId = null) {
+    async startCopyJob(bundleId, version, targetTag, timezoneOffsetMinutes = null, environmentId = null, sourceRegistryId = null, targetRegistryId = null) {
         return this.post(`/bundles/${bundleId}/versions/${version}/copy`, {
             target_tag: targetTag,
             timezone_offset_minutes: timezoneOffsetMinutes,
             environment_id: environmentId,
+            source_registry_id: sourceRegistryId,
+            target_registry_id: targetRegistryId,
         });
     }
 
@@ -280,9 +286,10 @@ class ApiClient {
         return this.get(`/bundles/${bundleId}/versions/${version}/next-tag${params}`);
     }
 
-    async precheckCopyImages(bundleId, version, environmentId = null) {
+    async precheckCopyImages(bundleId, version, environmentId = null, sourceRegistryId = null) {
         return this.post(`/bundles/${bundleId}/versions/${version}/precheck`, {
             environment_id: environmentId,
+            source_registry_id: sourceRegistryId,
         });
     }
 

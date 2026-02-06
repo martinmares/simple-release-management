@@ -26,11 +26,14 @@ pub struct CopyBundleRequest {
     pub target_tag: Option<String>,
     pub timezone_offset_minutes: Option<i32>,
     pub environment_id: Option<Uuid>,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct PrecheckRequest {
     pub environment_id: Option<Uuid>,
+    pub source_registry_id: Option<Uuid>,
 }
 
 /// Response s chybou
@@ -389,6 +392,30 @@ fn build_source_url(base: &str, img: &CopyJobImage, mode: &str) -> Result<String
     Ok(format!("{}/{}:{}", base, img.source_image, img.source_tag))
 }
 
+async fn is_registry_enabled_for_env(
+    pool: &PgPool,
+    registry_id: Uuid,
+    environment_id: Option<Uuid>,
+) -> Result<bool, sqlx::Error> {
+    let Some(env_id) = environment_id else {
+        return Ok(true);
+    };
+    let enabled = sqlx::query_scalar::<_, bool>(
+        r#"
+        SELECT COALESCE(era.is_enabled, TRUE)
+        FROM environments e
+        LEFT JOIN environment_registry_access era
+          ON era.environment_id = e.id AND era.registry_id = $1
+        WHERE e.id = $2
+        "#,
+    )
+    .bind(registry_id)
+    .bind(env_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(enabled)
+}
+
 fn emit_log(
     log_tx: &broadcast::Sender<String>,
     line: String,
@@ -475,10 +502,17 @@ async fn copy_bundle_version(
     }
 
     // Získat registries pro URL construction
+    let source_registry_id = payload
+        .source_registry_id
+        .unwrap_or(bundle.source_registry_id);
+    let target_registry_id = payload
+        .target_registry_id
+        .unwrap_or(bundle.target_registry_id);
+
     let source_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
     )
-    .bind(bundle.source_registry_id)
+    .bind(source_registry_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -493,7 +527,7 @@ async fn copy_bundle_version(
     let target_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
     )
-    .bind(bundle.target_registry_id)
+    .bind(target_registry_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -505,16 +539,58 @@ async fn copy_bundle_version(
         )
     })?;
 
-    let source_base_url = source_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
-    let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
+    let source_base_url = source_registry
+        .0
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
+    let target_base_url = target_registry
+        .0
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
+
+    if !is_registry_enabled_for_env(&state.pool, source_registry_id, payload.environment_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to verify source registry access: {}", e),
+                }),
+            )
+        })?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Selected source registry is disabled for this environment".to_string(),
+            }),
+        ));
+    }
+
+    if !is_registry_enabled_for_env(&state.pool, target_registry_id, payload.environment_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to verify target registry access: {}", e),
+                }),
+            )
+        })?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Selected target registry is disabled for this environment".to_string(),
+            }),
+        ));
+    }
 
     // Získat credentials pro source a target registry
     let credentials = match state
-        .get_skopeo_credentials(
-            bundle.source_registry_id,
-            bundle.target_registry_id,
-            payload.environment_id,
-        )
+        .get_skopeo_credentials(source_registry_id, target_registry_id, payload.environment_id)
         .await
     {
         Ok(creds) => creds,
@@ -540,7 +616,7 @@ async fn copy_bundle_version(
             "#,
         )
         .bind(bundle.id)
-        .bind(bundle.target_registry_id)
+        .bind(target_registry_id)
         .bind(date)
         .fetch_one(&state.pool)
         .await
@@ -584,8 +660,8 @@ async fn copy_bundle_version(
     .bind(job_id)
     .bind(bundle_version_id)
     .bind(&target_tag)
-    .bind(bundle.source_registry_id)
-    .bind(bundle.target_registry_id)
+    .bind(source_registry_id)
+    .bind(target_registry_id)
     .bind(payload.environment_id)
     .execute(&state.pool)
     .await
@@ -627,7 +703,7 @@ async fn copy_bundle_version(
 
     let source_project_path = resolve_registry_project_path(
         &state.pool,
-        bundle.source_registry_id,
+        source_registry_id,
         payload.environment_id,
         "source",
     )
@@ -643,7 +719,7 @@ async fn copy_bundle_version(
 
     let target_project_path = resolve_registry_project_path(
         &state.pool,
-        bundle.target_registry_id,
+        target_registry_id,
         payload.environment_id,
         "target",
     )
@@ -1008,8 +1084,12 @@ async fn precheck_copy_images(
         }));
     }
 
+    let source_registry_id = payload
+        .source_registry_id
+        .unwrap_or(bundle.source_registry_id);
+
     let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
-        .bind(bundle.source_registry_id)
+        .bind(source_registry_id)
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| {
@@ -1030,7 +1110,7 @@ async fn precheck_copy_images(
         })?;
 
     let (source_username, source_password) = state
-        .get_registry_credentials(bundle.source_registry_id, payload.environment_id)
+        .get_registry_credentials(source_registry_id, payload.environment_id)
         .await
         .map_err(|e| {
             (
@@ -1056,10 +1136,31 @@ async fn precheck_copy_images(
         ));
     }
 
+    let environment_id = payload.environment_id;
+
+    if !is_registry_enabled_for_env(&state.pool, source_registry_id, environment_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to verify registry access: {}", e),
+                }),
+            )
+        })?
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Selected source registry is disabled for this environment".to_string(),
+            }),
+        ));
+    }
+
     let source_project_path = resolve_registry_project_path(
         &state.pool,
-        bundle.source_registry_id,
-        payload.environment_id,
+        source_registry_id,
+        environment_id,
         "source",
     )
     .await

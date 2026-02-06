@@ -226,7 +226,7 @@ function createTenantForm(tenant = null) {
 /**
  * Vytvoří registry form
  */
-function createRegistryForm(registry = null, tenants = [], environments = [], environmentPaths = [], environmentCredentials = []) {
+function createRegistryForm(registry = null, tenants = [], environments = [], environmentPaths = [], environmentCredentials = [], environmentAccess = []) {
     const isEdit = !!registry;
 
     const registryTypes = [
@@ -267,6 +267,10 @@ function createRegistryForm(registry = null, tenants = [], environments = [], en
             has_password: item.has_password,
             has_token: item.has_token,
         },
+    ]));
+    const envAccessMap = new Map((environmentAccess || []).map(item => [
+        item.environment_id,
+        item.is_enabled !== false,
     ]));
 
     return `
@@ -337,6 +341,31 @@ function createRegistryForm(registry = null, tenants = [], environments = [], en
                                    placeholder="target path">
                         </div>
                         <div class="col-md-1 text-secondary small">src / tgt</div>
+                    </div>
+                    `;
+                }).join('')}
+                ` : ''}
+
+                ${environments.length > 0 ? `
+                <hr class="my-4">
+                <h4>Environment availability</h4>
+                <div class="text-secondary small mb-2">
+                    Uncheck to disable this registry for the environment. Defaults to enabled.
+                </div>
+                ${environments.map(env => {
+                    const enabled = envAccessMap.has(env.id) ? envAccessMap.get(env.id) : true;
+                    return `
+                    <div class="row g-2 align-items-center mb-2">
+                        <div class="col-md-4">
+                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                            <span class="text-secondary small ms-2">${env.slug}</span>
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-check">
+                                <input class="form-check-input env-access-toggle" type="checkbox" data-env-id="${env.id}" ${enabled ? 'checked' : ''}>
+                                <span class="form-check-label">Enabled for this environment</span>
+                            </label>
+                        </div>
                     </div>
                     `;
                 }).join('')}
