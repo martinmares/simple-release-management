@@ -18,6 +18,7 @@ pub struct CreateReleaseRequest {
     pub release_id: String,
     pub notes: Option<String>,
     pub created_by: Option<String>,
+    pub source_ref_mode: Option<String>,
 }
 
 /// Request pro update release
@@ -33,6 +34,7 @@ pub struct ReleaseSummary {
     pub copy_job_id: Uuid,
     pub release_id: String,
     pub status: String,
+    pub source_ref_mode: String,
     pub is_auto: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub tenant_id: Uuid,
@@ -73,6 +75,7 @@ async fn list_all_releases(
             r.copy_job_id,
             r.release_id,
             r.status,
+            r.source_ref_mode,
             r.is_auto,
             r.created_at,
             t.id AS tenant_id,
@@ -120,6 +123,7 @@ async fn list_releases(
             r.copy_job_id,
             r.release_id,
             r.status,
+            r.source_ref_mode,
             r.is_auto,
             r.created_at,
             t.id AS tenant_id,
@@ -263,14 +267,24 @@ async fn create_release(
         ));
     }
 
+    let source_ref_mode = payload
+        .source_ref_mode
+        .unwrap_or_else(|| "tag".to_string())
+        .to_lowercase();
+    let source_ref_mode = match source_ref_mode.as_str() {
+        "digest" => "digest".to_string(),
+        _ => "tag".to_string(),
+    };
+
     // Vytvoření release
     let release = sqlx::query_as::<_, Release>(
-        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto)
-         VALUES ($1, $2, 'draft', $3, $4, false)
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+        "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto)
+         VALUES ($1, $2, 'draft', $3, $4, $5, false)
+         RETURNING id, copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason, created_at",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
+    .bind(&source_ref_mode)
     .bind(&payload.notes)
     .bind(&payload.created_by)
     .fetch_one(&pool)
@@ -363,13 +377,23 @@ async fn create_release_global(
         ));
     }
 
+    let source_ref_mode = payload
+        .source_ref_mode
+        .unwrap_or_else(|| "tag".to_string())
+        .to_lowercase();
+    let source_ref_mode = match source_ref_mode.as_str() {
+        "digest" => "digest".to_string(),
+        _ => "tag".to_string(),
+    };
+
     let release = sqlx::query_as::<_, Release>(
-        "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto)
-         VALUES ($1, $2, 'draft', $3, $4, false)
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+        "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto)
+         VALUES ($1, $2, 'draft', $3, $4, $5, false)
+         RETURNING id, copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason, created_at",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
+    .bind(&source_ref_mode)
     .bind(&payload.notes)
     .bind(&payload.created_by)
     .fetch_one(&pool)

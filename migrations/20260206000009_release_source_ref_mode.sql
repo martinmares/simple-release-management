@@ -1,0 +1,5 @@
+ALTER TABLE releases
+    ADD COLUMN IF NOT EXISTS source_ref_mode VARCHAR(10) NOT NULL DEFAULT 'tag';
+
+ALTER TABLE copy_jobs
+    ADD COLUMN IF NOT EXISTS source_ref_mode VARCHAR(10) NOT NULL DEFAULT 'tag';

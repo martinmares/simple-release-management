@@ -1099,9 +1099,9 @@ async fn auto_deploy_from_copy_job(
             release
         } else {
             sqlx::query_as::<_, Release>(
-                "INSERT INTO releases (copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason)
-                 VALUES ($1, $2, 'draft', $3, $4, true, $5)
-                 RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+                "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason)
+                 VALUES ($1, $2, 'draft', 'tag', $3, $4, true, $5)
+                 RETURNING id, copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason, created_at",
             )
             .bind(payload.copy_job_id)
             .bind(&target_tag)

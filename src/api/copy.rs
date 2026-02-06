@@ -101,6 +101,7 @@ pub struct ReleaseCopyRequest {
     pub target_registry_id: Uuid,
     pub release_id: String,
     pub notes: Option<String>,
+    pub source_ref_mode: Option<String>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
 }
@@ -255,6 +256,21 @@ fn apply_override_name(path: &str, override_name: &str) -> String {
     } else {
         override_name.to_string()
     }
+}
+
+fn build_source_url(base: &str, img: &CopyJobImage, mode: &str) -> Result<String, String> {
+    if mode == "digest" {
+        if let Some(digest) = img.source_sha256.as_deref() {
+            if !digest.trim().is_empty() {
+                return Ok(format!("{}/{}@{}", base, img.source_image, digest));
+            }
+        }
+        return Err(format!(
+            "Missing source digest for {}:{}",
+            img.source_image, img.source_tag
+        ));
+    }
+    Ok(format!("{}/{}:{}", base, img.source_image, img.source_tag))
 }
 
 fn emit_log(
@@ -919,8 +935,18 @@ async fn start_release_copy_job(
         ));
     }
 
+    let source_ref_mode = payload
+        .source_ref_mode
+        .unwrap_or_else(|| "tag".to_string())
+        .to_lowercase();
+    let source_ref_mode = match source_ref_mode.as_str() {
+        "digest" => "digest".to_string(),
+        _ => "tag".to_string(),
+    };
+
     let payload = ReleaseCopyRequest {
         release_id: release_id.clone(),
+        source_ref_mode: Some(source_ref_mode.clone()),
         ..payload
     };
 
@@ -1032,6 +1058,25 @@ async fn start_release_copy_job(
         ));
     }
 
+    if source_ref_mode == "digest" {
+        let missing: Vec<String> = source_images
+            .iter()
+            .filter(|img| img.target_sha256.as_deref().unwrap_or("").is_empty())
+            .map(|img| format!("{}:{}", img.target_image, img.target_tag))
+            .collect();
+        if !missing.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Digest missing for {} images; cannot use digest source mode",
+                        missing.len()
+                    ),
+                }),
+            ));
+        }
+    }
+
     // Připravit override map
     let mut overrides = std::collections::HashMap::new();
     for ov in payload.overrides {
@@ -1044,14 +1089,15 @@ async fn start_release_copy_job(
     let job_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, is_release_job, release_id, release_notes)
-         VALUES ($1, $2, $3, 'pending', $4, $5, TRUE, $6, $7)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
     .bind(&release_id)
     .bind(source_registry_id)
     .bind(payload.target_registry_id)
+    .bind(&source_ref_mode)
     .bind(&release_id)
     .bind(&payload.notes)
     .execute(&state.pool)
@@ -1074,10 +1120,16 @@ async fn start_release_copy_job(
             target_path = apply_override_name(&target_path, override_name);
         }
 
+        let source_sha = if source_ref_mode == "digest" {
+            img.target_sha256.clone()
+        } else {
+            None
+        };
+
         let copy_job_image_id: Uuid = sqlx::query_scalar(
             "INSERT INTO copy_job_images
-             (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag)
-             VALUES ($1, $2, $3, $4, $5, $6)
+             (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag, source_sha256)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              RETURNING id"
         )
         .bind(job_id)
@@ -1086,6 +1138,7 @@ async fn start_release_copy_job(
         .bind(&img.target_tag)
         .bind(&target_path)
         .bind(&release_id)
+        .bind(&source_sha)
         .fetch_one(&state.pool)
         .await
         .map_err(|e| {
@@ -1156,8 +1209,8 @@ async fn start_copy_job(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, bool, Option<String>, Option<String>)>(
-        "SELECT status, source_registry_id, target_registry_id, target_tag, is_release_job, release_id, release_notes
+    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>)>(
+        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes
          FROM copy_jobs WHERE id = $1"
     )
     .bind(job_id)
@@ -1172,7 +1225,7 @@ async fn start_copy_job(
         )
     })?;
 
-    let Some((status, source_registry_id, target_registry_id, target_tag, is_release_job, release_id, release_notes)) = job else {
+    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes)) = job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1221,6 +1274,21 @@ async fn start_copy_job(
                 error: "No images found for this job".to_string(),
             }),
         ));
+    }
+
+    if source_ref_mode == "digest" {
+        let missing = images
+            .iter()
+            .filter(|img| img.source_sha256.as_deref().unwrap_or("").is_empty())
+            .count();
+        if missing > 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("{} images missing source digest for digest mode", missing),
+                }),
+            ));
+        }
     }
 
     let (log_tx, _log_rx) = broadcast::channel(512);
@@ -1287,6 +1355,7 @@ async fn start_copy_job(
     let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
     let release_id = release_id.clone();
     let release_notes = release_notes.clone();
+    let source_ref_mode = source_ref_mode.clone();
     let cancel_flags = state.cancel_flags.clone();
 
     tokio::spawn(async move {
@@ -1310,7 +1379,23 @@ async fn start_copy_job(
                 emit_log(&log_tx, "Cancel requested, stopping job".to_string());
                 break;
             }
-            let source_url = format!("{}/{}:{}", source_base_url, img.source_image, img.source_tag);
+            let source_url = match build_source_url(&source_base_url, &img, &source_ref_mode) {
+                Ok(url) => url,
+                Err(err) => {
+                    failed += 1;
+                    emit_log(&log_tx, format!("FAILED {} - {}", img.source_image, err));
+                    let _ = sqlx::query(
+                        "UPDATE copy_job_images
+                         SET copy_status = 'failed', error_message = $1
+                         WHERE id = $2"
+                    )
+                    .bind(err)
+                    .bind(img.id)
+                    .execute(&pool_clone)
+                    .await;
+                    continue;
+                }
+            };
             let target_url = format!("{}/{}:{}", target_base_url, img.target_image, &target_tag);
 
             emit_log(&log_tx, format!("Copying {} -> {}", source_url, target_url));
@@ -1463,11 +1548,12 @@ async fn start_copy_job(
         if !cancelled && failed == 0 && is_release_job {
             if let Some(release_id) = release_id {
                 let _ = sqlx::query(
-                    "INSERT INTO releases (copy_job_id, release_id, status, notes, is_auto)
-                     VALUES ($1, $2, 'draft', $3, false)"
+                    "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, is_auto)
+                     VALUES ($1, $2, 'draft', $3, $4, false)"
                 )
                 .bind(job_id)
                 .bind(&release_id)
+                .bind(&source_ref_mode)
                 .bind(&release_notes)
                 .execute(&pool_clone)
                 .await;

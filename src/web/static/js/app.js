@@ -3595,7 +3595,10 @@ router.on('/releases', async () => {
                                         : `<span class="badge bg-azure-lt text-azure-fg me-1">total ${total}</span> ${parts.join(' ')}`;
                                     return `
                                         <tr>
-                                            <td><a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a></td>
+                                            <td>
+                                                <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
+                                                <span class="badge bg-azure-lt text-azure-fg ms-2">${release.source_ref_mode || 'tag'}</span>
+                                            </td>
                                             <td>
                                                 ${release.tenant_id ? `<a href="#/tenants/${release.tenant_id}">${release.tenant_name || 'Unknown'}</a>` : (release.tenant_name || 'Unknown')}
                                             </td>
@@ -3692,6 +3695,11 @@ router.on('/releases/:id', async (params) => {
                     <dl class="row mb-0">
                         <dt class="col-4">Notes:</dt>
                         <dd class="col-8">${release.notes || '-'}</dd>
+
+                        <dt class="col-4">Source Ref:</dt>
+                        <dd class="col-8">
+                            <span class="badge bg-azure-lt text-azure-fg">${release.source_ref_mode || 'tag'}</span>
+                        </dd>
 
                         <dt class="col-4">Created:</dt>
                         <dd class="col-8">${new Date(release.created_at).toLocaleString('cs-CZ')}</dd>
@@ -4091,6 +4099,7 @@ router.on('/releases/new', async (params, query) => {
             releaseId: '',
             notes: '',
             targetRegistryId: '',
+            sourceRefMode: 'tag',
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
@@ -4138,6 +4147,27 @@ router.on('/releases/new', async (params, query) => {
                                             </option>
                                         `).join('')}
                                     </select>
+                                    <div class="mt-2">
+                                        <label class="form-label">Source Reference</label>
+                                        <div class="form-selectgroup">
+                                            <label class="form-selectgroup-item">
+                                                <input type="radio" name="source-ref-mode" value="tag" class="form-selectgroup-input" ${state.sourceRefMode === 'tag' ? 'checked' : ''}>
+                                                <span class="form-selectgroup-label">Tag</span>
+                                            </label>
+                                            <label class="form-selectgroup-item">
+                                                <input type="radio" name="source-ref-mode" value="digest" class="form-selectgroup-input" ${state.sourceRefMode === 'digest' ? 'checked' : ''}>
+                                                <span class="form-selectgroup-label">SHA digest</span>
+                                            </label>
+                                        </div>
+                                        <div class="text-secondary small mt-1">
+                                            Tag uses <code>:tag</code>, digest uses <code>@sha256</code>.
+                                        </div>
+                                        ${state.sourceRefMode === 'digest' && images.some(img => !img.target_sha256) ? `
+                                            <div class="alert alert-warning mt-2 mb-0">
+                                                Some images are missing digests. Digest mode cannot be used.
+                                            </div>
+                                        ` : ''}
+                                    </div>
                                 </div>
                             </div>
                             <div class="col-md-6">
@@ -4209,7 +4239,11 @@ router.on('/releases/new', async (params, query) => {
                                         const renamed = applyRules(img.target_image);
                                         const override = state.overrides[idx]?.override_name || '';
                                         const finalPath = applyOverride(renamed, override);
-                                        const sourceFull = `${sourceBase}/${img.target_image}:${img.target_tag}`;
+                                        const sourceFull = state.sourceRefMode === 'digest'
+                                            ? (img.target_sha256
+                                                ? `${sourceBase}/${img.target_image}@${img.target_sha256}`
+                                                : `${sourceBase}/${img.target_image}@<missing-digest>`)
+                                            : `${sourceBase}/${img.target_image}:${img.target_tag}`;
                                         const targetFull = targetBase ? `${targetBase}/${finalPath}:${state.releaseId || '<release_id>'}` : '-';
                                         return `
                                             <tr>
@@ -4249,6 +4283,12 @@ router.on('/releases/new', async (params, query) => {
             document.getElementById('release-target-registry').addEventListener('change', (e) => {
                 state.targetRegistryId = e.target.value;
                 updatePreview();
+            });
+            document.querySelectorAll('input[name="source-ref-mode"]').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    state.sourceRefMode = e.target.value;
+                    render();
+                });
             });
             document.getElementById('release-id').addEventListener('input', (e) => {
                 state.releaseId = e.target.value;
@@ -4301,12 +4341,17 @@ router.on('/releases/new', async (params, query) => {
                     getApp().showError('Release ID cannot be empty');
                     return;
                 }
+                if (state.sourceRefMode === 'digest' && images.some(img => !img.target_sha256)) {
+                    getApp().showError('Digest mode is not available because some images are missing digests');
+                    return;
+                }
 
                 const payload = {
                     source_copy_job_id: job.job_id,
                     target_registry_id: state.targetRegistryId,
                     release_id: releaseId,
                     notes: state.notes || null,
+                    source_ref_mode: state.sourceRefMode,
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
                 };
