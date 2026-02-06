@@ -445,6 +445,7 @@ pub struct DeployJobSummary {
     pub release_id: Uuid,
     pub deploy_target_id: Uuid,
     pub deploy_target_env_id: Uuid,
+    pub environment_id: Uuid,
     pub status: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -494,6 +495,7 @@ pub struct DeployTargetEnvOption {
     pub deploy_target_env_id: Uuid,
     pub tenant_id: Uuid,
     pub name: String,
+    pub environment_id: Uuid,
     pub env_name: String,
     pub env_slug: String,
     pub env_color: Option<String>,
@@ -2014,6 +2016,7 @@ async fn list_release_deploy_targets(
             dte.id AS deploy_target_env_id,
             dt.tenant_id,
             dt.name,
+            dte.environment_id,
             e.name AS env_name,
             e.slug AS env_slug,
             e.color AS env_color,
@@ -2063,6 +2066,7 @@ async fn list_release_deploy_jobs(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.deploy_target_env_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, e.slug AS env_name,
+               dte.environment_id,
                r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
@@ -2150,6 +2154,7 @@ async fn get_deploy_job(
         r#"
         SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.deploy_target_env_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, e.slug AS env_name,
+               dte.environment_id,
                r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id

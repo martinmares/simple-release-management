@@ -282,6 +282,7 @@ pub struct EnvironmentRegistryPath {
     pub environment_id: Uuid,
     pub registry_id: Uuid,
     pub project_path_override: Option<String>,
+    pub role: String,
     pub created_at: DateTime<Utc>,
 }
 

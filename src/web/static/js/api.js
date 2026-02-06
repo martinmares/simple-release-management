@@ -157,6 +157,10 @@ class ApiClient {
         return this.put(`/registries/${id}`, data);
     }
 
+    async getRegistryEnvironmentPaths(id) {
+        return this.get(`/registries/${id}/environment-paths`);
+    }
+
     async deleteRegistry(id) {
         return this.delete(`/registries/${id}`);
     }
@@ -259,10 +263,11 @@ class ApiClient {
 
     // ==================== COPY OPERATIONS ====================
 
-    async startCopyJob(bundleId, version, targetTag, timezoneOffsetMinutes = null) {
+    async startCopyJob(bundleId, version, targetTag, timezoneOffsetMinutes = null, environmentId = null) {
         return this.post(`/bundles/${bundleId}/versions/${version}/copy`, {
             target_tag: targetTag,
             timezone_offset_minutes: timezoneOffsetMinutes,
+            environment_id: environmentId,
         });
     }
 
@@ -271,8 +276,10 @@ class ApiClient {
         return this.get(`/bundles/${bundleId}/versions/${version}/next-tag${params}`);
     }
 
-    async precheckCopyImages(bundleId, version) {
-        return this.post(`/bundles/${bundleId}/versions/${version}/precheck`, {});
+    async precheckCopyImages(bundleId, version, environmentId = null) {
+        return this.post(`/bundles/${bundleId}/versions/${version}/precheck`, {
+            environment_id: environmentId,
+        });
     }
 
     async getCopyJobStatus(jobId) {

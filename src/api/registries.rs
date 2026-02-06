@@ -118,6 +118,7 @@ pub struct CreateRegistryRequest {
     pub role: String,
     pub description: Option<String>,
     pub is_active: Option<bool>,
+    pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
 }
 
 /// Request pro update registry
@@ -135,6 +136,23 @@ pub struct UpdateRegistryRequest {
     pub role: String,
     pub description: Option<String>,
     pub is_active: Option<bool>,
+    pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnvironmentRegistryPathInput {
+    pub environment_id: Uuid,
+    pub source_project_path_override: Option<String>,
+    pub target_project_path_override: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EnvironmentRegistryPathView {
+    pub environment_id: Uuid,
+    pub env_name: String,
+    pub env_slug: String,
+    pub source_project_path_override: Option<String>,
+    pub target_project_path_override: Option<String>,
 }
 
 /// Response s chybou
@@ -155,7 +173,112 @@ pub fn router(state: RegistryApiState) -> Router {
             "/registries/{id}",
             get(get_registry).put(update_registry).delete(delete_registry),
         )
+        .route("/registries/{id}/environment-paths", get(get_registry_environment_paths))
         .with_state(state)
+}
+
+async fn upsert_environment_paths(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    registry_id: Uuid,
+    paths: &[EnvironmentRegistryPathInput],
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+
+    let env_ids: Vec<Uuid> = paths.iter().map(|p| p.environment_id).collect();
+    let valid_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM environments WHERE tenant_id = $1 AND id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(&env_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if valid_ids.len() != env_ids.len() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment does not belong to tenant".to_string(),
+            }),
+        ));
+    }
+
+    for path in paths {
+        let source_value = path
+            .source_project_path_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.trim_matches('/').to_string());
+
+        let target_value = path
+            .target_project_path_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.trim_matches('/').to_string());
+
+        let entries = [
+            ("source", source_value),
+            ("target", target_value),
+        ];
+
+        for (role, value) in entries {
+            if let Some(project_path) = value {
+                sqlx::query(
+                    r#"
+                    INSERT INTO environment_registry_paths (environment_id, registry_id, project_path_override, role)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (environment_id, registry_id, role)
+                    DO UPDATE SET project_path_override = EXCLUDED.project_path_override
+                    "#,
+                )
+                .bind(path.environment_id)
+                .bind(registry_id)
+                .bind(project_path)
+                .bind(role)
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Database error: {}", e),
+                        }),
+                    )
+                })?;
+            } else {
+                sqlx::query(
+                    "DELETE FROM environment_registry_paths WHERE environment_id = $1 AND registry_id = $2 AND role = $3",
+                )
+                .bind(path.environment_id)
+                .bind(registry_id)
+                .bind(role)
+                .execute(pool)
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse {
+                            error: format!("Database error: {}", e),
+                        }),
+                    )
+                })?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// GET /api/v1/registries - Seznam všech registries
@@ -431,6 +554,10 @@ async fn create_registry(
         )
     })?;
 
+    if let Some(paths) = payload.environment_paths.as_ref() {
+        upsert_environment_paths(&state.pool, tenant_id, registry.id, paths).await?;
+    }
+
     Ok((StatusCode::CREATED, Json(registry)))
 }
 
@@ -649,7 +776,12 @@ async fn update_registry(
     })?;
 
     match registry {
-        Some(registry) => Ok(Json(registry)),
+        Some(registry) => {
+            if let Some(paths) = payload.environment_paths.as_ref() {
+                upsert_environment_paths(&state.pool, registry.tenant_id, registry.id, paths).await?;
+            }
+            Ok(Json(registry))
+        }
         None => Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -687,4 +819,41 @@ async fn delete_registry(
     }
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// GET /api/v1/registries/{id}/environment-paths - Seznam env path overrides
+async fn get_registry_environment_paths(
+    State(state): State<RegistryApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<EnvironmentRegistryPathView>>, (StatusCode, Json<ErrorResponse>)> {
+    let paths = sqlx::query_as::<_, EnvironmentRegistryPathView>(
+        r#"
+        SELECT
+            e.id AS environment_id,
+            e.name AS env_name,
+            e.slug AS env_slug,
+            erp_source.project_path_override AS source_project_path_override,
+            erp_target.project_path_override AS target_project_path_override
+        FROM environments e
+        LEFT JOIN environment_registry_paths erp_source
+          ON erp_source.environment_id = e.id AND erp_source.registry_id = $1 AND erp_source.role = 'source'
+        LEFT JOIN environment_registry_paths erp_target
+          ON erp_target.environment_id = e.id AND erp_target.registry_id = $1 AND erp_target.role = 'target'
+        WHERE e.tenant_id = (SELECT tenant_id FROM registries WHERE id = $1)
+        ORDER BY e.slug ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(paths))
 }

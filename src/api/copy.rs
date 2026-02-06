@@ -25,6 +25,12 @@ use crate::services::SkopeoService;
 pub struct CopyBundleRequest {
     pub target_tag: Option<String>,
     pub timezone_offset_minutes: Option<i32>,
+    pub environment_id: Option<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PrecheckRequest {
+    pub environment_id: Option<Uuid>,
 }
 
 /// Response s chybou
@@ -73,6 +79,7 @@ pub struct CopyJobStatus {
     pub status: String,
     pub source_registry_id: Option<Uuid>,
     pub target_registry_id: Option<Uuid>,
+    pub environment_id: Option<Uuid>,
     pub target_tag: String,
     pub is_release_job: bool,
     pub is_selective: bool,
@@ -99,6 +106,7 @@ pub struct CopyJobSummary {
     pub validate_only: bool,
     pub source_registry_id: Option<Uuid>,
     pub target_registry_id: Option<Uuid>,
+    pub environment_id: Option<Uuid>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -107,6 +115,7 @@ pub struct CopyJobSummary {
 pub struct ReleaseCopyRequest {
     pub source_copy_job_id: Uuid,
     pub target_registry_id: Uuid,
+    pub environment_id: Option<Uuid>,
     pub release_id: String,
     pub notes: Option<String>,
     pub source_ref_mode: Option<String>,
@@ -290,6 +299,41 @@ fn apply_registry_project_path(path: &str, default_project_path: Option<&str>) -
     }
     let rest = trimmed.split_once('/').map(|(_, rest)| rest).unwrap_or(trimmed);
     format!("{}/{}", default_path, rest)
+}
+
+async fn resolve_registry_project_path(
+    pool: &PgPool,
+    registry_id: Uuid,
+    environment_id: Option<Uuid>,
+    role: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    if let Some(env_id) = environment_id {
+        let override_path: Option<String> = sqlx::query_scalar(
+            r#"
+            SELECT project_path_override
+            FROM environment_registry_paths
+            WHERE registry_id = $1 AND environment_id = $2 AND role = $3
+            "#,
+        )
+        .bind(registry_id)
+        .bind(env_id)
+        .bind(role)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+
+        if override_path.is_some() {
+            return Ok(override_path);
+        }
+    }
+
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT default_project_path FROM registries WHERE id = $1",
+    )
+    .bind(registry_id)
+    .fetch_optional(pool)
+    .await
+    .map(|v| v.flatten())
 }
 
 fn build_source_url(base: &str, img: &CopyJobImage, mode: &str) -> Result<String, String> {
@@ -478,16 +522,26 @@ async fn copy_bundle_version(
     };
 
     // Vytvořit job
+    if payload.environment_id.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        ));
+    }
+
     let job_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO copy_jobs (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id)
-         VALUES ($1, $2, $3, 'pending', $4, $5)"
+        "INSERT INTO copy_jobs (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, environment_id)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
     .bind(&target_tag)
     .bind(bundle.source_registry_id)
     .bind(bundle.target_registry_id)
+    .bind(payload.environment_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -526,9 +580,45 @@ async fn copy_bundle_version(
     let target_tag = target_tag.clone();
     let credentials_clone = credentials.clone();
 
+    let source_project_path = resolve_registry_project_path(
+        &state.pool,
+        bundle.source_registry_id,
+        payload.environment_id,
+        "source",
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to resolve source registry path: {}", e),
+            }),
+        )
+    })?;
+
+    let target_project_path = resolve_registry_project_path(
+        &state.pool,
+        bundle.target_registry_id,
+        payload.environment_id,
+        "target",
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to resolve target registry path: {}", e),
+            }),
+        )
+    })?;
+
     // Vytvořit snapshot image mappings pro tento job
-    let mut job_images: Vec<(Uuid, ImageMapping)> = Vec::with_capacity(mappings.len());
+    let mut job_images: Vec<(Uuid, String, String, String)> = Vec::with_capacity(mappings.len());
     for mapping in &mappings {
+        let source_path =
+            apply_registry_project_path(&mapping.source_image, source_project_path.as_deref());
+        let target_path =
+            apply_registry_project_path(&mapping.target_image, target_project_path.as_deref());
         let copy_job_image_id: Uuid = sqlx::query_scalar(
             "INSERT INTO copy_job_images
              (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag)
@@ -537,9 +627,9 @@ async fn copy_bundle_version(
         )
         .bind(job_id)
         .bind(mapping.id)
-        .bind(&mapping.source_image)
+        .bind(&source_path)
         .bind(&mapping.source_tag)
-        .bind(&mapping.target_image)
+        .bind(&target_path)
         .bind(&target_tag)
         .fetch_one(&state.pool)
         .await
@@ -552,7 +642,12 @@ async fn copy_bundle_version(
             )
         })?;
 
-        job_images.push((copy_job_image_id, mapping.clone()));
+        job_images.push((
+            copy_job_image_id,
+            source_path,
+            mapping.source_tag.clone(),
+            target_path,
+        ));
     }
 
     let mapping_count = mappings.len();
@@ -573,15 +668,15 @@ async fn copy_bundle_version(
                 .await;
         }
 
-        for (copy_job_image_id, mapping) in job_images {
+        for (copy_job_image_id, source_path, source_tag, target_path) in job_images {
             if cancel_flags.read().await.contains(&job_id) {
                 cancelled = true;
                 emit_log(&log_tx, "Cancel requested, stopping job".to_string());
                 break;
             }
             // Sestavit URL
-            let source_url = format!("{}/{}:{}", source_base_url, mapping.source_image, mapping.source_tag);
-            let target_url = format!("{}/{}:{}", target_base_url, mapping.target_image, &target_tag);
+            let source_url = format!("{}/{}:{}", source_base_url, source_path, source_tag);
+            let target_url = format!("{}/{}:{}", target_base_url, target_path, &target_tag);
 
             emit_log(&log_tx, format!("Copying {} -> {}", source_url, target_url));
 
@@ -815,6 +910,7 @@ async fn get_next_copy_tag(
 async fn precheck_copy_images(
     State(state): State<CopyApiState>,
     Path((bundle_id, version)): Path<(Uuid, i32)>,
+    Json(payload): Json<PrecheckRequest>,
 ) -> Result<Json<PrecheckResult>, (StatusCode, Json<ErrorResponse>)> {
     let bundle = sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
         .bind(bundle_id)
@@ -906,13 +1002,40 @@ async fn precheck_copy_images(
         .trim_start_matches("http://")
         .to_string();
 
+    if payload.environment_id.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        ));
+    }
+
+    let source_project_path = resolve_registry_project_path(
+        &state.pool,
+        bundle.source_registry_id,
+        payload.environment_id,
+        "source",
+    )
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load source registry path: {}", e),
+            }),
+        )
+    })?;
+
     let total = mappings.len();
     let mut failed = Vec::new();
 
     for mapping in mappings {
+        let source_path =
+            apply_registry_project_path(&mapping.source_image, source_project_path.as_deref());
         let source_url = format!(
             "{}/{}:{}",
-            source_base_url, mapping.source_image, mapping.source_tag
+            source_base_url, source_path, mapping.source_tag
         );
         let result = state
             .skopeo
@@ -920,7 +1043,7 @@ async fn precheck_copy_images(
             .await;
         if let Err(err) = result {
             failed.push(PrecheckFailure {
-                source_image: mapping.source_image,
+                source_image: source_path,
                 source_tag: mapping.source_tag,
                 error: err.to_string(),
             });
@@ -1111,21 +1234,64 @@ async fn start_release_copy_job(
         }
     }
 
-    let target_project_path = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT default_project_path FROM registries WHERE id = $1",
-    )
-    .bind(payload.target_registry_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to load target registry: {}", e),
-            }),
+    let target_project_path = if let Some(env_id) = payload.environment_id {
+        let override_path = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT project_path_override
+            FROM environment_registry_paths
+            WHERE registry_id = $1 AND environment_id = $2 AND role = 'target'
+            "#,
         )
-    })?
-    .flatten();
+        .bind(payload.target_registry_id)
+        .bind(env_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to load target registry: {}", e),
+                }),
+            )
+        })?
+        .flatten();
+
+        if override_path.is_some() {
+            override_path
+        } else {
+            sqlx::query_scalar::<_, Option<String>>(
+                "SELECT default_project_path FROM registries WHERE id = $1",
+            )
+            .bind(payload.target_registry_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to load target registry: {}", e),
+                    }),
+                )
+            })?
+            .flatten()
+        }
+    } else {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT default_project_path FROM registries WHERE id = $1",
+        )
+        .bind(payload.target_registry_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to load target registry: {}", e),
+                }),
+            )
+        })?
+        .flatten()
+    };
 
     if target_project_path.is_none() {
         let registry_exists = sqlx::query_scalar::<_, bool>(
@@ -1167,8 +1333,8 @@ async fn start_release_copy_job(
 
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9, $10)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
@@ -1179,6 +1345,7 @@ async fn start_release_copy_job(
     .bind(&release_id)
     .bind(&payload.notes)
     .bind(validate_only)
+    .bind(payload.environment_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1262,7 +1429,7 @@ async fn start_selective_copy_job(
         ));
     }
 
-    let base_job = sqlx::query_as::<_, (Uuid, Uuid, String, bool, Option<Uuid>, Option<Uuid>, String, Uuid, bool)>(
+    let base_job = sqlx::query_as::<_, (Uuid, Uuid, String, bool, Option<Uuid>, Option<Uuid>, String, Uuid, bool, Option<Uuid>)>(
         r#"
         SELECT
             cj.id,
@@ -1273,7 +1440,8 @@ async fn start_selective_copy_job(
             cj.target_registry_id,
             cj.target_tag,
             b.id AS bundle_id,
-            b.auto_tag_enabled
+            b.auto_tag_enabled,
+            cj.environment_id
         FROM copy_jobs cj
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         JOIN bundles b ON b.id = bv.bundle_id
@@ -1292,7 +1460,7 @@ async fn start_selective_copy_job(
         )
     })?;
 
-    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, base_tag, bundle_id, auto_tag_enabled)) = base_job else {
+    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, base_tag, bundle_id, auto_tag_enabled, environment_id)) = base_job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1407,8 +1575,8 @@ async fn start_selective_copy_job(
     let job_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, is_selective, base_copy_job_id)
-         VALUES ($1, $2, $3, 'pending', $4, $5, TRUE, $6)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, is_selective, base_copy_job_id, environment_id)
+         VALUES ($1, $2, $3, 'pending', $4, $5, TRUE, $6, $7)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
@@ -1416,6 +1584,7 @@ async fn start_selective_copy_job(
     .bind(source_registry_id)
     .bind(target_registry_id)
     .bind(base_job_id)
+    .bind(environment_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1488,6 +1657,7 @@ async fn list_copy_jobs(
             cj.validate_only,
             cj.source_registry_id,
             cj.target_registry_id,
+            cj.environment_id,
             cj.started_at,
             cj.completed_at
         FROM copy_jobs cj
@@ -2035,9 +2205,9 @@ async fn get_copy_job_status(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<CopyJobStatus>, (StatusCode, Json<ErrorResponse>)> {
-    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool)>(
         r#"
-        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.target_tag, cj.is_release_job, cj.is_selective, cj.base_copy_job_id, cj.validate_only
+        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.environment_id, cj.target_tag, cj.is_release_job, cj.is_selective, cj.base_copy_job_id, cj.validate_only
         FROM copy_jobs cj
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         WHERE cj.id = $1
@@ -2055,7 +2225,7 @@ async fn get_copy_job_status(
         )
     })?;
 
-    let Some((bundle_id, version, status, source_registry_id, target_registry_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only)) = row else {
+    let Some((bundle_id, version, status, source_registry_id, target_registry_id, environment_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only)) = row else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2115,6 +2285,7 @@ async fn get_copy_job_status(
         status,
         source_registry_id,
         target_registry_id,
+        environment_id,
         target_tag,
         is_release_job,
         is_selective,

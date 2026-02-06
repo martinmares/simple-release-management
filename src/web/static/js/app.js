@@ -939,6 +939,13 @@ router.on('/tenants/:id', async (params) => {
         ]);
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
+        const registryEnvPathsById = new Map();
+        if (registries.length > 0) {
+            await Promise.all(registries.map(async (reg) => {
+                const paths = await api.getRegistryEnvironmentPaths(reg.id).catch(() => []);
+                registryEnvPathsById.set(reg.id, paths);
+            }));
+        }
         const activeDeployTargets = deployTargets.filter(t => !t.is_archived);
         const archivedDeployTargets = deployTargets.filter(t => t.is_archived);
 
@@ -1037,7 +1044,10 @@ router.on('/tenants/:id', async (params) => {
                                         <div class="list-group-item text-center text-secondary py-4">
                                             No registries yet
                                         </div>
-                                    ` : registries.map(reg => `
+                                    ` : registries.map(reg => {
+                                        const envPaths = registryEnvPathsById.get(reg.id) || [];
+                                        const envPathMap = new Map(envPaths.map(p => [p.environment_id, p]));
+                                        return `
                                         <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
                                             <div class="d-flex align-items-center">
                                                 <span class="avatar avatar-sm me-2">
@@ -1048,11 +1058,28 @@ router.on('/tenants/:id', async (params) => {
                                                     <div class="text-secondary small">${reg.registry_type}</div>
                                                     <div class="text-secondary small"><code class="small">${reg.base_url || '-'}</code></div>
                                                     <div class="text-secondary small">Project path: <code class="small">${reg.default_project_path || '-'}</code></div>
+                                                    ${environments.length > 0 ? `
+                                                        <div class="text-secondary small mt-1">
+                                                            ${environments.map(env => {
+                                                                const entry = envPathMap.get(env.id);
+                                                                const src = entry?.source_project_path_override || '-';
+                                                                const trg = entry?.target_project_path_override || '-';
+                                                                return `
+                                                                    <div>
+                                                                        <span class="badge me-1" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                                                        src: <code class="small">${src}</code>,
+                                                                        trg: <code class="small">${trg}</code>
+                                                                    </div>
+                                                                `;
+                                                            }).join('')}
+                                                        </div>
+                                                    ` : ''}
                                                 </div>
                                                 <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
                                             </div>
                                         </a>
-                                    `).join('')}
+                                    `;
+                                    }).join('')}
                                 </div>
                             </div>
                         </div>
@@ -1754,7 +1781,11 @@ router.on('/registries/new', async (params, query) => {
 
     try {
         const tenants = await api.getTenants();
-        content.innerHTML = createRegistryForm(null, tenants);
+        let environments = [];
+        if (query.tenant_id) {
+            environments = await api.getEnvironments(query.tenant_id).catch(() => []);
+        }
+        content.innerHTML = createRegistryForm(null, tenants, environments, []);
 
         // Pre-select tenant if provided in query
         if (query.tenant_id) {
@@ -1766,6 +1797,7 @@ router.on('/registries/new', async (params, query) => {
             await handleFormSubmit(e, async (data) => {
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
+                data.environment_paths = collectRegistryEnvironmentPaths();
                 await api.createRegistry(tenantId, data);
                 getApp().showSuccess('Registry created successfully');
                 router.navigate('/registries');
@@ -1785,10 +1817,12 @@ router.on('/registries/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [registry, tenants] = await Promise.all([
+        const [registry, tenants, envPaths] = await Promise.all([
             api.getRegistry(params.id),
             api.getTenants(),
+            api.getRegistryEnvironmentPaths(params.id).catch(() => []),
         ]);
+        const environments = await api.getEnvironments(registry.tenant_id).catch(() => []);
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -1798,11 +1832,12 @@ router.on('/registries/:id/edit', async (params) => {
                     </a>
                 </div>
             </div>
-            ${createRegistryForm(registry, tenants)}
+            ${createRegistryForm(registry, tenants, environments, envPaths)}
         `;
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
+                data.environment_paths = collectRegistryEnvironmentPaths();
                 await api.updateRegistry(params.id, data);
                 getApp().showSuccess('Registry updated successfully');
                 router.navigate(`/tenants/${registry.tenant_id}`);
@@ -2509,6 +2544,30 @@ function attachEnvironmentSlugPreview() {
     });
 }
 
+function collectRegistryEnvironmentPaths() {
+    const inputs = document.querySelectorAll('.env-project-path');
+    const map = new Map();
+    inputs.forEach(input => {
+        const environmentId = input.dataset.envId;
+        const role = input.dataset.role || 'target';
+        if (!environmentId) return;
+        if (!map.has(environmentId)) {
+            map.set(environmentId, {
+                environment_id: environmentId,
+                source_project_path_override: '',
+                target_project_path_override: '',
+            });
+        }
+        const entry = map.get(environmentId);
+        if (role === 'source') {
+            entry.source_project_path_override = input.value || '';
+        } else {
+            entry.target_project_path_override = input.value || '';
+        }
+    });
+    return Array.from(map.values());
+}
+
 function attachDeployEnvVarHandlers() {
     const list = document.getElementById('deploy-env-vars-list');
     const addBtn = document.getElementById('deploy-env-var-add-btn');
@@ -2900,7 +2959,7 @@ router.on('/bundles/:id', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry, registries] = await Promise.all([
+        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry, registries, environments] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
             api.getReleases(),
@@ -2909,12 +2968,14 @@ router.on('/bundles/:id', async (params) => {
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
             bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
             api.getRegistries().catch(() => []),
+            bundle.tenant_id ? api.getEnvironments(bundle.tenant_id).catch(() => []) : Promise.resolve([]),
         ]);
 
         const registryMap = {};
         (registries || []).forEach(r => {
             registryMap[r.id] = r;
         });
+        const environmentMap = new Map((environments || []).map(env => [env.id, env]));
 
         const latestVersion = versions.length > 0
             ? Math.max(...versions.map(v => v.version))
@@ -3038,9 +3099,16 @@ router.on('/bundles/:id', async (params) => {
                                 <i class="ti ti-layers me-2"></i>
                                 Versions
                             </h3>
+                            ${versions.some(v => v.is_archived) ? `
+                                <div class="card-actions">
+                                    <button class="btn btn-ghost-secondary btn-sm" id="toggle-archived-versions">
+                                        Show archived (${versions.filter(v => v.is_archived).length})
+                                    </button>
+                                </div>
+                            ` : ''}
                         </div>
                         <div class="list-group list-group-flush">
-                            ${versions.map(version => `
+                            ${versions.filter(v => !v.is_archived).map(version => `
                                 <a href="#/bundles/${bundle.id}/versions/${version.version}" class="list-group-item list-group-item-action">
                                     <div class="row align-items-center">
                                         <div class="col-auto">
@@ -3054,15 +3122,34 @@ router.on('/bundles/:id', async (params) => {
                                         <div class="col-auto">
                                             <span class="badge">${version.image_count || 0} images</span>
                                         </div>
-                                        <div class="col-auto">
-                                            ${version.is_archived ? `
-                                                <span class="badge bg-secondary text-secondary-fg">archived</span>
-                                            ` : ''}
-                                        </div>
                                     </div>
                                 </a>
                             `).join('')}
                         </div>
+                        ${versions.some(v => v.is_archived) ? `
+                            <div class="list-group list-group-flush d-none" id="archived-versions">
+                                ${versions.filter(v => v.is_archived).map(version => `
+                                    <a href="#/bundles/${bundle.id}/versions/${version.version}" class="list-group-item list-group-item-action">
+                                        <div class="row align-items-center">
+                                            <div class="col-auto">
+                                                <span class="badge bg-blue text-blue-fg">v${version.version}</span>
+                                            </div>
+                                            <div class="col">
+                                                <div class="text-secondary small">
+                                                    Created ${new Date(version.created_at).toLocaleString('cs-CZ')}
+                                                </div>
+                                            </div>
+                                            <div class="col-auto">
+                                                <span class="badge">${version.image_count || 0} images</span>
+                                            </div>
+                                            <div class="col-auto">
+                                                <span class="badge bg-secondary text-secondary-fg">archived</span>
+                                            </div>
+                                        </div>
+                                    </a>
+                                `).join('')}
+                            </div>
+                        ` : ''}
                     </div>
 
                     <div class="card mt-3">
@@ -3103,6 +3190,13 @@ router.on('/bundles/:id', async (params) => {
                                             <td>
                                                 <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
                                                 <div class="text-secondary small mt-1">
+                                                    ${
+                                                        job.environment_id && environmentMap.get(job.environment_id)
+                                                            ? `Env: <span class="badge" style="${environmentMap.get(job.environment_id).color ? `background:${environmentMap.get(job.environment_id).color};color:#fff;` : ''}">${environmentMap.get(job.environment_id).name}</span>`
+                                                            : 'Env: -'
+                                                    }
+                                                </div>
+                                                <div class="text-secondary small">
                                                     <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}</div>
                                                     <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                                                 </div>
@@ -3222,6 +3316,19 @@ router.on('/bundles/:id', async (params) => {
 
             </div>
         `;
+
+        const archivedVersionsToggle = document.getElementById('toggle-archived-versions');
+        if (archivedVersionsToggle) {
+            archivedVersionsToggle.addEventListener('click', () => {
+                const container = document.getElementById('archived-versions');
+                if (!container) return;
+                const isHidden = container.classList.contains('d-none');
+                container.classList.toggle('d-none');
+                archivedVersionsToggle.textContent = isHidden
+                    ? 'Hide archived'
+                    : `Show archived (${versions.filter(v => v.is_archived).length})`;
+            });
+        }
 
         document.querySelectorAll('.auto-deploy-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
@@ -4315,6 +4422,10 @@ router.on('/releases/:id', async (params) => {
         const copyJob = release.copy_job_id ? await api.getCopyJobStatus(release.copy_job_id).catch(() => null) : null;
         const bundle = copyJob?.bundle_id ? await api.getBundle(copyJob.bundle_id).catch(() => null) : null;
         const tenant = bundle?.tenant_id ? await api.getTenant(bundle.tenant_id).catch(() => null) : null;
+        const environment = copyJob?.environment_id ? await api.getEnvironment(copyJob.environment_id).catch(() => null) : null;
+        if (copyJob?.environment_id) {
+            release.environment_id = copyJob.environment_id;
+        }
         const [sourceRegistry, targetRegistry] = await Promise.all([
             copyJob?.source_registry_id ? api.getRegistry(copyJob.source_registry_id).catch(() => null) : null,
             copyJob?.target_registry_id ? api.getRegistry(copyJob.target_registry_id).catch(() => null) : null,
@@ -4344,6 +4455,7 @@ router.on('/releases/:id', async (params) => {
                         <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
                         <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
                         <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
+                        <div>Environment: ${environment ? `<span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>` : '-'}</div>
                         <div>${release.copy_job_id ? `Copy Job: <a href="#/copy-jobs/${release.copy_job_id}"><code>${release.copy_job_id}</code></a>` : 'Copy Job: -'}</div>
                     </div>
                     <dl class="row mb-0">
@@ -4496,6 +4608,9 @@ router.on('/deploy-jobs/:id', async (params) => {
             api.getDeployJobDiff(params.id),
             api.getDeployJobImages(params.id),
         ]);
+        const environment = job.environment_id
+            ? await api.getEnvironment(job.environment_id).catch(() => null)
+            : null;
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -4540,6 +4655,9 @@ router.on('/deploy-jobs/:id', async (params) => {
                             job.status === 'in_progress' ? 'bg-info text-info-fg' :
                             'bg-secondary text-secondary-fg'
                         }">${job.status}</span></dd>
+
+                        <dt class="col-4">Environment:</dt>
+                        <dd class="col-8">${environment ? `<span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>` : '-'}</dd>
 
                         <dt class="col-4">Dry run:</dt>
                         <dd class="col-8">${job.dry_run ? '<span class="badge bg-azure-lt text-azure-fg">enabled</span>' : '<span class="badge bg-yellow-lt text-yellow-fg">disabled</span>'}</dd>
@@ -4631,10 +4749,18 @@ router.on('/deploy-jobs/:id', async (params) => {
             renderDeployLogs();
         }
 
+        let refreshScheduled = false;
         if (job.status === 'in_progress') {
             api.createDeployJobStream(params.id, (msg) => {
                 deployLines.push(msg);
                 renderDeployLogs();
+                if (!refreshScheduled && /Deploy job completed successfully|Deploy job failed/i.test(msg)) {
+                    refreshScheduled = true;
+                    setTimeout(() => {
+                        router.navigate(`/deploy-jobs/${params.id}`);
+                        router.handleRoute();
+                    }, 800);
+                }
             }, (err) => {
                 deployLines.push(`[Log stream error] ${err}`);
                 renderDeployLogs();
@@ -4695,6 +4821,17 @@ router.on('/releases/new', async (params, query) => {
             api.getCopyJobImages(query.copy_job_id),
             api.getRegistries(),
         ]);
+        const bundle = await api.getBundle(job.bundle_id).catch(() => null);
+        const environments = bundle?.tenant_id
+            ? await api.getEnvironments(bundle.tenant_id).catch(() => [])
+            : [];
+        const envPathsByRegistry = new Map();
+        if (environments.length > 0) {
+            await Promise.all(registries.map(async (reg) => {
+                const paths = await api.getRegistryEnvironmentPaths(reg.id).catch(() => []);
+                envPathsByRegistry.set(reg.id, paths);
+            }));
+        }
 
         const sourceRegistry = registries.find(r => r.id === job.target_registry_id);
         const sourceBase = sourceRegistry?.base_url || '';
@@ -4703,6 +4840,7 @@ router.on('/releases/new', async (params, query) => {
             releaseId: '',
             notes: '',
             targetRegistryId: '',
+            environmentId: '',
             sourceRefMode: 'tag',
             validateOnly: false,
             renameRules: [{ find: '', replace: '' }],
@@ -4719,8 +4857,12 @@ router.on('/releases/new', async (params, query) => {
             return out;
         };
 
-        const applyProjectPath = (path, registry) => {
-            const rawDefault = registry?.default_project_path || '';
+        const applyProjectPath = (path, registry, envId, role = 'target') => {
+            const envPaths = registry?.id ? envPathsByRegistry.get(registry.id) : [];
+            const envOverride = envId
+                ? (envPaths || []).find(p => p.environment_id === envId)?.[`${role}_project_path_override`]
+                : null;
+            const rawDefault = (envOverride || registry?.default_project_path || '');
             const defaultPath = rawDefault.trim().replace(/^\/+|\/+$/g, '');
             if (!defaultPath) return path;
             const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
@@ -4802,9 +4944,23 @@ router.on('/releases/new', async (params, query) => {
                                         `).join('')}
                                     </select>
                                     <div class="form-hint">
-                                        ${targetRegistry?.default_project_path ? `Project path: ${targetRegistry.default_project_path}` : 'Project path: -'}
+                                        ${targetRegistry ? `Project path: ${applyProjectPath('', targetRegistry, state.environmentId) || '-'}` : 'Project path: -'}
                                     </div>
                                 </div>
+                                ${environments.length > 0 ? `
+                                    <div class="mb-3">
+                                        <label class="form-label">Environment</label>
+                                        <select class="form-select" id="release-environment">
+                                            <option value="">Default</option>
+                                            ${environments.map(env => `
+                                                <option value="${env.id}" ${state.environmentId === env.id ? 'selected' : ''}>
+                                                    ${env.name} (${env.slug})
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                        <div class="form-hint">Applies per-environment project path overrides.</div>
+                                    </div>
+                                ` : ''}
                             </div>
                         </div>
 
@@ -4867,7 +5023,7 @@ router.on('/releases/new', async (params, query) => {
                                 </thead>
                                 <tbody>
                                     ${images.map((img, idx) => {
-                                        const basePath = applyProjectPath(img.target_image, targetRegistry);
+                                        const basePath = applyProjectPath(img.target_image, targetRegistry, state.environmentId);
                                         const renamed = applyRules(basePath);
                                         const override = state.overrides[idx]?.override_name || '';
                                         const finalPath = applyOverride(renamed, override);
@@ -4916,6 +5072,13 @@ router.on('/releases/new', async (params, query) => {
                 state.targetRegistryId = e.target.value;
                 updatePreview();
             });
+            const envSelect = document.getElementById('release-environment');
+            if (envSelect) {
+                envSelect.addEventListener('change', (e) => {
+                    state.environmentId = e.target.value;
+                    updatePreview();
+                });
+            }
             document.querySelectorAll('input[name="source-ref-mode"]').forEach(input => {
                 input.addEventListener('change', (e) => {
                     state.sourceRefMode = e.target.value;
@@ -4984,6 +5147,7 @@ router.on('/releases/new', async (params, query) => {
                 const payload = {
                     source_copy_job_id: job.job_id,
                     target_registry_id: state.targetRegistryId,
+                    environment_id: state.environmentId || null,
                     release_id: releaseId,
                     notes: state.notes || null,
                     source_ref_mode: state.sourceRefMode,
@@ -5008,7 +5172,7 @@ router.on('/releases/new', async (params, query) => {
             document.querySelectorAll('[data-preview]').forEach(el => {
                 const idx = parseInt(el.getAttribute('data-index'), 10);
                 const sourcePath = el.getAttribute('data-source-path') || '';
-                const basePath = applyProjectPath(sourcePath, targetRegistry);
+                const basePath = applyProjectPath(sourcePath, targetRegistry, state.environmentId);
                 const renamed = applyRules(basePath);
                 const override = state.overrides[idx]?.override_name || '';
                 const finalPath = applyOverride(renamed, override);
@@ -5039,10 +5203,22 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [bundle, mappings] = await Promise.all([
-            api.getBundle(params.id),
+        const bundle = await api.getBundle(params.id);
+        const [mappings, environments, sourceRegistry, targetRegistry] = await Promise.all([
             api.getImageMappings(params.id, params.version),
+            bundle.tenant_id ? api.getEnvironments(bundle.tenant_id) : Promise.resolve([]),
+            bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : Promise.resolve(null),
+            bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : Promise.resolve(null),
         ]);
+        const envPathsByRegistry = new Map();
+        if (sourceRegistry?.id) {
+            const paths = await api.getRegistryEnvironmentPaths(sourceRegistry.id).catch(() => []);
+            envPathsByRegistry.set(sourceRegistry.id, paths);
+        }
+        if (targetRegistry?.id && targetRegistry.id !== sourceRegistry?.id) {
+            const paths = await api.getRegistryEnvironmentPaths(targetRegistry.id).catch(() => []);
+            envPathsByRegistry.set(targetRegistry.id, paths);
+        }
 
         const autoTagEnabled = !!bundle.auto_tag_enabled;
 
@@ -5080,15 +5256,26 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                         </small>
                     </div>
 
-                    <div class="list-group mb-3">
+                    <div class="mb-3">
+                        <label class="form-label required">Environment</label>
+                        <select class="form-select" id="environment-select" required>
+                            <option value="">Select environment</option>
+                            ${environments.map(env => `
+                                <option value="${env.id}">${env.name}</option>
+                            `).join('')}
+                        </select>
+                        <small class="form-hint">Required for environment-specific registry paths.</small>
+                    </div>
+
+                    <div class="list-group mb-3" id="copy-preview-list">
                         <div class="list-group-item">
                             <strong>Images to copy:</strong>
                         </div>
                         ${mappings.slice(0, 5).map(m => `
                             <div class="list-group-item">
-                                <code class="small">${m.source_image}:${m.source_tag}</code>
+                                <code class="small" data-preview-source="${m.source_image}" data-preview-source-tag="${m.source_tag}">${m.source_image}:${m.source_tag}</code>
                                 <i class="ti ti-arrow-right mx-2"></i>
-                                <code class="small">${m.target_image}:<span class="text-primary">[tag]</span></code>
+                                <code class="small" data-preview-target="${m.target_image}">${m.target_image}:<span class="text-primary">[tag]</span></code>
                             </div>
                         `).join('')}
                         ${mappings.length > 5 ? `
@@ -5113,6 +5300,37 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 </div>
             </div>
         `;
+
+        const applyProjectPath = (path, registry, envId, role = 'target') => {
+            const envPaths = registry?.id ? envPathsByRegistry.get(registry.id) : [];
+            const envOverride = envId
+                ? (envPaths || []).find(p => p.environment_id === envId)?.[`${role}_project_path_override`]
+                : null;
+            const rawDefault = (envOverride || registry?.default_project_path || '');
+            const defaultPath = rawDefault.trim().replace(/^\/+|\/+$/g, '');
+            if (!defaultPath) return path;
+            const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
+            if (!trimmed) return defaultPath;
+            const slashIndex = trimmed.indexOf('/');
+            const rest = slashIndex === -1 ? trimmed : trimmed.slice(slashIndex + 1);
+            return `${defaultPath}/${rest}`;
+        };
+
+        const updatePreview = () => {
+            const envId = document.getElementById('environment-select')?.value || '';
+            content.querySelectorAll('[data-preview-source]').forEach(el => {
+                const raw = el.getAttribute('data-preview-source') || '';
+                const tag = el.getAttribute('data-preview-source-tag') || '';
+                const path = applyProjectPath(raw, sourceRegistry, envId, 'source');
+                el.textContent = `${path}:${tag}`;
+            });
+            content.querySelectorAll('[data-preview-target]').forEach(el => {
+                const raw = el.getAttribute('data-preview-target') || '';
+                const path = applyProjectPath(raw, targetRegistry, envId, 'target');
+                const suffix = el.querySelector('span')?.outerHTML || '<span class="text-primary">[tag]</span>';
+                el.innerHTML = `${path}:${suffix}`;
+            });
+        };
 
         const renderPrecheck = (result) => {
             const box = document.getElementById('precheck-result');
@@ -5152,13 +5370,18 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
         };
 
         const runPrecheck = async () => {
+            const envId = document.getElementById('environment-select')?.value || '';
+            if (!envId) {
+                getApp().showError('Please select an environment');
+                return null;
+            }
             const btn = document.getElementById('precheck-btn');
             if (btn) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
             }
             try {
-                const result = await api.precheckCopyImages(params.id, params.version);
+                const result = await api.precheckCopyImages(params.id, params.version, envId);
                 renderPrecheck(result);
                 return result;
             } catch (error) {
@@ -5175,6 +5398,12 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
         const precheckBtn = document.getElementById('precheck-btn');
         if (precheckBtn) {
             precheckBtn.addEventListener('click', runPrecheck);
+        }
+
+        const envSelect = document.getElementById('environment-select');
+        if (envSelect) {
+            envSelect.addEventListener('change', updatePreview);
+            updatePreview();
         }
 
         const targetTagInput = document.getElementById('target-tag');
@@ -5194,6 +5423,11 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 getApp().showError('Please enter a target tag');
                 return;
             }
+            const envId = document.getElementById('environment-select')?.value || '';
+            if (!envId) {
+                getApp().showError('Please select an environment');
+                return;
+            }
 
             const precheck = await runPrecheck();
             if (precheck && precheck.failed && precheck.failed.length > 0) {
@@ -5207,7 +5441,7 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
 
             try {
                 const tzOffset = new Date().getTimezoneOffset();
-                const response = await api.startCopyJob(params.id, params.version, targetTag, tzOffset);
+                const response = await api.startCopyJob(params.id, params.version, targetTag, tzOffset, envId);
                 getApp().showSuccess('Copy job started successfully');
                 router.navigate(`/copy-jobs/${response.job_id}`);
             } catch (error) {
@@ -5246,10 +5480,11 @@ router.on('/copy-jobs/:jobId', async (params) => {
         ]);
         const linkedRelease = releaseList.find(r => r.copy_job_id === initialStatus.job_id);
         const bundle = initialStatus.bundle_id ? await api.getBundle(initialStatus.bundle_id).catch(() => null) : null;
-        const [tenant, sourceRegistry, targetRegistry] = await Promise.all([
+        const [tenant, sourceRegistry, targetRegistry, environment] = await Promise.all([
             bundle?.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             initialStatus.source_registry_id ? api.getRegistry(initialStatus.source_registry_id).catch(() => null) : null,
             initialStatus.target_registry_id ? api.getRegistry(initialStatus.target_registry_id).catch(() => null) : null,
+            initialStatus.environment_id ? api.getEnvironment(initialStatus.environment_id).catch(() => null) : null,
         ]);
 
         const renderLogs = () => {
@@ -5310,6 +5545,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
                             <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
                             <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
+                            <div>Environment: ${environment ? `<span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>` : '-'}</div>
                             ${linkedRelease ? `<div>Image Release: <a href="#/releases/${linkedRelease.id}"><code>${linkedRelease.release_id}</code></a></div>` : ''}
                             ${status.base_copy_job_id ? `<div>Base Job: <a href="#/copy-jobs/${status.base_copy_job_id}"><code>${status.base_copy_job_id}</code></a></div>` : ''}
                         </div>
@@ -5667,13 +5903,23 @@ router.on('/copy-jobs', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [jobs, registries] = await Promise.all([
+        const [jobs, registries, bundles] = await Promise.all([
             api.getCopyJobs(),
             api.getRegistries(),
+            api.getBundles(),
         ]);
         const registryMap = {};
         registries.forEach(r => {
             registryMap[r.id] = r;
+        });
+        const bundleMap = new Map(bundles.map(b => [b.id, b]));
+        const tenantIds = [...new Set(bundles.map(b => b.tenant_id).filter(Boolean))];
+        const environmentLists = await Promise.all(
+            tenantIds.map(id => api.getEnvironments(id).catch(() => []))
+        );
+        const environmentMap = new Map();
+        environmentLists.flat().forEach(env => {
+            environmentMap.set(env.id, env);
         });
 
         const renderJobs = (rows) => `
@@ -5742,6 +5988,13 @@ router.on('/copy-jobs', async () => {
                                     <td>
                                         <span class="badge bg-azure-lt">${job.target_tag}</span>
                                         ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                        <div class="text-secondary small mt-1">
+                                            ${
+                                                job.environment_id && environmentMap.get(job.environment_id)
+                                                    ? `Env: <span class="badge" style="${environmentMap.get(job.environment_id).color ? `background:${environmentMap.get(job.environment_id).color};color:#fff;` : ''}">${environmentMap.get(job.environment_id).name}</span>`
+                                                    : 'Env: -'
+                                            }
+                                        </div>
                                         <div class="text-secondary small mt-1">
                                             ${job.source_registry_id ? `Source: <code class="small">${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}
                                         </div>
@@ -6021,6 +6274,15 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         return;
     }
 
+    let copyJobEnvId = null;
+    try {
+        const status = await api.getCopyJobStatus(copyJobId);
+        copyJobEnvId = status.environment_id || null;
+    } catch (error) {
+        getApp().showError(`Failed to load copy job: ${error.message}`);
+        return;
+    }
+
     let targets = [];
     try {
         targets = await api.getDeployTargets(tenantId);
@@ -6032,6 +6294,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
     const envOptions = targets.flatMap(t => (t.envs || []).map(env => ({
         deploy_target_env_id: env.id,
         deploy_target_id: t.id,
+        environment_id: env.environment_id,
         name: t.name,
         env_name: env.env_name || env.env_slug,
         env_slug: env.env_slug || env.env_name,
@@ -6118,6 +6381,15 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
             labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
         }
     };
+
+    if (copyJobEnvId) {
+        const match = eligible.find(t => t.environment_id === copyJobEnvId);
+        if (match) {
+            select.value = match.deploy_target_env_id;
+            confirmBtn.disabled = false;
+            updateTitle(match);
+        }
+    }
 
     select.addEventListener('change', () => {
         const target = eligible.find(t => t.deploy_target_env_id === select.value);
@@ -6365,6 +6637,15 @@ async function runDeployFromRelease(release, deployTargets) {
             labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
         }
     };
+
+    if (release?.environment_id) {
+        const match = eligible.find(t => t.environment_id === release.environment_id);
+        if (match) {
+            select.value = match.deploy_target_env_id;
+            confirmBtn.disabled = false;
+            updateTitle(match);
+        }
+    }
 
     select.addEventListener('change', () => {
         const target = eligible.find(t => t.deploy_target_env_id === select.value);

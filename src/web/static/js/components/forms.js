@@ -226,7 +226,7 @@ function createTenantForm(tenant = null) {
 /**
  * Vytvoří registry form
  */
-function createRegistryForm(registry = null, tenants = []) {
+function createRegistryForm(registry = null, tenants = [], environments = [], environmentPaths = []) {
     const isEdit = !!registry;
 
     const registryTypes = [
@@ -251,6 +251,14 @@ function createRegistryForm(registry = null, tenants = []) {
         { value: 'token', label: 'Token Auth (Robot accounts)' },
         { value: 'bearer', label: 'Bearer Token (Service accounts)' },
     ];
+
+    const envPathMap = new Map((environmentPaths || []).map(item => [
+        item.environment_id,
+        {
+            source: item.source_project_path_override || '',
+            target: item.target_project_path_override || '',
+        },
+    ]));
 
     return `
         <form id="registry-form" class="card" x-data="{ authType: '${registry?.auth_type || 'none'}' }">
@@ -292,6 +300,38 @@ function createRegistryForm(registry = null, tenants = []) {
                            placeholder="project-path">
                     <small class="form-hint">Optional path prefix for Release Images targets (no leading slash)</small>
                 </div>
+
+                ${environments.length > 0 ? `
+                <hr class="my-4">
+                <h4>Environment project paths</h4>
+                <div class="text-secondary small mb-2">
+                    Source/Target can differ. Leave empty to use default.
+                </div>
+                ${environments.map(env => {
+                    const envPaths = envPathMap.get(env.id) || {};
+                    return `
+                    <div class="row g-2 align-items-center mb-2">
+                        <div class="col-md-3">
+                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                            <span class="text-secondary small ms-2">${env.slug}</span>
+                        </div>
+                        <div class="col-md-4">
+                            <input type="text" class="form-control env-project-path"
+                                   data-env-id="${env.id}" data-role="source"
+                                   value="${envPaths.source || ''}"
+                                   placeholder="source path">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="text" class="form-control env-project-path"
+                                   data-env-id="${env.id}" data-role="target"
+                                   value="${envPaths.target || ''}"
+                                   placeholder="target path">
+                        </div>
+                        <div class="col-md-1 text-secondary small">src / tgt</div>
+                    </div>
+                    `;
+                }).join('')}
+                ` : ''}
 
                 <div class="row">
                     <div class="col-md-6">
