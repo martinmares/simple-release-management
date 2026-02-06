@@ -3651,10 +3651,17 @@ router.on('/releases', async () => {
                                     const summary = total === 0
                                         ? `<span class="text-secondary">No deploys</span>`
                                         : `<span class="badge bg-azure-lt text-azure-fg me-1">total ${total}</span> ${parts.join(' ')}`;
+                                    const isAuto = release.is_auto === true
+                                        || release.is_auto === 1
+                                        || release.is_auto === 't'
+                                        || release.is_auto === 'true'
+                                        || release.isAuto === true
+                                        || release.auto === true;
                                     return `
                                         <tr>
                                             <td>
                                                 <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
+                                                ${isAuto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                                                 <span class="badge bg-azure-lt text-azure-fg ms-2">${release.source_ref_mode || 'tag'}</span>
                                             </td>
                                             <td>
