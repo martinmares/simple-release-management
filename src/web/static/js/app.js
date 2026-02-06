@@ -4945,7 +4945,7 @@ router.on('/releases/new', async (params, query) => {
             releaseId: '',
             notes: '',
             targetRegistryId: '',
-            environmentId: '',
+            environmentId: job.environment_id || '',
             sourceRefMode: 'tag',
             validateOnly: false,
             renameRules: [{ find: '', replace: '' }],
@@ -5054,16 +5054,16 @@ router.on('/releases/new', async (params, query) => {
                                 </div>
                                 ${environments.length > 0 ? `
                                     <div class="mb-3">
-                                        <label class="form-label">Environment</label>
-                                        <select class="form-select" id="release-environment">
-                                            <option value="">Default</option>
+                                        <label class="form-label required">Environment</label>
+                                        <select class="form-select" id="release-environment" required>
+                                            <option value="">Select environment...</option>
                                             ${environments.map(env => `
                                                 <option value="${env.id}" ${state.environmentId === env.id ? 'selected' : ''}>
                                                     ${env.name} (${env.slug})
                                                 </option>
                                             `).join('')}
                                         </select>
-                                        <div class="form-hint">Applies per-environment project path overrides.</div>
+                                        <div class="form-hint">Required for environment-specific project path overrides.</div>
                                     </div>
                                 ` : ''}
                             </div>
@@ -5237,6 +5237,10 @@ router.on('/releases/new', async (params, query) => {
             document.getElementById('release-create').addEventListener('click', async () => {
                 if (!state.targetRegistryId) {
                     getApp().showError('Please select target registry');
+                    return;
+                }
+                if (environments.length > 0 && !state.environmentId) {
+                    getApp().showError('Please select environment');
                     return;
                 }
                 const releaseId = state.releaseId.trim();
@@ -5653,7 +5657,7 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                     sourceRegistryId,
                     targetRegistryId,
                 );
-                getApp().showSuccess('Copy job started successfully');
+                getApp().showSuccess('Copy job created. Click Start to run.');
                 router.navigate(`/copy-jobs/${response.job_id}`);
             } catch (error) {
                 getApp().showError(error.message);
