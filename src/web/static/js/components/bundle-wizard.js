@@ -9,6 +9,7 @@ class BundleWizard {
             title: 'Create New Bundle',
             createLabel: 'Create Bundle',
             tenantLocked: false,
+            showRegistrySelectors: true,
             ...options,
         };
         this.data = {
@@ -120,7 +121,7 @@ class BundleWizard {
                             </option>
                         `).join('')}
                     </select>
-                    <small class="form-hint">Selecting a tenant will filter available registries</small>
+                    ${this.options.showRegistrySelectors ? '<small class="form-hint">Selecting a tenant will filter available registries</small>' : ''}
                 `}
             </div>
 
@@ -137,39 +138,41 @@ class BundleWizard {
                           placeholder="Optional description">${this.data.bundle.description}</textarea>
             </div>
 
-            <hr>
+            ${this.options.showRegistrySelectors ? `
+                <hr>
 
-            <div class="row">
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label class="form-label required">Source Registry</label>
-                        <select class="form-select" id="bundle-source-registry" required>
-                            <option value="">Select source...</option>
-                            ${sourceRegistries.map(r => `
-                                <option value="${r.id}" ${this.data.bundle.source_registry_id === r.id ? 'selected' : ''}>
-                                    ${r.name} (${r.registry_type})
-                                </option>
-                            `).join('')}
-                        </select>
-                        <small class="form-hint">Registry to pull images from</small>
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label required">Source Registry</label>
+                            <select class="form-select" id="bundle-source-registry" required>
+                                <option value="">Select source...</option>
+                                ${sourceRegistries.map(r => `
+                                    <option value="${r.id}" ${this.data.bundle.source_registry_id === r.id ? 'selected' : ''}>
+                                        ${r.name} (${r.registry_type})
+                                    </option>
+                                `).join('')}
+                            </select>
+                            <small class="form-hint">Registry to pull images from</small>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <div class="mb-3">
+                            <label class="form-label required">Target Registry</label>
+                            <select class="form-select" id="bundle-target-registry" required>
+                                <option value="">Select target...</option>
+                                ${targetRegistries.map(r => `
+                                    <option value="${r.id}" ${this.data.bundle.target_registry_id === r.id ? 'selected' : ''}>
+                                        ${r.name} (${r.registry_type})
+                                    </option>
+                                `).join('')}
+                            </select>
+                            <small class="form-hint">Registry to push images to</small>
+                        </div>
                     </div>
                 </div>
-
-                <div class="col-md-6">
-                    <div class="mb-3">
-                        <label class="form-label required">Target Registry</label>
-                        <select class="form-select" id="bundle-target-registry" required>
-                            <option value="">Select target...</option>
-                            ${targetRegistries.map(r => `
-                                <option value="${r.id}" ${this.data.bundle.target_registry_id === r.id ? 'selected' : ''}>
-                                    ${r.name} (${r.registry_type})
-                                </option>
-                            `).join('')}
-                        </select>
-                        <small class="form-hint">Registry to push images to</small>
-                    </div>
-                </div>
-            </div>
+            ` : ''}
 
             <div class="mb-3">
                 <label class="form-check">
@@ -397,12 +400,22 @@ class BundleWizard {
         this.data.bundle.tenant_id = document.getElementById('bundle-tenant').value;
         this.data.bundle.name = document.getElementById('bundle-name').value;
         this.data.bundle.description = document.getElementById('bundle-description').value;
-        this.data.bundle.source_registry_id = document.getElementById('bundle-source-registry').value;
-        this.data.bundle.target_registry_id = document.getElementById('bundle-target-registry').value;
+        const sourceSelect = document.getElementById('bundle-source-registry');
+        const targetSelect = document.getElementById('bundle-target-registry');
+        if (sourceSelect) {
+            this.data.bundle.source_registry_id = sourceSelect.value;
+        }
+        if (targetSelect) {
+            this.data.bundle.target_registry_id = targetSelect.value;
+        }
         this.data.bundle.auto_tag_enabled = document.getElementById('bundle-auto-tag')?.checked || false;
-        if (!this.data.bundle.tenant_id || !this.data.bundle.name ||
-            !this.data.bundle.source_registry_id || !this.data.bundle.target_registry_id) {
+        if (!this.data.bundle.tenant_id || !this.data.bundle.name) {
             throw new Error('Please fill in all required fields');
+        }
+        if (this.options.showRegistrySelectors) {
+            if (!this.data.bundle.source_registry_id || !this.data.bundle.target_registry_id) {
+                throw new Error('Please fill in all required fields');
+            }
         }
     }
 

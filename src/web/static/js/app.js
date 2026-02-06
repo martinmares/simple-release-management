@@ -3133,10 +3133,10 @@ router.on('/bundles/:id', async (params) => {
                                     <i class="ti ti-plus"></i>
                                     New Version
                                 </a>
-                                <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
-                                    <i class="ti ti-copy"></i>
-                                    Copy Bundle
-                                </a>
+                                    <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
+                                        <i class="ti ti-copy"></i>
+                                        Duplicate Bundle
+                                    </a>
                                 <a href="#/bundles/${bundle.id}/edit" class="btn btn-ghost-secondary btn-sm">
                                     <i class="ti ti-pencil"></i>
                                     Edit
@@ -3640,10 +3640,11 @@ router.on('/bundles/:id/copy', async (params) => {
         let mappings = await api.getImageMappings(params.id, selectedVersion);
 
         const wizard = new BundleWizard({
-            title: 'Copy Bundle',
-            createLabel: 'Create Copy',
+            title: 'Duplicate Bundle',
+            createLabel: 'Create Duplicate',
             tenantLocked: true,
             enableReplaceRules: false,
+            showRegistrySelectors: false,
         });
 
         wizard.data.bundle.tenant_id = bundle.tenant_id;
@@ -4173,7 +4174,7 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                     <div class="card-actions">
                         <a href="#/bundles/${params.id}/versions/${params.version}/copy" class="btn btn-primary btn-sm">
                             <i class="ti ti-copy"></i>
-                            Copy Images
+                            Start Copy Job
                         </a>
                     </div>
                 </div>
