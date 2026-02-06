@@ -388,7 +388,7 @@ function createRegistryForm(registry = null, tenants = []) {
             </div>
             <div class="card-footer text-end">
                 <div class="d-flex">
-                    <a href="#/registries" class="btn btn-link">Cancel</a>
+                    <a href="#/tenants${registry?.tenant_id ? `/${registry.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update Registry' : 'Create Registry'}
@@ -484,7 +484,7 @@ function createGitRepoForm(repo = null, tenants = []) {
             </div>
             <div class="card-footer text-end">
                 <div class="d-flex">
-                    <a href="#/git-repos" class="btn btn-link">Cancel</a>
+                    <a href="#/tenants${repo?.tenant_id ? `/${repo.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update Git Repo' : 'Create Git Repo'}
@@ -627,7 +627,7 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], envi
                         No environments configured for this tenant yet.
                     </div>
                 ` : `
-                    <ul class="nav nav-tabs">
+                    <ul class="nav nav-tabs nav-fill">
                         ${environments.map((env, index) => `
                             <li class="nav-item">
                                 <button class="nav-link ${index === 0 ? 'active' : ''}"

@@ -1038,7 +1038,7 @@ router.on('/tenants/:id', async (params) => {
                                             No registries yet
                                         </div>
                                     ` : registries.map(reg => `
-                                        <a href="#/registries/${reg.id}" class="list-group-item list-group-item-action">
+                                        <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
                                             <div class="d-flex align-items-center">
                                                 <span class="avatar avatar-sm me-2">
                                                     <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
@@ -1601,7 +1601,17 @@ router.on('/git-repos/:id/edit', async (params) => {
             api.getGitRepo(params.id),
             api.getTenants(),
         ]);
-        content.innerHTML = createGitRepoForm(repo, tenants);
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${repo.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+            ${createGitRepoForm(repo, tenants)}
+        `;
 
         const tenantSelect = document.querySelector('select[name="tenant_id"]');
         if (tenantSelect) {
@@ -1617,7 +1627,7 @@ router.on('/git-repos/:id/edit', async (params) => {
             await handleFormSubmit(e, async (data) => {
                 await api.updateGitRepo(params.id, data);
                 getApp().showSuccess('Git repository updated successfully');
-                router.navigate('/git-repos');
+                router.navigate(`/tenants/${repo.tenant_id}`);
             });
         });
     } catch (error) {
@@ -1640,9 +1650,9 @@ router.on('/registries/:id', async (params) => {
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
-                    <a href="#/registries" class="btn btn-ghost-secondary">
+                    <a href="#/tenants/${registry.tenant_id}" class="btn btn-ghost-secondary">
                         <i class="ti ti-arrow-left"></i>
-                        Back to Registries
+                        Back to Tenant
                     </a>
                 </div>
             </div>
@@ -1779,13 +1789,23 @@ router.on('/registries/:id/edit', async (params) => {
             api.getRegistry(params.id),
             api.getTenants(),
         ]);
-        content.innerHTML = createRegistryForm(registry, tenants);
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${registry.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+            ${createRegistryForm(registry, tenants)}
+        `;
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 await api.updateRegistry(params.id, data);
                 getApp().showSuccess('Registry updated successfully');
-                router.navigate(`/registries/${params.id}`);
+                router.navigate(`/tenants/${registry.tenant_id}`);
             });
         });
     } catch (error) {
@@ -1862,6 +1882,139 @@ router.on('/environments/:id/edit', async (params) => {
 });
 
 // ==================== DEPLOY TARGETS ROUTES ====================
+
+// Deploy Targets List
+router.on('/deploy-targets', async () => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const tenants = await api.getTenants();
+        const targetsByTenant = await Promise.all(
+            tenants.map(async (tenant) => {
+                const targets = await api.getDeployTargets(tenant.id);
+                return targets.map(target => ({
+                    ...target,
+                    tenant_id: tenant.id,
+                    tenant_name: tenant.name,
+                }));
+            })
+        );
+        const targets = targetsByTenant.flat();
+
+        const renderTargets = (rows, searchQuery = '', selectedTenant = '') => {
+            const q = (searchQuery || '').toLowerCase().trim();
+            const filtered = rows.filter(row => {
+                if (row.is_archived) return false;
+                if (selectedTenant && row.tenant_id !== selectedTenant) return false;
+                if (q && !row.name.toLowerCase().includes(q)) return false;
+                return true;
+            });
+
+            return `
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Deploy Targets</h3>
+                        <div class="card-actions">
+                            <a href="#/deploy-targets/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Deploy Target
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="card-body border-bottom py-3">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <div class="input-group">
+                                    <span class="input-group-text">
+                                        <i class="ti ti-search"></i>
+                                    </span>
+                                    <input type="text" class="form-control" placeholder="Search by name..."
+                                           id="deploy-targets-search" value="${searchQuery}">
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <select class="form-select" id="deploy-targets-tenant">
+                                    <option value="">All Tenants</option>
+                                    ${tenants.map(t => `
+                                        <option value="${t.id}" ${selectedTenant === t.id ? 'selected' : ''}>${t.name}</option>
+                                    `).join('')}
+                                </select>
+                            </div>
+                            <div class="col-md-auto ms-auto">
+                                <span class="text-secondary">${filtered.length} deploy targets</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Tenant</th>
+                                    <th>Environments</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${filtered.length === 0 ? `
+                                    <tr>
+                                        <td colspan="4" class="text-center text-secondary py-4">
+                                            No deploy targets found
+                                        </td>
+                                    </tr>
+                                ` : filtered.map(target => {
+                                    const envs = target.envs || [];
+                                    const active = envs.some(env => env.is_active !== false);
+                                    return `
+                                        <tr>
+                                            <td><a href="#/deploy-targets/${target.id}/edit"><strong>${target.name}</strong></a></td>
+                                            <td><a href="#/tenants/${target.tenant_id}">${target.tenant_name}</a></td>
+                                            <td>${envs.length}</td>
+                                            <td>
+                                                <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                                    ${active ? 'active' : 'inactive'}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    `;
+                                }).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        };
+
+        content.innerHTML = renderTargets(targets);
+
+        const searchInput = document.getElementById('deploy-targets-search');
+        const tenantSelect = document.getElementById('deploy-targets-tenant');
+        const rerender = () => {
+            const q = searchInput?.value || '';
+            const tenantId = tenantSelect?.value || '';
+            content.innerHTML = renderTargets(targets, q, tenantId);
+            attachHandlers();
+        };
+
+        const attachHandlers = () => {
+            const s = document.getElementById('deploy-targets-search');
+            const t = document.getElementById('deploy-targets-tenant');
+            s?.addEventListener('input', rerender);
+            t?.addEventListener('change', rerender);
+        };
+
+        attachHandlers();
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load deploy targets: ${error.message}
+            </div>
+        `;
+    }
+});
 
 router.on('/deploy-targets/new', async (params, query) => {
     const content = document.getElementById('app-content');
@@ -2778,14 +2931,25 @@ router.on('/bundles/:id', async (params) => {
         });
 
         content.innerHTML = `
-            <div class="row mb-3">
-                <div class="col">
-                    <a href="#/bundles" class="btn btn-ghost-secondary">
-                        <i class="ti ti-arrow-left"></i>
-                        Back to Bundles
-                    </a>
+            ${tenant?.id ? `
+                <div class="row mb-3">
+                    <div class="col">
+                        <a href="#/tenants/${tenant.id}" class="btn btn-ghost-secondary">
+                            <i class="ti ti-arrow-left"></i>
+                            Back to Tenant
+                        </a>
+                    </div>
                 </div>
-            </div>
+            ` : `
+                <div class="row mb-3">
+                    <div class="col">
+                        <a href="#/bundles" class="btn btn-ghost-secondary">
+                            <i class="ti ti-arrow-left"></i>
+                            Back to Bundles
+                        </a>
+                    </div>
+                </div>
+            `}
 
             <div class="row">
                 <div class="col-12">
