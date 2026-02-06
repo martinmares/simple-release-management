@@ -422,6 +422,26 @@ class ApiClient {
         return this.get(`/tenants/${tenantId}/deploy-targets`);
     }
 
+    async getEnvironments(tenantId) {
+        return this.get(`/tenants/${tenantId}/environments`);
+    }
+
+    async createEnvironment(tenantId, data) {
+        return this.post(`/tenants/${tenantId}/environments`, data);
+    }
+
+    async updateEnvironment(id, data) {
+        return this.put(`/environments/${id}`, data);
+    }
+
+    async deleteEnvironment(id) {
+        return this.delete(`/environments/${id}`);
+    }
+
+    async getEnvironment(id) {
+        return this.get(`/environments/${id}`);
+    }
+
     async getReleaseDeployTargets(releaseId) {
         return this.get(`/releases/${releaseId}/deploy-targets`);
     }
@@ -430,10 +450,10 @@ class ApiClient {
         return this.post(`/tenants/${tenantId}/deploy-targets`, data);
     }
 
-    async startAutoDeployFromCopyJob(copyJobId, deployTargetId, dryRun = true) {
+    async startAutoDeployFromCopyJob(copyJobId, deployTargetEnvId, dryRun = true) {
         return this.post(`/deploy/jobs/from-copy`, {
             copy_job_id: copyJobId,
-            deploy_target_id: deployTargetId,
+            deploy_target_env_id: deployTargetEnvId,
             dry_run: dryRun,
         });
     }
@@ -444,6 +464,14 @@ class ApiClient {
 
     async deleteDeployTarget(id) {
         return this.delete(`/deploy-targets/${id}`);
+    }
+
+    async archiveDeployTarget(id) {
+        return this.post(`/deploy-targets/${id}/archive`, {});
+    }
+
+    async unarchiveDeployTarget(id) {
+        return this.post(`/deploy-targets/${id}/unarchive`, {});
     }
 
     async getDeployTarget(id) {

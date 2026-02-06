@@ -226,12 +226,13 @@ document.addEventListener('alpine:init', () => {
         },
 
         getRegistryRoleBadge(role) {
+            const key = (role || '').toString().trim().toLowerCase();
             const badgeMap = {
                 'source': 'bg-blue text-blue-fg',
                 'target': 'bg-green text-green-fg',
                 'both': 'bg-purple text-purple-fg',
             };
-            return badgeMap[role] || 'bg-secondary text-secondary-fg';
+            return badgeMap[key] || 'bg-secondary text-secondary-fg';
         },
 
         // ==================== API HELPERS ====================
@@ -928,15 +929,18 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles, deployTargets, gitRepos] = await Promise.all([
+        const [tenant, registries, bundles, deployTargets, gitRepos, environments] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
             api.getDeployTargets(params.id),
             api.getGitRepos(params.id),
+            api.getEnvironments(params.id),
         ]);
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
+        const activeDeployTargets = deployTargets.filter(t => !t.is_archived);
+        const archivedDeployTargets = deployTargets.filter(t => t.is_archived);
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -984,6 +988,42 @@ router.on('/tenants/:id', async (params) => {
                         <div class="col-md-6">
                             <div class="card mb-3">
                                 <div class="card-header">
+                                    <h3 class="card-title">Environments</h3>
+                                    <div class="card-actions">
+                                        <a href="#/environments/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            Add
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${environments.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No environments yet
+                                        </div>
+                                    ` : environments.map(env => {
+                                        const envColor = env.color || '';
+                                        return `
+                                        <a href="#/environments/${env.id}/edit" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center">
+                                                <span class="avatar avatar-sm me-2" style="background-color:${envColor || 'transparent'} !important;border:1px solid rgba(98,105,118,0.4);" title="${envColor || 'no color'}"></span>
+                                                <div class="flex-fill">
+                                                    <div class="d-flex align-items-center gap-2">
+                                                        <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
+                                                        <span class="text-secondary small">${env.slug}</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </a>
+                                    `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
                                     <h3 class="card-title">Registries</h3>
                                     <div class="card-actions">
                                         <a href="#/registries/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
@@ -1009,7 +1049,42 @@ router.on('/tenants/:id', async (params) => {
                                                     <div class="text-secondary small"><code class="small">${reg.base_url || '-'}</code></div>
                                                     <div class="text-secondary small">Project path: <code class="small">${reg.default_project_path || '-'}</code></div>
                                                 </div>
-                                                <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                                <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">Bundles</h3>
+                                    <div class="card-actions">
+                                        <a href="#/bundles/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            New Bundle
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${bundles.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No bundles yet
+                                        </div>
+                                    ` : bundles.map(bundle => `
+                                        <a href="#/bundles/${bundle.id}" class="list-group-item list-group-item-action">
+                                            <div class="row align-items-center">
+                                                <div class="col">
+                                                    <strong>${bundle.name}</strong>
+                                                    <div class="text-secondary small">${bundle.description || ''}</div>
+                                                </div>
+                                                <div class="col-auto">
+                                                    <span class="badge bg-blue text-blue-fg">${bundle.current_version || 'v1'}</span>
+                                                </div>
                                             </div>
                                         </a>
                                     `).join('')}
@@ -1020,124 +1095,154 @@ router.on('/tenants/:id', async (params) => {
                         <div class="col-md-6">
                             <div class="card mb-3">
                                 <div class="card-header">
-                                    <h3 class="card-title">Deploy Targets</h3>
+                                    <h3 class="card-title">Git Repos</h3>
                                     <div class="card-actions">
-                                        <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                        <a href="#/git-repos/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
                                             <i class="ti ti-plus"></i>
                                             Add
                                         </a>
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
-                                    ${deployTargets.length === 0 ? `
+                                    ${gitRepos.length === 0 ? `
                                         <div class="list-group-item text-center text-secondary py-4">
-                                            No deploy targets yet
+                                            No git repositories yet
                                         </div>
-                                    ` : deployTargets.map(target => `
-                                        <div class="list-group-item">
-                                            <div class="d-flex align-items-center gap-3">
+                                    ` : gitRepos.map(repo => `
+                                        <a href="#/git-repos/${repo.id}/edit" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center">
                                                 <div class="flex-fill">
-                                                    <div>
-                                                        <a href="#/deploy-targets/${target.id}/edit" class="text-reset">
-                                                            ${target.name}
-                                                        </a>
-                                                    </div>
-                                                    ${(() => {
-                                                        const envRepo = gitRepoById.get(target.env_repo_id);
-                                                        const envUrl = envRepo?.repo_url || '-';
-                                                        const envPath = target.env_repo_path || '-';
-                                                        const deployRepo = gitRepoById.get(target.deploy_repo_id);
-                                                        const deployUrl = deployRepo?.repo_url || '-';
-                                                        const deployPath = target.deploy_repo_path || '-';
-                                                        return `
-                                                            <div class="text-secondary small">
-                                                                Env: <code class="small">${envUrl}</code> (path: <code class="small">${envPath}</code>)
-                                                            </div>
-                                                            <div class="text-secondary small">
-                                                                Deploy: <code class="small">${deployUrl}</code> (path: <code class="small">${deployPath}</code>)
-                                                            </div>
-                                                        `;
-                                                    })()}
+                                                    <div>${repo.name}</div>
+                                                    <div class="text-secondary small"><code class="small">${repo.repo_url}</code></div>
                                                 </div>
-                                                <div class="d-flex flex-column align-items-end gap-2">
-                                                    <span class="badge ${target.is_active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                                        ${target.is_active ? 'active' : 'inactive'}
-                                                    </span>
-                                                    <a href="#/deploy-targets/new?tenant_id=${tenant.id}&amp;copy_from=${target.id}" class="btn btn-sm btn-outline-primary">
-                                                        <i class="ti ti-copy"></i>
-                                                        Copy
-                                                    </a>
-                                                </div>
+                                                <span class="badge bg-secondary-lt text-secondary-fg">${repo.default_branch || 'main'}</span>
                                             </div>
-                                        </div>
+                                        </a>
                                     `).join('')}
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="card mb-3">
+                    <div class="card">
                         <div class="card-header">
-                            <h3 class="card-title">Git Repos</h3>
+                            <h3 class="card-title">Deploy Targets</h3>
                             <div class="card-actions">
-                                <a href="#/git-repos/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                ${archivedDeployTargets.length > 0 ? `
+                                    <button class="btn btn-ghost-secondary btn-sm" id="toggle-archived-deploy-targets">
+                                        Show archived (${archivedDeployTargets.length})
+                                    </button>
+                                ` : ''}
+                                <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
                                     <i class="ti ti-plus"></i>
                                     Add
                                 </a>
                             </div>
                         </div>
                         <div class="list-group list-group-flush">
-                            ${gitRepos.length === 0 ? `
+                            ${activeDeployTargets.length === 0 ? `
                                 <div class="list-group-item text-center text-secondary py-4">
-                                    No git repositories yet
+                                    No deploy targets yet
                                 </div>
-                            ` : gitRepos.map(repo => `
-                                <a href="#/git-repos/${repo.id}/edit" class="list-group-item list-group-item-action">
-                                    <div class="d-flex align-items-center">
+                            ` : activeDeployTargets.map(target => `
+                                <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
+                                    <div class="d-flex align-items-center gap-3">
                                         <div class="flex-fill">
-                                            <div>${repo.name}</div>
-                                            <div class="text-secondary small"><code class="small">${repo.repo_url}</code></div>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <span>${target.name}</span>
+                                                ${(() => {
+                                                    const active = (target.envs || []).some(env => env.is_active !== false);
+                                                    return `
+                                                        <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                                            ${active ? 'active' : 'inactive'}
+                                                        </span>
+                                                    `;
+                                                })()}
+                                            </div>
+                                            ${(target.envs || []).map(env => {
+                                                const envRepo = gitRepoById.get(env.env_repo_id);
+                                                const envUrl = envRepo?.repo_url || '-';
+                                                const envPath = env.env_repo_path || '-';
+                                                const envBranch = env.env_repo_branch || '';
+                                                const deployRepo = gitRepoById.get(env.deploy_repo_id);
+                                                const deployUrl = deployRepo?.repo_url || '-';
+                                                const deployPath = env.deploy_repo_path || '-';
+                                                const deployBranch = env.deploy_repo_branch || '';
+                                                return `
+                                                    <div class="text-secondary small">
+                                                        <span class="badge me-1" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">
+                                                            ${env.env_name}
+                                                        </span>
+                                                        Env: <code class="small">${envUrl}</code>
+                                                        ${envBranch ? `(branch: <code class="small">${envBranch}</code>)` : `(path: <code class="small">${envPath}</code>)`}
+                                                    </div>
+                                                    <div class="text-secondary small">
+                                                        Deploy: <code class="small">${deployUrl}</code>
+                                                        ${deployBranch ? `(branch: <code class="small">${deployBranch}</code>)` : `(path: <code class="small">${deployPath}</code>)`}
+                                                    </div>
+                                                `;
+                                            }).join('')}
                                         </div>
-                                        <span class="badge bg-secondary-lt text-secondary-fg">${repo.default_branch || 'main'}</span>
                                     </div>
                                 </a>
                             `).join('')}
                         </div>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">Bundles</h3>
-                            <div class="card-actions">
-                                <a href="#/bundles/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-plus"></i>
-                                    New Bundle
-                                </a>
+                        ${archivedDeployTargets.length > 0 ? `
+                            <div class="list-group list-group-flush d-none" id="archived-deploy-targets">
+                                ${archivedDeployTargets.map(target => `
+                                    <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
+                                        <div class="d-flex align-items-center gap-3">
+                                            <div class="flex-fill">
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <span>${target.name}</span>
+                                                    <span class="badge bg-secondary text-secondary-fg">archived</span>
+                                                </div>
+                                                ${(target.envs || []).map(env => {
+                                                    const envRepo = gitRepoById.get(env.env_repo_id);
+                                                    const envUrl = envRepo?.repo_url || '-';
+                                                    const envPath = env.env_repo_path || '-';
+                                                    const envBranch = env.env_repo_branch || '';
+                                                    const deployRepo = gitRepoById.get(env.deploy_repo_id);
+                                                    const deployUrl = deployRepo?.repo_url || '-';
+                                                    const deployPath = env.deploy_repo_path || '-';
+                                                    const deployBranch = env.deploy_repo_branch || '';
+                                                    return `
+                                                        <div class="text-secondary small">
+                                                            <span class="badge me-1" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">
+                                                                ${env.env_name}
+                                                            </span>
+                                                            Env: <code class="small">${envUrl}</code>
+                                                            ${envBranch ? `(branch: <code class="small">${envBranch}</code>)` : `(path: <code class="small">${envPath}</code>)`}
+                                                        </div>
+                                                        <div class="text-secondary small">
+                                                            Deploy: <code class="small">${deployUrl}</code>
+                                                            ${deployBranch ? `(branch: <code class="small">${deployBranch}</code>)` : `(path: <code class="small">${deployPath}</code>)`}
+                                                        </div>
+                                                    `;
+                                                }).join('')}
+                                            </div>
+                                        </div>
+                                    </a>
+                                `).join('')}
                             </div>
-                        </div>
-                        <div class="list-group list-group-flush">
-                            ${bundles.length === 0 ? `
-                                <div class="list-group-item text-center text-secondary py-4">
-                                    No bundles yet
-                                </div>
-                            ` : bundles.map(bundle => `
-                                <a href="#/bundles/${bundle.id}" class="list-group-item list-group-item-action">
-                                    <div class="row align-items-center">
-                                        <div class="col">
-                                            <strong>${bundle.name}</strong>
-                                            <div class="text-secondary small">${bundle.description || ''}</div>
-                                        </div>
-                                        <div class="col-auto">
-                                            <span class="badge bg-blue text-blue-fg">${bundle.current_version || 'v1'}</span>
-                                        </div>
-                                    </div>
-                                </a>
-                            `).join('')}
-                        </div>
+                        ` : ''}
                     </div>
                 </div>
             </div>
         `;
+
+        const archivedToggle = document.getElementById('toggle-archived-deploy-targets');
+        if (archivedToggle) {
+            archivedToggle.addEventListener('click', () => {
+                const container = document.getElementById('archived-deploy-targets');
+                if (!container) return;
+                const isHidden = container.classList.contains('d-none');
+                container.classList.toggle('d-none');
+                archivedToggle.textContent = isHidden
+                    ? 'Hide archived'
+                    : `Show archived (${archivedDeployTargets.length})`;
+            });
+        }
 
         // Delete handler
         document.getElementById('delete-tenant-btn').addEventListener('click', async () => {
@@ -1692,6 +1797,70 @@ router.on('/registries/:id/edit', async (params) => {
     }
 });
 
+// Environment New/Edit
+router.on('/environments/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const tenants = await api.getTenants();
+        content.innerHTML = createEnvironmentForm(null, tenants);
+
+        if (query.tenant_id) {
+            const select = document.querySelector('select[name="tenant_id"]');
+            if (select) select.value = query.tenant_id;
+        }
+        attachEnvironmentColorPreview();
+        attachEnvironmentSlugPreview();
+
+        document.getElementById('environment-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                const tenantId = data.tenant_id;
+                delete data.tenant_id;
+                await api.createEnvironment(tenantId, data);
+                getApp().showSuccess('Environment created successfully');
+                router.navigate(`/tenants/${tenantId}`);
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load form: ${error.message}
+            </div>
+        `;
+    }
+});
+
+router.on('/environments/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+
+    try {
+        const [environment, tenants] = await Promise.all([
+            api.getEnvironment(params.id),
+            api.getTenants(),
+        ]);
+        content.innerHTML = createEnvironmentForm(environment, tenants);
+        attachEnvironmentColorPreview();
+        attachEnvironmentSlugPreview();
+
+        document.getElementById('environment-form').addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                delete data.tenant_id;
+                await api.updateEnvironment(params.id, data);
+                getApp().showSuccess('Environment updated successfully');
+                router.navigate(`/tenants/${environment.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        content.innerHTML = `
+            <div class="alert alert-danger">
+                Failed to load environment: ${error.message}
+            </div>
+        `;
+    }
+});
+
 // ==================== DEPLOY TARGETS ROUTES ====================
 
 router.on('/deploy-targets/new', async (params, query) => {
@@ -1710,6 +1879,7 @@ router.on('/deploy-targets/new', async (params, query) => {
         let tenantId = query.tenant_id || null;
         let formOptions = {};
         let copyFromId = null;
+        let environments = [];
 
         if (query.copy_from) {
             const response = await api.getDeployTarget(query.copy_from);
@@ -1730,8 +1900,11 @@ router.on('/deploy-targets/new', async (params, query) => {
             };
         }
 
+        if (tenantId) {
+            environments = await api.getEnvironments(tenantId);
+        }
         const scopedRepos = tenantId ? gitRepos.filter(r => r.tenant_id === tenantId) : gitRepos;
-        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, encjsonKeys, envVars, extraEnvVars, formOptions);
+        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, environments, encjsonKeys, envVars, extraEnvVars, formOptions);
 
         if (tenantId) {
             const select = document.querySelector('select[name=\"tenant_id\"]');
@@ -1760,6 +1933,20 @@ router.on('/deploy-targets/new', async (params, query) => {
         attachEncjsonKeyHandlers();
         attachDeployEnvVarHandlers();
         attachDeployExtraEnvVarHandlers();
+        attachDeployTargetEnvModeHandlers();
+        attachDeployTargetEnvTabs();
+
+        if (!tenantId) {
+            const select = document.querySelector('select[name=\"tenant_id\"]');
+            if (select) {
+                select.addEventListener('change', () => {
+                    const nextId = select.value;
+                    if (nextId) {
+                        router.navigate(`/deploy-targets/new?tenant_id=${nextId}`);
+                    }
+                });
+            }
+        }
 
         document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -1767,6 +1954,10 @@ router.on('/deploy-targets/new', async (params, query) => {
                 const keysWithPrivate = collectedKeys.filter(k => k.private_key && k.private_key.trim() !== '');
                 data.env_vars = collectDeployEnvVars();
                 data.extra_env_vars = collectDeployExtraEnvVars();
+                data.envs = collectDeployTargetEnvs();
+                if (!data.envs.length) {
+                    throw new Error('Configure at least one environment');
+                }
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
                 if (data.copy_from_target_id) {
@@ -1813,28 +2004,67 @@ router.on('/deploy-targets/:id/edit', async (params) => {
         const envVars = response.env_vars || [];
         const extraEnvVars = response.extra_env_vars || [];
         const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
-        content.innerHTML = createDeployTargetForm(target, tenants, scopedRepos, encjsonKeys, envVars, extraEnvVars, {
-            isEdit: true,
-            copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
-        });
+        const environments = await api.getEnvironments(target.tenant_id);
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${target.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+            ${createDeployTargetForm(target, tenants, scopedRepos, environments, encjsonKeys, envVars, extraEnvVars, {
+                isEdit: true,
+                copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
+        })}
+        `;
 
         attachEncjsonKeyHandlers();
         attachDeployEnvVarHandlers();
         attachDeployExtraEnvVarHandlers();
+        attachDeployTargetEnvModeHandlers();
+        attachDeployTargetEnvTabs();
 
         const deleteBtn = document.getElementById('delete-deploy-target-btn');
         if (deleteBtn) {
             deleteBtn.addEventListener('click', async () => {
                 const confirmed = await showConfirmDialog(
-                    'Delete Deploy Target?',
-                    `Are you sure you want to delete "${target.name}"? This is only allowed if it has no deploy jobs.`,
-                    'Delete',
+                    target.has_jobs ? 'Archive Deploy Target?' : 'Delete Deploy Target?',
+                    target.has_jobs
+                        ? `Archive "${target.name}"? It has deploy jobs and cannot be deleted.`
+                        : `Are you sure you want to delete "${target.name}"? This is only allowed if it has no deploy jobs.`,
+                    target.has_jobs ? 'Archive' : 'Delete',
                     'Cancel'
                 );
                 if (!confirmed) return;
                 try {
-                    await api.deleteDeployTarget(params.id);
-                    getApp().showSuccess('Deploy target deleted successfully');
+                    const result = await api.deleteDeployTarget(params.id);
+                    if (result?.archived) {
+                        getApp().showSuccess('Deploy target archived');
+                    } else {
+                        getApp().showSuccess('Deploy target deleted successfully');
+                    }
+                    router.navigate(`/tenants/${target.tenant_id}`);
+                } catch (error) {
+                    getApp().showError(error.message);
+                }
+            });
+        }
+
+        const unarchiveBtn = document.getElementById('unarchive-deploy-target-btn');
+        if (unarchiveBtn) {
+            unarchiveBtn.addEventListener('click', async () => {
+                const confirmed = await showConfirmDialog(
+                    'Unarchive Deploy Target?',
+                    `Unarchive "${target.name}"? It will be visible in lists again.`,
+                    'Unarchive',
+                    'Cancel'
+                );
+                if (!confirmed) return;
+                try {
+                    await api.unarchiveDeployTarget(params.id);
+                    getApp().showSuccess('Deploy target unarchived');
                     router.navigate(`/tenants/${target.tenant_id}`);
                 } catch (error) {
                     getApp().showError(error.message);
@@ -1847,6 +2077,10 @@ router.on('/deploy-targets/:id/edit', async (params) => {
                 data.encjson_keys = collectEncjsonKeys();
                 data.env_vars = collectDeployEnvVars();
                 data.extra_env_vars = collectDeployExtraEnvVars();
+                data.envs = collectDeployTargetEnvs();
+                if (!data.envs.length) {
+                    throw new Error('Configure at least one environment');
+                }
                 await api.updateDeployTarget(params.id, data);
                 getApp().showSuccess('Deploy target updated successfully');
                 router.navigate(`/tenants/${target.tenant_id}`);
@@ -1949,6 +2183,177 @@ function collectDeployExtraEnvVars() {
         }
     });
     return vars;
+}
+
+function collectDeployTargetEnvs() {
+    const blocks = document.querySelectorAll('[data-deploy-env]');
+    const envs = [];
+    blocks.forEach(block => {
+        const environmentId = block.getAttribute('data-env-id');
+        const envRepoId = block.querySelector('.env-repo-id')?.value?.trim() || '';
+        const deployRepoId = block.querySelector('.deploy-repo-id')?.value?.trim() || '';
+        const envRepoMode = block.querySelector('.env-repo-mode')?.value || 'path';
+        const deployRepoMode = block.querySelector('.deploy-repo-mode')?.value || 'path';
+        const envRepoPath = block.querySelector('.env-repo-path')?.value?.trim() || '';
+        const envRepoBranch = block.querySelector('.env-repo-branch')?.value?.trim() || '';
+        const deployRepoPath = block.querySelector('.deploy-repo-path')?.value?.trim() || '';
+        const deployRepoBranch = block.querySelector('.deploy-repo-branch')?.value?.trim() || '';
+        const allowAutoRelease = block.querySelector('.allow-auto-release')?.checked || false;
+        const appendEnvSuffix = block.querySelector('.append-env-suffix')?.checked || false;
+        const isActive = block.querySelector('.is-active')?.checked ?? true;
+        const releaseManifestMode = block.querySelector('.release-manifest-mode')?.value || 'match_digest';
+        const encjsonKeyDir = block.querySelector('.encjson-key-dir')?.value?.trim() || '';
+
+        if (!environmentId || !envRepoId || !deployRepoId) {
+            return;
+        }
+
+        envs.push({
+            environment_id: environmentId,
+            env_repo_id: envRepoId,
+            env_repo_path: envRepoMode === 'path' ? envRepoPath : null,
+            env_repo_branch: envRepoMode === 'branch' ? envRepoBranch : null,
+            deploy_repo_id: deployRepoId,
+            deploy_repo_path: deployRepoMode === 'path' ? deployRepoPath : null,
+            deploy_repo_branch: deployRepoMode === 'branch' ? deployRepoBranch : null,
+            allow_auto_release: allowAutoRelease,
+            append_env_suffix: appendEnvSuffix,
+            release_manifest_mode: releaseManifestMode,
+            is_active: isActive,
+            encjson_key_dir: encjsonKeyDir || null,
+        });
+    });
+    return envs;
+}
+
+function attachDeployTargetEnvModeHandlers() {
+    const blocks = document.querySelectorAll('[data-deploy-env]');
+    blocks.forEach(block => {
+        const envModeSelect = block.querySelector('.env-repo-mode');
+        const deployModeSelect = block.querySelector('.deploy-repo-mode');
+        const envPathInput = block.querySelector('.env-repo-path');
+        const envBranchInput = block.querySelector('.env-repo-branch');
+        const deployPathInput = block.querySelector('.deploy-repo-path');
+        const deployBranchInput = block.querySelector('.deploy-repo-branch');
+
+        const syncEnvMode = () => {
+            const mode = envModeSelect?.value || 'path';
+            if (envPathInput && envBranchInput) {
+                envPathInput.classList.toggle('d-none', mode === 'branch');
+                envBranchInput.classList.toggle('d-none', mode === 'path');
+            }
+        };
+
+        const syncDeployMode = () => {
+            const mode = deployModeSelect?.value || 'path';
+            if (deployPathInput && deployBranchInput) {
+                deployPathInput.classList.toggle('d-none', mode === 'branch');
+                deployBranchInput.classList.toggle('d-none', mode === 'path');
+            }
+        };
+
+        envModeSelect?.addEventListener('change', syncEnvMode);
+        deployModeSelect?.addEventListener('change', syncDeployMode);
+        syncEnvMode();
+        syncDeployMode();
+    });
+}
+
+function attachDeployTargetEnvTabs() {
+    const form = document.querySelector('#deploy-target-form');
+    if (!form) return;
+    const nav = form.querySelector('.nav-tabs');
+    if (!nav) return;
+
+    const tabs = Array.from(nav.querySelectorAll('[data-bs-target]'));
+    const panes = Array.from(form.querySelectorAll('.tab-pane'));
+    if (tabs.length === 0 || panes.length === 0) return;
+
+    const activate = (targetId) => {
+        tabs.forEach(tab => {
+            tab.classList.toggle('active', tab.getAttribute('data-bs-target') === targetId);
+        });
+        panes.forEach(pane => {
+            const isActive = `#${pane.id}` === targetId;
+            pane.classList.toggle('active', isActive);
+            pane.classList.toggle('show', isActive);
+        });
+    };
+
+    tabs.forEach(tab => {
+        tab.addEventListener('click', (e) => {
+            e.preventDefault();
+            const target = tab.getAttribute('data-bs-target');
+            if (target) activate(target);
+        });
+    });
+}
+
+function attachEnvironmentColorPreview() {
+    const colorInput = document.querySelector('.env-color-input');
+    const textInput = document.querySelector('.env-color-text');
+    const preview = document.querySelector('#env-color-preview');
+
+    if (!colorInput || !textInput || !preview) {
+        return;
+    }
+
+    const updatePreview = (value) => {
+        const color = (value || '').trim();
+        if (color) {
+            preview.style.background = color;
+            preview.style.color = '#fff';
+            preview.textContent = color;
+        } else {
+            preview.style.background = '';
+            preview.style.color = '';
+            preview.textContent = 'Preview';
+        }
+    };
+
+    updatePreview(textInput.value || colorInput.value);
+
+    colorInput.addEventListener('input', () => {
+        textInput.value = colorInput.value;
+        updatePreview(colorInput.value);
+    });
+
+    textInput.addEventListener('input', () => {
+        updatePreview(textInput.value);
+    });
+}
+
+function attachEnvironmentSlugPreview() {
+    const nameInput = document.querySelector('input[name="name"]');
+    const slugInput = document.querySelector('#env-slug-preview');
+    const form = document.querySelector('#environment-form');
+    if (!nameInput || !slugInput) return;
+
+    const mode = form?.dataset?.envMode || 'new';
+    let slugTouched = false;
+
+    const toSlug = (value) => {
+        return value
+            .toString()
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+    };
+
+    const updateSlug = () => {
+        if (mode === 'edit' || slugTouched) {
+            return;
+        }
+        const slug = toSlug(nameInput.value || '');
+        slugInput.value = slug;
+    };
+
+    updateSlug();
+    nameInput.addEventListener('input', updateSlug);
+    slugInput.addEventListener('input', () => {
+        slugTouched = slugInput.value.trim().length > 0;
+    });
 }
 
 function attachDeployEnvVarHandlers() {
@@ -5435,12 +5840,13 @@ function registryList() {
         },
 
         getRegistryRoleBadge(role) {
+            const key = (role || '').toString().trim().toLowerCase();
             const badges = {
-                'source': 'bg-info text-info-fg',
-                'target': 'bg-warning text-warning-fg',
-                'both': 'bg-success text-success-fg'
+                'source': 'bg-blue text-blue-fg',
+                'target': 'bg-green text-green-fg',
+                'both': 'bg-purple text-purple-fg'
             };
-            return badges[role] || 'bg-secondary text-secondary-fg';
+            return badges[key] || 'bg-secondary text-secondary-fg';
         }
     };
 }
@@ -5459,7 +5865,17 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         return;
     }
 
-    const eligible = targets.filter(t => t.allow_auto_release && t.is_active !== false);
+    const envOptions = targets.flatMap(t => (t.envs || []).map(env => ({
+        deploy_target_env_id: env.id,
+        deploy_target_id: t.id,
+        name: t.name,
+        env_name: env.env_name || env.env_slug,
+        env_slug: env.env_slug || env.env_name,
+        append_env_suffix: env.append_env_suffix,
+        allow_auto_release: env.allow_auto_release,
+        is_active: env.is_active,
+    })));
+    const eligible = envOptions.filter(t => t.allow_auto_release && t.is_active !== false);
     if (eligible.length === 0) {
         getApp().showError('No deploy targets allow auto release');
         return;
@@ -5476,7 +5892,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
                             <select class="form-select" id="auto-deploy-select">
                                 <option value="">Select...</option>
                                 ${eligible.map(t => `
-                                    <option value="${t.id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
+                                    <option value="${t.deploy_target_env_id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -5529,8 +5945,9 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
             }
             return;
         }
+        const tagSuffix = target.env_slug || target.env_name;
         const tagPreview = targetTag
-            ? (target.append_env_suffix ? `${targetTag}-${target.env_name}` : targetTag)
+            ? (target.append_env_suffix ? `${targetTag}-${tagSuffix}` : targetTag)
             : null;
         titleEl.textContent = 'Deploy Target';
         if (labelEl) {
@@ -5539,7 +5956,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
     };
 
     select.addEventListener('change', () => {
-        const target = eligible.find(t => t.id === select.value);
+        const target = eligible.find(t => t.deploy_target_env_id === select.value);
         confirmBtn.disabled = !target;
         updateTitle(target);
     });
@@ -5557,12 +5974,12 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
     });
 
     confirmBtn.addEventListener('click', async () => {
-        const targetId = select.value;
+        const targetEnvId = select.value;
         const dryRun = dryRunCheckbox?.checked ?? true;
-        if (!targetId) return;
+        if (!targetEnvId) return;
         cleanup();
         try {
-            const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId, dryRun);
+            const response = await api.startAutoDeployFromCopyJob(copyJobId, targetEnvId, dryRun);
             getApp().showSuccess('Deploy job started');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
@@ -5722,7 +6139,7 @@ async function runDeployFromRelease(release, deployTargets) {
                             <select class="form-select" id="release-deploy-select">
                                 <option value="">Select...</option>
                                 ${eligible.map(t => `
-                                    <option value="${t.id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
+                                    <option value="${t.deploy_target_env_id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -5775,8 +6192,9 @@ async function runDeployFromRelease(release, deployTargets) {
             }
             return;
         }
+        const tagSuffix = target.env_slug || target.env_name;
         const tagPreview = release?.release_id
-            ? (target.append_env_suffix ? `${release.release_id}-${target.env_name}` : release.release_id)
+            ? (target.append_env_suffix ? `${release.release_id}-${tagSuffix}` : release.release_id)
             : null;
         titleEl.textContent = 'Deploy Target';
         if (labelEl) {
@@ -5785,7 +6203,7 @@ async function runDeployFromRelease(release, deployTargets) {
     };
 
     select.addEventListener('change', () => {
-        const target = eligible.find(t => t.id === select.value);
+        const target = eligible.find(t => t.deploy_target_env_id === select.value);
         confirmBtn.disabled = !target;
         updateTitle(target);
     });
@@ -5803,14 +6221,14 @@ async function runDeployFromRelease(release, deployTargets) {
     });
 
     confirmBtn.addEventListener('click', async () => {
-        const targetId = select.value;
+        const targetEnvId = select.value;
         const dryRun = dryRunCheckbox?.checked ?? true;
-        if (!targetId) return;
+        if (!targetEnvId) return;
         cleanup();
         try {
             const response = await api.createDeployJob({
                 release_id: release.id,
-                deploy_target_id: targetId,
+                deploy_target_env_id: targetEnvId,
                 dry_run: dryRun,
             });
             getApp().showSuccess('Deploy job started');

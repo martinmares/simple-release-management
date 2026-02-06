@@ -243,6 +243,45 @@ pub struct DeployTarget {
     pub append_env_suffix: bool,
     pub release_manifest_mode: Option<String>,
     pub is_active: bool,
+    pub is_archived: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Environment {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub name: String,
+    pub slug: String,
+    pub color: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct DeployTargetEnv {
+    pub id: Uuid,
+    pub deploy_target_id: Uuid,
+    pub environment_id: Uuid,
+    pub env_repo_id: Option<Uuid>,
+    pub env_repo_path: Option<String>,
+    pub env_repo_branch: Option<String>,
+    pub deploy_repo_id: Option<Uuid>,
+    pub deploy_repo_path: Option<String>,
+    pub deploy_repo_branch: Option<String>,
+    pub allow_auto_release: bool,
+    pub append_env_suffix: bool,
+    pub is_active: bool,
+    pub release_manifest_mode: String,
+    pub encjson_key_dir: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnvironmentRegistryPath {
+    pub id: Uuid,
+    pub environment_id: Uuid,
+    pub registry_id: Uuid,
+    pub project_path_override: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -297,6 +336,7 @@ pub struct DeployJob {
     pub id: Uuid,
     pub release_id: Uuid,
     pub deploy_target_id: Uuid,
+    pub deploy_target_env_id: Uuid,
     pub status: String,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

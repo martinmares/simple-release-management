@@ -289,7 +289,7 @@ function createRegistryForm(registry = null, tenants = []) {
                     <label class="form-label">Default project path</label>
                     <input type="text" class="form-control" name="default_project_path"
                            value="${registry?.default_project_path || ''}"
-                           placeholder="nac-app">
+                           placeholder="project-path">
                     <small class="form-hint">Optional path prefix for Release Images targets (no leading slash)</small>
                 </div>
 
@@ -496,9 +496,84 @@ function createGitRepoForm(repo = null, tenants = []) {
 }
 
 /**
+ * Vytvoří environment form
+ */
+function createEnvironmentForm(environment = null, tenants = []) {
+    const isEdit = !!environment;
+    return `
+        <form id="environment-form" class="card" data-env-mode="${isEdit ? 'edit' : 'new'}">
+            <div class="card-header">
+                <h3 class="card-title">${isEdit ? 'Edit Environment' : 'New Environment'}</h3>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label required">Tenant</label>
+                    <select class="form-select" name="tenant_id" ${isEdit ? 'disabled' : ''} required>
+                        <option value="">Select tenant...</option>
+                        ${tenants.map(t => `
+                            <option value="${t.id}" ${environment?.tenant_id === t.id ? 'selected' : ''}>
+                                ${t.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                    ${isEdit ? `<input type="hidden" name="tenant_id" value="${environment.tenant_id}">` : ''}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Name</label>
+                    <input type="text" class="form-control" name="name"
+                           value="${environment?.name || ''}"
+                           placeholder="dev, test, prod" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Slug</label>
+                    <input type="text" class="form-control" id="env-slug-preview" name="slug"
+                           value="${environment?.slug || ''}"
+                           placeholder="generated-from-name">
+                    <small class="form-hint">Used in paths, tags, and lookups. Edit only if needed.</small>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Color</label>
+                    <div class="row g-2 align-items-end">
+                        <div class="col-md-3">
+                            <input type="color" class="form-control form-control-color env-color-input"
+                                   value="${environment?.color || '#1f6feb'}"
+                                   title="Pick a color">
+                        </div>
+                        <div class="col-md-5">
+                            <input type="text" class="form-control env-color-text" name="color"
+                                   value="${environment?.color || ''}"
+                                   placeholder="#1f6feb">
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-secondary small mb-1">Preview</div>
+                            <span id="env-color-preview" class="badge" style="${environment?.color ? `background:${environment.color};color:#fff;` : ''}">
+                                ${environment?.color ? environment.color : 'Preview'}
+                            </span>
+                        </div>
+                    </div>
+                    <small class="form-hint">Optional label color (hex). Used for environment badges.</small>
+                </div>
+            </div>
+            <div class="card-footer text-end">
+                <div class="d-flex">
+                    <a href="#/tenants${environment?.tenant_id ? `/${environment.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
+                    <button type="submit" class="btn btn-primary ms-auto">
+                        <i class="ti ti-check me-2"></i>
+                        ${isEdit ? 'Update Environment' : 'Create Environment'}
+                    </button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+/**
  * Vytvoří deploy target form
  */
-function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encjsonKeys = [], envVars = [], extraEnvVars = [], options = {}) {
+function createDeployTargetForm(target = null, tenants = [], gitRepos = [], environments = [], encjsonKeys = [], envVars = [], extraEnvVars = [], options = {}) {
     const isEdit = options.isEdit ?? !!target;
     const title = options.title || (isEdit ? 'Edit Deploy Target' : 'New Deploy Target');
     const submitLabel = options.submitLabel || (isEdit ? 'Update Deploy Target' : 'Create Deploy Target');
@@ -543,70 +618,143 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
                                    placeholder="Deploy to Test" required>
                         </div>
                     </div>
-                    <div class="col-md-6">
-                        <div class="mb-3">
-                            <label class="form-label required">Environment</label>
-                            <input type="text" class="form-control" name="env_name"
-                                   value="${target?.env_name || ''}"
-                                   placeholder="test" required>
-                        </div>
-                    </div>
                 </div>
 
                 <hr class="my-4">
-                <h4>Repositories</h4>
-
-                <div class="mb-3">
-                    <label class="form-label required">Environments Repository</label>
-                    <select class="form-select" name="env_repo_id" required>
-                        <option value="">Select repository...</option>
-                        ${gitRepos.map(repo => `
-                            <option value="${repo.id}" ${target?.env_repo_id === repo.id ? 'selected' : ''}>
-                                ${repo.name}
-                            </option>
+                <h4>Environments</h4>
+                ${environments.length === 0 ? `
+                    <div class="alert alert-info">
+                        No environments configured for this tenant yet.
+                    </div>
+                ` : `
+                    <ul class="nav nav-tabs">
+                        ${environments.map((env, index) => `
+                            <li class="nav-item">
+                                <button class="nav-link ${index === 0 ? 'active' : ''}"
+                                        data-bs-toggle="tab"
+                                        data-bs-target="#deploy-env-pane-${env.id}"
+                                        type="button">
+                                    <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                    <span class="text-secondary small ms-2">${env.slug}</span>
+                                </button>
+                            </li>
                         `).join('')}
-                    </select>
-                    <small class="form-hint">Manage repositories in Git Repositories</small>
-                </div>
+                    </ul>
+                    <div class="tab-content border border-top-0 rounded-bottom p-3">
+                        ${environments.map((env, index) => {
+                    const envConfig = (target?.envs || []).find(e => e.environment_id === env.id) || {};
+                    const envRepoMode = envConfig.env_repo_branch ? 'branch' : 'path';
+                    const deployRepoMode = envConfig.deploy_repo_branch ? 'branch' : 'path';
+                    return `
+                        <div class="tab-pane fade ${index === 0 ? 'show active' : ''}" id="deploy-env-pane-${env.id}" data-deploy-env data-env-id="${env.id}">
+                            <div class="card">
+                                <div class="card-body">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label required">Environment Repository</label>
+                                        <select class="form-select env-repo-id">
+                                            <option value="">Select repository...</option>
+                                            ${gitRepos.map(repo => `
+                                                <option value="${repo.id}" ${envConfig.env_repo_id === repo.id ? 'selected' : ''}>
+                                                    ${repo.name}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                        <small class="form-hint">Manage repositories in Git Repositories</small>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label required">Deploy Repository</label>
+                                        <select class="form-select deploy-repo-id">
+                                            <option value="">Select repository...</option>
+                                            ${gitRepos.map(repo => `
+                                                <option value="${repo.id}" ${envConfig.deploy_repo_id === repo.id ? 'selected' : ''}>
+                                                    ${repo.name}
+                                                </option>
+                                            `).join('')}
+                                        </select>
+                                        <small class="form-hint">Manage repositories in Git Repositories</small>
+                                    </div>
+                                </div>
 
-                <div class="mb-3">
-                    <label class="form-label">Environment Repo Path</label>
-                    <input type="text" class="form-control" name="env_repo_path"
-                           value="${target?.env_repo_path || target?.env_name || ''}"
-                           placeholder="test">
-                    <small class="form-hint">Path relative to repo root</small>
-                </div>
+                                <div class="row g-3 mt-1">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Environment Repo Mode</label>
+                                        <select class="form-select env-repo-mode">
+                                            <option value="path" ${envRepoMode === 'path' ? 'selected' : ''}>Path</option>
+                                            <option value="branch" ${envRepoMode === 'branch' ? 'selected' : ''}>Branch</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Deploy Repo Mode</label>
+                                        <select class="form-select deploy-repo-mode">
+                                            <option value="path" ${deployRepoMode === 'path' ? 'selected' : ''}>Path</option>
+                                            <option value="branch" ${deployRepoMode === 'branch' ? 'selected' : ''}>Branch</option>
+                                        </select>
+                                    </div>
+                                </div>
 
-                <div class="mb-3">
-                    <label class="form-label required">Deploy Repository</label>
-                    <select class="form-select" name="deploy_repo_id" required>
-                        <option value="">Select repository...</option>
-                        ${gitRepos.map(repo => `
-                            <option value="${repo.id}" ${target?.deploy_repo_id === repo.id ? 'selected' : ''}>
-                                ${repo.name}
-                            </option>
-                        `).join('')}
-                    </select>
-                    <small class="form-hint">Manage repositories in Git Repositories</small>
-                </div>
+                                <div class="row g-3 mt-1">
+                                    <div class="col-md-6">
+                                        <label class="form-label env-repo-path-label">Env Repo Path</label>
+                                        <input type="text" class="form-control env-repo-path" value="${envConfig.env_repo_path || ''}" placeholder="${env.slug}">
+                                        <input type="text" class="form-control env-repo-branch d-none mt-2" value="${envConfig.env_repo_branch || ''}" placeholder="branch name">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label deploy-repo-path-label">Deploy Repo Path</label>
+                                        <input type="text" class="form-control deploy-repo-path" value="${envConfig.deploy_repo_path || ''}" placeholder="deploy/${env.slug}">
+                                        <input type="text" class="form-control deploy-repo-branch d-none mt-2" value="${envConfig.deploy_repo_branch || ''}" placeholder="branch name">
+                                        <small class="form-hint">Path is relative to repo root.</small>
+                                    </div>
+                                </div>
 
-                <div class="mb-3">
-                    <label class="form-label">Deploy Repo Path</label>
-                    <input type="text" class="form-control" name="deploy_repo_path"
-                           value="${target?.deploy_repo_path || ''}"
-                           placeholder="deploy/${target?.env_name || ''}">
-                    <small class="form-hint">e.g. deploy/&lt;env&gt;</small>
-                </div>
+                                <div class="row g-3 mt-2">
+                                    <div class="col-md-4">
+                                        <label class="form-label">Encjson Key Dir</label>
+                                        <input type="text" class="form-control encjson-key-dir" value="${envConfig.encjson_key_dir || ''}" placeholder="(optional)">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Release manifest mode</label>
+                                        <select class="form-select release-manifest-mode">
+                                            <option value="match_digest" ${(envConfig.release_manifest_mode || 'match_digest') === 'match_digest' ? 'selected' : ''}>
+                                                Match entries (digest preferred)
+                                            </option>
+                                            <option value="match_tag" ${envConfig.release_manifest_mode === 'match_tag' ? 'selected' : ''}>
+                                                Match entries (tag only)
+                                            </option>
+                                            <option value="strict_digest" ${envConfig.release_manifest_mode === 'strict_digest' ? 'selected' : ''}>
+                                                Strict (digest required)
+                                            </option>
+                                            <option value="strict_tag" ${envConfig.release_manifest_mode === 'strict_tag' ? 'selected' : ''}>
+                                                Strict (tag required)
+                                            </option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">Options</label>
+                                        <div class="form-check">
+                                            <input class="form-check-input allow-auto-release" type="checkbox" ${envConfig.allow_auto_release ? 'checked' : ''}>
+                                            <label class="form-check-label">Allow Dev/Test deploy from Copy Job (auto release)</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input append-env-suffix" type="checkbox" ${envConfig.append_env_suffix ? 'checked' : ''}>
+                                            <label class="form-check-label">Append env suffix to git tag (e.g. -test)</label>
+                                        </div>
+                                        <div class="form-check">
+                                            <input class="form-check-input is-active" type="checkbox" ${envConfig.is_active !== false ? 'checked' : ''}>
+                                            <label class="form-check-label">Active</label>
+                                        </div>
+                                    </div>
+                                </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                        }).join('')}
+                    </div>
+                `}
 
                 <hr class="my-4">
                 <h4>Encjson</h4>
-
-                <div class="mb-3">
-                    <label class="form-label">ENCJSON Key Dir</label>
-                    <input type="text" class="form-control" name="encjson_key_dir"
-                           value="${target?.encjson_key_dir || ''}"
-                           placeholder="(optional)">
-                </div>
 
                 <div class="mb-3">
                     <label class="form-label">ENCJSON Keys</label>
@@ -638,43 +786,6 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
                         <i class="ti ti-plus"></i>
                         Add Key Pair
                     </button>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="allow_auto_release"
-                               ${target?.allow_auto_release ? 'checked' : ''}>
-                        <span class="form-check-label">Allow Dev/Test deploy from Copy Job (auto release)</span>
-                    </label>
-                    <small class="form-hint">Enables the Copy Job → Deploy shortcut for this target</small>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="append_env_suffix"
-                               ${target?.append_env_suffix ? 'checked' : ''}>
-                        <span class="form-check-label">Append env suffix to git tag (e.g. -test)</span>
-                    </label>
-                    <small class="form-hint">Useful for monorepo deploys with multiple envs</small>
-                </div>
-
-                <div class="mb-3">
-                    <label class="form-label">Release manifest mode</label>
-                    <select class="form-select" name="release_manifest_mode">
-                        <option value="match_digest" ${target?.release_manifest_mode === 'match_digest' || !target?.release_manifest_mode ? 'selected' : ''}>
-                            Match entries (digest preferred)
-                        </option>
-                        <option value="match_tag" ${target?.release_manifest_mode === 'match_tag' ? 'selected' : ''}>
-                            Match entries (tag only)
-                        </option>
-                        <option value="strict_digest" ${target?.release_manifest_mode === 'strict_digest' ? 'selected' : ''}>
-                            Strict (digest required)
-                        </option>
-                        <option value="strict_tag" ${target?.release_manifest_mode === 'strict_tag' ? 'selected' : ''}>
-                            Strict (tag required)
-                        </option>
-                    </select>
-                    <small class="form-hint">Controls how release manifest overrides container images</small>
                 </div>
 
                 <div class="mb-3">
@@ -753,12 +864,19 @@ function createDeployTargetForm(target = null, tenants = [], gitRepos = [], encj
             </div>
             <div class="card-footer text-end">
                 <div class="d-flex gap-2">
-                    <a href="#/tenants" class="btn btn-link">Cancel</a>
+                    <a href="#/tenants${target?.tenant_id ? `/${target.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
                     ${isEdit ? `
-                        <button type="button" class="btn btn-outline-danger" id="delete-deploy-target-btn">
-                            <i class="ti ti-trash"></i>
-                            Delete
-                        </button>
+                        ${target?.is_archived ? `
+                            <button type="button" class="btn btn-outline-success" id="unarchive-deploy-target-btn">
+                                <i class="ti ti-archive"></i>
+                                Unarchive
+                            </button>
+                        ` : `
+                            <button type="button" class="btn btn-outline-danger" id="delete-deploy-target-btn">
+                                <i class="ti ti-trash"></i>
+                                ${target?.has_jobs ? 'Archive' : 'Delete'}
+                            </button>
+                        `}
                     ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
