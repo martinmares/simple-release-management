@@ -75,6 +75,7 @@ pub struct CopyJobStatus {
     pub target_registry_id: Option<Uuid>,
     pub target_tag: String,
     pub is_release_job: bool,
+    pub validate_only: bool,
     pub total_images: usize,
     pub copied_images: usize,
     pub failed_images: usize,
@@ -91,6 +92,7 @@ pub struct CopyJobSummary {
     pub target_tag: String,
     pub status: String,
     pub is_release_job: bool,
+    pub validate_only: bool,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -102,6 +104,7 @@ pub struct ReleaseCopyRequest {
     pub release_id: String,
     pub notes: Option<String>,
     pub source_ref_mode: Option<String>,
+    pub validate_only: Option<bool>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
 }
@@ -1087,10 +1090,12 @@ async fn start_release_copy_job(
 
     // Vytvořit nový job
     let job_id = Uuid::new_v4();
+    let validate_only = payload.validate_only.unwrap_or(false);
+
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
@@ -1100,6 +1105,7 @@ async fn start_release_copy_job(
     .bind(&source_ref_mode)
     .bind(&release_id)
     .bind(&payload.notes)
+    .bind(validate_only)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1181,6 +1187,7 @@ async fn list_copy_jobs(
             cj.target_tag,
             cj.status,
             cj.is_release_job,
+            cj.validate_only,
             cj.started_at,
             cj.completed_at
         FROM copy_jobs cj
@@ -1209,8 +1216,8 @@ async fn start_copy_job(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>)>(
-        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes
+    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool)>(
+        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only
          FROM copy_jobs WHERE id = $1"
     )
     .bind(job_id)
@@ -1225,7 +1232,7 @@ async fn start_copy_job(
         )
     })?;
 
-    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes)) = job else {
+    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only)) = job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1413,6 +1420,38 @@ async fn start_copy_job(
                 Ok(info) => Some(info.digest),
                 Err(_) => None,
             };
+
+            if validate_only {
+                if source_sha.is_some() {
+                    let _ = sqlx::query(
+                        "UPDATE copy_job_images
+                         SET copy_status = 'success',
+                             source_sha256 = $1,
+                             copied_at = NOW(),
+                             bytes_copied = 0
+                         WHERE id = $2"
+                    )
+                    .bind(&source_sha)
+                    .bind(img.id)
+                    .execute(&pool_clone)
+                    .await;
+                    emit_log(&log_tx, format!("VALIDATED {} (source digest ok)", source_url));
+                } else {
+                    failed += 1;
+                    let _ = sqlx::query(
+                        "UPDATE copy_job_images
+                         SET copy_status = 'failed',
+                             error_message = 'Source inspect failed',
+                             copied_at = NOW()
+                         WHERE id = $1"
+                    )
+                    .bind(img.id)
+                    .execute(&pool_clone)
+                    .await;
+                    emit_log(&log_tx, format!("FAILED {} - Source inspect failed", source_url));
+                }
+                continue;
+            }
 
             if let Some(ref src_digest) = source_sha {
                 match skopeo_clone.inspect_image(
@@ -1647,9 +1686,9 @@ async fn get_copy_job_status(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<CopyJobStatus>, (StatusCode, Json<ErrorResponse>)> {
-    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, String, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, String, bool, bool)>(
         r#"
-        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.target_tag, cj.is_release_job
+        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.target_tag, cj.is_release_job, cj.validate_only
         FROM copy_jobs cj
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         WHERE cj.id = $1
@@ -1667,7 +1706,7 @@ async fn get_copy_job_status(
         )
     })?;
 
-    let Some((bundle_id, version, status, source_registry_id, target_registry_id, target_tag, is_release_job)) = row else {
+    let Some((bundle_id, version, status, source_registry_id, target_registry_id, target_tag, is_release_job, validate_only)) = row else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1729,6 +1768,7 @@ async fn get_copy_job_status(
         target_registry_id,
         target_tag,
         is_release_job,
+        validate_only,
         total_images: totals.0 as usize,
         copied_images: totals.1 as usize,
         failed_images: totals.2 as usize,

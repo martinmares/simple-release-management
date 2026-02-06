@@ -2522,6 +2522,7 @@ router.on('/bundles/:id', async (params) => {
                                         <tr>
                                             <td>
                                                 <span class="badge bg-blue text-blue-fg">v${job.version}</span>
+                                                ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
                                             </td>
                                             <td><a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a></td>
                                             <td>
@@ -3439,7 +3440,10 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                 </tr>
                             ` : versionJobs.map(job => `
                                 <tr>
-                                    <td><a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a></td>
+                                    <td>
+                                        <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
+                                        ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                    </td>
                                     <td>
                                         <span class="badge ${
                                             job.status === 'success' ? 'bg-success text-success-fg' :
@@ -4100,6 +4104,7 @@ router.on('/releases/new', async (params, query) => {
             notes: '',
             targetRegistryId: '',
             sourceRefMode: 'tag',
+            validateOnly: false,
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
@@ -4194,6 +4199,14 @@ router.on('/releases/new', async (params, query) => {
                         <div class="mb-3">
                             <label class="form-label">Notes</label>
                             <textarea class="form-control" id="release-notes" rows="3">${state.notes || ''}</textarea>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-check">
+                                <input class="form-check-input" type="checkbox" id="release-validate-only" ${state.validateOnly ? 'checked' : ''}>
+                                <span class="form-check-label">Validate only (no copy, no tag write)</span>
+                            </label>
+                            <small class="form-hint">Runs source validation and digest checks without copying to target.</small>
                         </div>
 
                         <hr class="my-4">
@@ -4297,6 +4310,9 @@ router.on('/releases/new', async (params, query) => {
             document.getElementById('release-notes').addEventListener('input', (e) => {
                 state.notes = e.target.value;
             });
+            document.getElementById('release-validate-only').addEventListener('change', (e) => {
+                state.validateOnly = e.target.checked;
+            });
 
             document.querySelectorAll('.rename-find').forEach(input => {
                 input.addEventListener('input', (e) => {
@@ -4352,6 +4368,7 @@ router.on('/releases/new', async (params, query) => {
                     release_id: releaseId,
                     notes: state.notes || null,
                     source_ref_mode: state.sourceRefMode,
+                    validate_only: state.validateOnly,
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
                 };
@@ -4660,6 +4677,9 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 ${status.is_release_job ? `
                                     <span class="badge bg-purple-lt text-purple-fg ms-2">image release</span>
                                 ` : ''}
+                                ${status.validate_only ? `
+                                    <span class="badge bg-azure-lt text-azure-fg ms-2">validate-only</span>
+                                ` : ''}
                             </h3>
                             <div class="text-secondary small">
                                 <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
@@ -4742,6 +4762,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
                         <div class="text-secondary small mb-3">
                             Auto-release: ${autoRelease ? `created (<a href="#/releases/${autoRelease.id}">${autoRelease.release_id}</a>)` : 'not created'}
+                            ${status.validate_only ? ' • Validate-only run (no copy)' : ''}
                         </div>
 
                         ${isComplete ? `
@@ -4769,7 +4790,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             <div class="d-grid gap-2">
                                 <button class="btn btn-primary" id="start-copy-job">
                                     <i class="ti ti-play"></i>
-                                    Start Copy Job
+                                    ${status.validate_only ? 'Start Validation' : 'Start Copy Job'}
                                 </button>
                                 <button class="btn btn-outline-danger" id="cancel-copy-job">
                                     <i class="ti ti-x"></i>
@@ -5082,8 +5103,12 @@ router.on('/copy-jobs', async () => {
                                         ${job.is_release_job ? `
                                             <span class="badge bg-purple-lt text-purple-fg ms-2">release</span>
                                         ` : ''}
+                                        ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
                                     </td>
-                                    <td><span class="badge bg-azure-lt">${job.target_tag}</span></td>
+                                    <td>
+                                        <span class="badge bg-azure-lt">${job.target_tag}</span>
+                                        ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                    </td>
                                     <td>
                                         <span class="badge ${
                                             job.status === 'success' ? 'bg-success text-success-fg' :

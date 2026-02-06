@@ -152,6 +152,7 @@ pub struct CopyJob {
     pub is_release_job: bool,
     pub release_id: Option<String>,
     pub release_notes: Option<String>,
+    pub validate_only: bool,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
     pub created_by: Option<String>,
