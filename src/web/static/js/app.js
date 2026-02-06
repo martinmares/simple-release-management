@@ -2312,7 +2312,7 @@ router.on('/bundles/:id', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry] = await Promise.all([
+        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry, registries] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
             api.getBundleReleases(params.id),
@@ -2320,7 +2320,13 @@ router.on('/bundles/:id', async (params) => {
             bundle.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
             bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
+            api.getRegistries().catch(() => []),
         ]);
+
+        const registryMap = {};
+        (registries || []).forEach(r => {
+            registryMap[r.id] = r;
+        });
 
         const latestVersion = versions.length > 0
             ? Math.max(...versions.map(v => v.version))
@@ -2524,7 +2530,13 @@ router.on('/bundles/:id', async (params) => {
                                                 <span class="badge bg-blue text-blue-fg">v${job.version}</span>
                                                 ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
                                             </td>
-                                            <td><a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a></td>
+                                            <td>
+                                                <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
+                                                <div class="text-secondary small mt-1">
+                                                    <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}</code>` : 'Source: -'}</div>
+                                                    <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}</code>` : 'Target: -'}</div>
+                                                </div>
+                                            </td>
                                             <td>
                                                 <span class="badge ${
                                                     job.status === 'success' ? 'bg-success text-success-fg' :

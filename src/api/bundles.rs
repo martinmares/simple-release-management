@@ -59,6 +59,8 @@ pub struct BundleCopyJobSummary {
     pub status: String,
     pub is_release_job: bool,
     pub validate_only: bool,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -607,6 +609,8 @@ async fn list_bundle_copy_jobs(
             cj.status,
             cj.is_release_job,
             cj.validate_only,
+            cj.source_registry_id,
+            cj.target_registry_id,
             cj.started_at,
             cj.completed_at
         FROM copy_jobs cj
