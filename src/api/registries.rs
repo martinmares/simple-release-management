@@ -23,7 +23,28 @@ impl RegistryApiState {
     pub async fn get_registry_credentials(
         &self,
         registry_id: Uuid,
+        environment_id: Option<Uuid>,
     ) -> Result<Option<(String, String)>, anyhow::Error> {
+        if let Some(env_id) = environment_id {
+            let env_creds = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+                "SELECT auth_type, username, password_encrypted, token_encrypted FROM environment_registry_credentials WHERE registry_id = $1 AND environment_id = $2",
+            )
+            .bind(registry_id)
+            .bind(env_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some((auth_type, username, password_encrypted, token_encrypted)) = env_creds {
+                return Ok(decrypt_registry_credentials(
+                    &auth_type,
+                    username,
+                    password_encrypted,
+                    token_encrypted,
+                    &self.encryption_secret,
+                )?);
+            }
+        }
+
         let registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
             .bind(registry_id)
             .fetch_optional(&self.pool)
@@ -33,38 +54,13 @@ impl RegistryApiState {
             return Ok(None);
         };
 
-        // Decrypt credentials based on auth_type
-        match registry.auth_type.as_str() {
-            "none" => Ok(None),
-            "basic" => {
-                let username = registry.username.clone().unwrap_or_default();
-                let password = if let Some(encrypted) = &registry.password_encrypted {
-                    crypto::decrypt(encrypted, &self.encryption_secret)?
-                } else {
-                    String::new()
-                };
-                Ok(Some((username, password)))
-            }
-            "token" => {
-                let username = registry.username.clone().unwrap_or_default();
-                let token = if let Some(encrypted) = &registry.token_encrypted {
-                    crypto::decrypt(encrypted, &self.encryption_secret)?
-                } else {
-                    String::new()
-                };
-                Ok(Some((username, token)))
-            }
-            "bearer" => {
-                let token = if let Some(encrypted) = &registry.token_encrypted {
-                    crypto::decrypt(encrypted, &self.encryption_secret)?
-                } else {
-                    String::new()
-                };
-                // For bearer, username is empty but password contains the token
-                Ok(Some((String::new(), token)))
-            }
-            _ => Ok(None),
-        }
+        decrypt_registry_credentials(
+            &registry.auth_type,
+            registry.username.clone(),
+            registry.password_encrypted.clone(),
+            registry.token_encrypted.clone(),
+            &self.encryption_secret,
+        )
     }
 
     /// Vytvoří SkopeoCredentials pro copy operaci mezi source a target registry
@@ -72,9 +68,14 @@ impl RegistryApiState {
         &self,
         source_registry_id: Uuid,
         target_registry_id: Uuid,
+        environment_id: Option<Uuid>,
     ) -> Result<SkopeoCredentials, anyhow::Error> {
-        let source_creds = self.get_registry_credentials(source_registry_id).await?;
-        let target_creds = self.get_registry_credentials(target_registry_id).await?;
+        let source_creds = self
+            .get_registry_credentials(source_registry_id, environment_id)
+            .await?;
+        let target_creds = self
+            .get_registry_credentials(target_registry_id, environment_id)
+            .await?;
 
         let (source_username, source_password) = source_creds.unwrap_or_default();
         let (target_username, target_password) = target_creds.unwrap_or_default();
@@ -104,6 +105,45 @@ impl RegistryApiState {
     }
 }
 
+fn decrypt_registry_credentials(
+    auth_type: &str,
+    username: Option<String>,
+    password_encrypted: Option<String>,
+    token_encrypted: Option<String>,
+    encryption_secret: &str,
+) -> Result<Option<(String, String)>, anyhow::Error> {
+    match auth_type {
+        "none" => Ok(None),
+        "basic" => {
+            let username = username.unwrap_or_default();
+            let password = if let Some(encrypted) = &password_encrypted {
+                crypto::decrypt(encrypted, encryption_secret)?
+            } else {
+                String::new()
+            };
+            Ok(Some((username, password)))
+        }
+        "token" => {
+            let username = username.unwrap_or_default();
+            let token = if let Some(encrypted) = &token_encrypted {
+                crypto::decrypt(encrypted, encryption_secret)?
+            } else {
+                String::new()
+            };
+            Ok(Some((username, token)))
+        }
+        "bearer" => {
+            let token = if let Some(encrypted) = &token_encrypted {
+                crypto::decrypt(encrypted, encryption_secret)?
+            } else {
+                String::new()
+            };
+            Ok(Some((String::new(), token)))
+        }
+        _ => Ok(None),
+    }
+}
+
 /// Request pro vytvoření nové registry
 #[derive(Debug, Deserialize)]
 pub struct CreateRegistryRequest {
@@ -119,6 +159,7 @@ pub struct CreateRegistryRequest {
     pub description: Option<String>,
     pub is_active: Option<bool>,
     pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
+    pub environment_credentials: Option<Vec<EnvironmentRegistryCredentialInput>>,
 }
 
 /// Request pro update registry
@@ -137,6 +178,7 @@ pub struct UpdateRegistryRequest {
     pub description: Option<String>,
     pub is_active: Option<bool>,
     pub environment_paths: Option<Vec<EnvironmentRegistryPathInput>>,
+    pub environment_credentials: Option<Vec<EnvironmentRegistryCredentialInput>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +188,15 @@ pub struct EnvironmentRegistryPathInput {
     pub target_project_path_override: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct EnvironmentRegistryCredentialInput {
+    pub environment_id: Uuid,
+    pub auth_type: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub token: Option<String>,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct EnvironmentRegistryPathView {
     pub environment_id: Uuid,
@@ -153,6 +204,17 @@ pub struct EnvironmentRegistryPathView {
     pub env_slug: String,
     pub source_project_path_override: Option<String>,
     pub target_project_path_override: Option<String>,
+}
+
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct EnvironmentRegistryCredentialView {
+    pub environment_id: Uuid,
+    pub env_name: String,
+    pub env_slug: String,
+    pub auth_type: String,
+    pub username: Option<String>,
+    pub has_password: bool,
+    pub has_token: bool,
 }
 
 /// Response s chybou
@@ -174,7 +236,194 @@ pub fn router(state: RegistryApiState) -> Router {
             get(get_registry).put(update_registry).delete(delete_registry),
         )
         .route("/registries/{id}/environment-paths", get(get_registry_environment_paths))
+        .route(
+            "/registries/{id}/environment-credentials",
+            get(get_registry_environment_credentials),
+        )
         .with_state(state)
+}
+
+async fn upsert_environment_credentials(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    registry_id: Uuid,
+    creds: &[EnvironmentRegistryCredentialInput],
+    encryption_secret: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if creds.is_empty() {
+        return Ok(());
+    }
+
+    let env_ids: Vec<Uuid> = creds.iter().map(|p| p.environment_id).collect();
+    let valid_ids = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM environments WHERE tenant_id = $1 AND id = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(&env_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if valid_ids.len() != env_ids.len() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment does not belong to tenant".to_string(),
+            }),
+        ));
+    }
+
+    for entry in creds {
+        let auth_type = entry.auth_type.trim().to_lowercase();
+        if auth_type.is_empty() {
+            continue;
+        }
+        if auth_type == "none" {
+            sqlx::query(
+                "DELETE FROM environment_registry_credentials WHERE environment_id = $1 AND registry_id = $2",
+            )
+            .bind(entry.environment_id)
+            .bind(registry_id)
+            .execute(pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?;
+            continue;
+        }
+
+        let existing = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+            "SELECT auth_type, username, password_encrypted, token_encrypted FROM environment_registry_credentials WHERE environment_id = $1 AND registry_id = $2",
+        )
+        .bind(entry.environment_id)
+        .bind(registry_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        let existing_username = existing.as_ref().and_then(|row| row.1.clone());
+        let existing_password = existing.as_ref().and_then(|row| row.2.clone());
+        let existing_token = existing.as_ref().and_then(|row| row.3.clone());
+
+        let username = entry
+            .username
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string())
+            .or(existing_username);
+
+        let password_encrypted = if let Some(pass) = entry
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some(crypto::encrypt(pass, encryption_secret).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to encrypt password: {}", e),
+                    }),
+                )
+            })?)
+        } else {
+            existing_password
+        };
+
+        let token_encrypted = if let Some(token) = entry
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            Some(crypto::encrypt(token, encryption_secret).map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Failed to encrypt token: {}", e),
+                    }),
+                )
+            })?)
+        } else {
+            existing_token
+        };
+
+        if (auth_type == "basic" || auth_type == "token") && username.as_deref().unwrap_or("").is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Auth type '{}' requires username", auth_type),
+                }),
+            ));
+        }
+        if auth_type == "basic" && password_encrypted.is_none() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Auth type 'basic' requires password".to_string(),
+                }),
+            ));
+        }
+        if (auth_type == "token" || auth_type == "bearer") && token_encrypted.is_none() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!("Auth type '{}' requires token", auth_type),
+                }),
+            ));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO environment_registry_credentials
+                (environment_id, registry_id, auth_type, username, password_encrypted, token_encrypted)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (environment_id, registry_id)
+            DO UPDATE SET auth_type = EXCLUDED.auth_type,
+                          username = EXCLUDED.username,
+                          password_encrypted = EXCLUDED.password_encrypted,
+                          token_encrypted = EXCLUDED.token_encrypted
+            "#,
+        )
+        .bind(entry.environment_id)
+        .bind(registry_id)
+        .bind(auth_type)
+        .bind(username)
+        .bind(password_encrypted)
+        .bind(token_encrypted)
+        .execute(pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 async fn upsert_environment_paths(
@@ -557,6 +806,16 @@ async fn create_registry(
     if let Some(paths) = payload.environment_paths.as_ref() {
         upsert_environment_paths(&state.pool, tenant_id, registry.id, paths).await?;
     }
+    if let Some(creds) = payload.environment_credentials.as_ref() {
+        upsert_environment_credentials(
+            &state.pool,
+            tenant_id,
+            registry.id,
+            creds,
+            &state.encryption_secret,
+        )
+        .await?;
+    }
 
     Ok((StatusCode::CREATED, Json(registry)))
 }
@@ -780,6 +1039,16 @@ async fn update_registry(
             if let Some(paths) = payload.environment_paths.as_ref() {
                 upsert_environment_paths(&state.pool, registry.tenant_id, registry.id, paths).await?;
             }
+            if let Some(creds) = payload.environment_credentials.as_ref() {
+                upsert_environment_credentials(
+                    &state.pool,
+                    registry.tenant_id,
+                    registry.id,
+                    creds,
+                    &state.encryption_secret,
+                )
+                .await?;
+            }
             Ok(Json(registry))
         }
         None => Err((
@@ -856,4 +1125,41 @@ async fn get_registry_environment_paths(
     })?;
 
     Ok(Json(paths))
+}
+
+/// GET /api/v1/registries/{id}/environment-credentials - Seznam env credential overrides
+async fn get_registry_environment_credentials(
+    State(state): State<RegistryApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<EnvironmentRegistryCredentialView>>, (StatusCode, Json<ErrorResponse>)> {
+    let rows = sqlx::query_as::<_, EnvironmentRegistryCredentialView>(
+        r#"
+        SELECT
+            e.id AS environment_id,
+            e.name AS env_name,
+            e.slug AS env_slug,
+            COALESCE(erc.auth_type, '') AS auth_type,
+            erc.username,
+            (erc.password_encrypted IS NOT NULL) AS has_password,
+            (erc.token_encrypted IS NOT NULL) AS has_token
+        FROM environments e
+        LEFT JOIN environment_registry_credentials erc
+          ON erc.environment_id = e.id AND erc.registry_id = $1
+        WHERE e.tenant_id = (SELECT tenant_id FROM registries WHERE id = $1)
+        ORDER BY e.slug ASC
+        "#,
+    )
+    .bind(id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(rows))
 }

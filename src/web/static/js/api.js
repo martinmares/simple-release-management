@@ -161,6 +161,10 @@ class ApiClient {
         return this.get(`/registries/${id}/environment-paths`);
     }
 
+    async getRegistryEnvironmentCredentials(id) {
+        return this.get(`/registries/${id}/environment-credentials`);
+    }
+
     async deleteRegistry(id) {
         return this.delete(`/registries/${id}`);
     }

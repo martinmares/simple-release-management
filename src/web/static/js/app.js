@@ -1785,7 +1785,7 @@ router.on('/registries/new', async (params, query) => {
         if (query.tenant_id) {
             environments = await api.getEnvironments(query.tenant_id).catch(() => []);
         }
-        content.innerHTML = createRegistryForm(null, tenants, environments, []);
+        content.innerHTML = createRegistryForm(null, tenants, environments, [], []);
 
         // Pre-select tenant if provided in query
         if (query.tenant_id) {
@@ -1798,6 +1798,7 @@ router.on('/registries/new', async (params, query) => {
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
                 data.environment_paths = collectRegistryEnvironmentPaths();
+                data.environment_credentials = collectRegistryEnvironmentCredentials();
                 await api.createRegistry(tenantId, data);
                 getApp().showSuccess('Registry created successfully');
                 router.navigate('/registries');
@@ -1817,10 +1818,11 @@ router.on('/registries/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [registry, tenants, envPaths] = await Promise.all([
+        const [registry, tenants, envPaths, envCreds] = await Promise.all([
             api.getRegistry(params.id),
             api.getTenants(),
             api.getRegistryEnvironmentPaths(params.id).catch(() => []),
+            api.getRegistryEnvironmentCredentials(params.id).catch(() => []),
         ]);
         const environments = await api.getEnvironments(registry.tenant_id).catch(() => []);
         content.innerHTML = `
@@ -1832,12 +1834,13 @@ router.on('/registries/:id/edit', async (params) => {
                     </a>
                 </div>
             </div>
-            ${createRegistryForm(registry, tenants, environments, envPaths)}
+            ${createRegistryForm(registry, tenants, environments, envPaths, envCreds)}
         `;
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 data.environment_paths = collectRegistryEnvironmentPaths();
+                data.environment_credentials = collectRegistryEnvironmentCredentials();
                 await api.updateRegistry(params.id, data);
                 getApp().showSuccess('Registry updated successfully');
                 router.navigate(`/tenants/${registry.tenant_id}`);
@@ -2564,6 +2567,34 @@ function collectRegistryEnvironmentPaths() {
         } else {
             entry.target_project_path_override = input.value || '';
         }
+    });
+    return Array.from(map.values());
+}
+
+function collectRegistryEnvironmentCredentials() {
+    const authSelects = document.querySelectorAll('.env-cred-auth');
+    const map = new Map();
+    authSelects.forEach(select => {
+        const environmentId = select.dataset.envId;
+        if (!environmentId) return;
+        const authType = (select.value || '').trim();
+        if (!authType) return;
+        if (!map.has(environmentId)) {
+            map.set(environmentId, {
+                environment_id: environmentId,
+                auth_type: authType,
+                username: '',
+                password: '',
+                token: '',
+            });
+        }
+        const entry = map.get(environmentId);
+        entry.auth_type = authType;
+        const row = select.closest('[data-env-cred-row]');
+        if (!row) return;
+        entry.username = row.querySelector('.env-cred-username')?.value || '';
+        entry.password = row.querySelector('.env-cred-password')?.value || '';
+        entry.token = row.querySelector('.env-cred-token')?.value || '';
     });
     return Array.from(map.values());
 }

@@ -287,6 +287,20 @@ pub struct EnvironmentRegistryPath {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnvironmentRegistryCredential {
+    pub id: Uuid,
+    pub environment_id: Uuid,
+    pub registry_id: Uuid,
+    pub auth_type: String,
+    pub username: Option<String>,
+    #[serde(skip_serializing)]
+    pub password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub token_encrypted: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct DeployTargetEnvVar {
     pub id: Uuid,
     pub deploy_target_id: Uuid,

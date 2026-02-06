@@ -159,7 +159,28 @@ impl CopyApiState {
     async fn get_registry_credentials(
         &self,
         registry_id: Uuid,
+        environment_id: Option<Uuid>,
     ) -> Result<(Option<String>, Option<String>), anyhow::Error> {
+        if let Some(env_id) = environment_id {
+            let env_creds = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+                "SELECT auth_type, username, password_encrypted, token_encrypted FROM environment_registry_credentials WHERE registry_id = $1 AND environment_id = $2",
+            )
+            .bind(registry_id)
+            .bind(env_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some((auth_type, username, password_encrypted, token_encrypted)) = env_creds {
+                return Ok(decrypt_registry_credentials(
+                    &auth_type,
+                    username,
+                    password_encrypted,
+                    token_encrypted,
+                    &self.encryption_secret,
+                )?);
+            }
+        }
+
         let registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
             .bind(registry_id)
             .fetch_optional(&self.pool)
@@ -169,38 +190,13 @@ impl CopyApiState {
             return Ok((None, None));
         };
 
-        // Decrypt credentials based on auth_type
-        match registry.auth_type.as_str() {
-            "none" => Ok((None, None)),
-            "basic" => {
-                let username = registry.username.clone();
-                let password = if let Some(encrypted) = &registry.password_encrypted {
-                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
-                } else {
-                    None
-                };
-                Ok((username, password))
-            }
-            "token" => {
-                let username = registry.username.clone();
-                let token = if let Some(encrypted) = &registry.token_encrypted {
-                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
-                } else {
-                    None
-                };
-                Ok((username, token))
-            }
-            "bearer" => {
-                let token = if let Some(encrypted) = &registry.token_encrypted {
-                    Some(crypto::decrypt(encrypted, &self.encryption_secret)?)
-                } else {
-                    None
-                };
-                // For bearer, username is empty
-                Ok((None, token))
-            }
-            _ => Ok((None, None)),
-        }
+        decrypt_registry_credentials(
+            &registry.auth_type,
+            registry.username.clone(),
+            registry.password_encrypted.clone(),
+            registry.token_encrypted.clone(),
+            &self.encryption_secret,
+        )
     }
 
     /// Vytvoří SkopeoCredentials pro copy operaci mezi source a target registry
@@ -208,9 +204,14 @@ impl CopyApiState {
         &self,
         source_registry_id: Uuid,
         target_registry_id: Uuid,
+        environment_id: Option<Uuid>,
     ) -> Result<SkopeoCredentials, anyhow::Error> {
-        let (source_username, source_password) = self.get_registry_credentials(source_registry_id).await?;
-        let (target_username, target_password) = self.get_registry_credentials(target_registry_id).await?;
+        let (source_username, source_password) = self
+            .get_registry_credentials(source_registry_id, environment_id)
+            .await?;
+        let (target_username, target_password) = self
+            .get_registry_credentials(target_registry_id, environment_id)
+            .await?;
 
         Ok(SkopeoCredentials {
             source_username,
@@ -218,6 +219,43 @@ impl CopyApiState {
             target_username,
             target_password,
         })
+    }
+}
+
+fn decrypt_registry_credentials(
+    auth_type: &str,
+    username: Option<String>,
+    password_encrypted: Option<String>,
+    token_encrypted: Option<String>,
+    encryption_secret: &str,
+) -> Result<(Option<String>, Option<String>), anyhow::Error> {
+    match auth_type {
+        "none" => Ok((None, None)),
+        "basic" => {
+            let password = if let Some(encrypted) = &password_encrypted {
+                Some(crypto::decrypt(encrypted, encryption_secret)?)
+            } else {
+                None
+            };
+            Ok((username, password))
+        }
+        "token" => {
+            let token = if let Some(encrypted) = &token_encrypted {
+                Some(crypto::decrypt(encrypted, encryption_secret)?)
+            } else {
+                None
+            };
+            Ok((username, token))
+        }
+        "bearer" => {
+            let token = if let Some(encrypted) = &token_encrypted {
+                Some(crypto::decrypt(encrypted, encryption_secret)?)
+            } else {
+                None
+            };
+            Ok((None, token))
+        }
+        _ => Ok((None, None)),
     }
 }
 
@@ -471,7 +509,14 @@ async fn copy_bundle_version(
     let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
 
     // Získat credentials pro source a target registry
-    let credentials = match state.get_skopeo_credentials(bundle.source_registry_id, bundle.target_registry_id).await {
+    let credentials = match state
+        .get_skopeo_credentials(
+            bundle.source_registry_id,
+            bundle.target_registry_id,
+            payload.environment_id,
+        )
+        .await
+    {
         Ok(creds) => creds,
         Err(e) => {
             return Err((
@@ -985,7 +1030,7 @@ async fn precheck_copy_images(
         })?;
 
     let (source_username, source_password) = state
-        .get_registry_credentials(bundle.source_registry_id)
+        .get_registry_credentials(bundle.source_registry_id, payload.environment_id)
         .await
         .map_err(|e| {
             (
@@ -1686,8 +1731,8 @@ async fn start_copy_job(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool)>(
-        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only
+    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool, Option<Uuid>)>(
+        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id
          FROM copy_jobs WHERE id = $1"
     )
     .bind(job_id)
@@ -1702,7 +1747,7 @@ async fn start_copy_job(
         )
     })?;
 
-    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only)) = job else {
+    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id)) = job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1814,7 +1859,10 @@ async fn start_copy_job(
                 }),
             )
         })?;
-        let (username, password) = state.get_registry_credentials(registry_id).await.map_err(|e| {
+        let (username, password) = state
+            .get_registry_credentials(registry_id, environment_id)
+            .await
+            .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -1845,7 +1893,10 @@ async fn start_copy_job(
         )
     })?;
 
-    let (target_username, target_password) = state.get_registry_credentials(target_registry_id).await.map_err(|e| {
+    let (target_username, target_password) = state
+        .get_registry_credentials(target_registry_id, environment_id)
+        .await
+        .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
