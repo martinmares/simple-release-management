@@ -685,12 +685,14 @@ async fn list_bundle_deployments(
             dj.commit_sha,
             dj.tag_name,
             dt.name as target_name,
-            dt.env_name,
+            e.slug AS env_name,
             r.id as release_db_id,
             r.release_id,
             r.is_auto
         FROM deploy_jobs dj
         JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
+        JOIN deploy_target_envs dte ON dte.id = dj.deploy_target_env_id
+        JOIN environments e ON e.id = dte.environment_id
         JOIN releases r ON r.id = dj.release_id
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
