@@ -1049,33 +1049,50 @@ router.on('/tenants/:id', async (params) => {
                                         const envPathMap = new Map(envPaths.map(p => [p.environment_id, p]));
                                         return `
                                         <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
-                                            <div class="d-flex align-items-center">
-                                                <span class="avatar avatar-sm me-2">
+                                            <div class="d-flex align-items-start gap-2">
+                                                <span class="avatar avatar-sm">
                                                     <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
                                                 </span>
                                                 <div class="flex-fill">
-                                                    <div>${reg.name}</div>
-                                                    <div class="text-secondary small">${reg.registry_type}</div>
-                                                    <div class="text-secondary small"><code class="small">${reg.base_url || '-'}</code></div>
-                                                    <div class="text-secondary small">Project path: <code class="small">${reg.default_project_path || '-'}</code></div>
-                                                    ${environments.length > 0 ? `
-                                                        <div class="text-secondary small mt-1">
-                                                            ${environments.map(env => {
-                                                                const entry = envPathMap.get(env.id);
-                                                                const src = entry?.source_project_path_override || '-';
-                                                                const trg = entry?.target_project_path_override || '-';
-                                                                return `
-                                                                    <div>
-                                                                        <span class="badge me-1" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                                                                        src: <code class="small">${src}</code>,
-                                                                        trg: <code class="small">${trg}</code>
-                                                                    </div>
-                                                                `;
-                                                            }).join('')}
+                                                    <div class="d-flex align-items-center justify-content-between gap-2">
+                                                        <div>
+                                                            <div class="fw-semibold">${reg.name}</div>
+                                                            <div class="text-secondary small">${reg.registry_type}</div>
                                                         </div>
-                                                    ` : ''}
+                                                        <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                                    </div>
+                                                    <div class="row g-2 mt-2">
+                                                        <div class="col-md-6">
+                                                            <div class="text-secondary small">Base URL</div>
+                                                            <div><code class="small">${reg.base_url || '-'}</code></div>
+                                                            <div class="text-secondary small mt-1">Default project path</div>
+                                                            <div><code class="small">${reg.default_project_path || '-'}</code></div>
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            ${environments.length > 0 ? `
+                                                                <div class="text-secondary small mb-1">Environment paths</div>
+                                                                <div class="d-flex flex-column gap-1">
+                                                                    ${environments.map(env => {
+                                                                        const entry = envPathMap.get(env.id);
+                                                                        const src = entry?.source_project_path_override || '-';
+                                                                        const trg = entry?.target_project_path_override || '-';
+                                                                        return `
+                                                                            <div class="d-flex align-items-center gap-2 small">
+                                                                                <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                                                                <span class="text-secondary">src:</span>
+                                                                                <code class="small">${src}</code>
+                                                                                <span class="text-secondary">trg:</span>
+                                                                                <code class="small">${trg}</code>
+                                                                            </div>
+                                                                        `;
+                                                                    }).join('')}
+                                                                </div>
+                                                            ` : `
+                                                                <div class="text-secondary small">No environments</div>
+                                                            `}
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
                                             </div>
                                         </a>
                                     `;
@@ -1173,57 +1190,27 @@ router.on('/tenants/:id', async (params) => {
                                 </div>
                             ` : activeDeployTargets.map(target => `
                                 <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                    <div class="d-flex align-items-center gap-3">
-                                        <div class="flex-fill">
-                                            <div class="d-flex align-items-center gap-2">
-                                                <span>${target.name}</span>
-                                                ${(() => {
-                                                    const active = (target.envs || []).some(env => env.is_active !== false);
-                                                    return `
-                                                        <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                                            ${active ? 'active' : 'inactive'}
-                                                        </span>
-                                                    `;
-                                                })()}
-                                            </div>
-                                            ${(target.envs || []).map(env => {
-                                                const envRepo = gitRepoById.get(env.env_repo_id);
-                                                const envUrl = envRepo?.repo_url || '-';
-                                                const envPath = env.env_repo_path || '-';
-                                                const envBranch = env.env_repo_branch || '';
-                                                const deployRepo = gitRepoById.get(env.deploy_repo_id);
-                                                const deployUrl = deployRepo?.repo_url || '-';
-                                                const deployPath = env.deploy_repo_path || '-';
-                                                const deployBranch = env.deploy_repo_branch || '';
-                                                return `
-                                                    <div class="text-secondary small">
-                                                        <span class="badge me-1" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">
-                                                            ${env.env_name}
-                                                        </span>
-                                                        Env: <code class="small">${envUrl}</code>
-                                                        ${envBranch ? `(branch: <code class="small">${envBranch}</code>)` : `(path: <code class="small">${envPath}</code>)`}
-                                                    </div>
-                                                    <div class="text-secondary small">
-                                                        Deploy: <code class="small">${deployUrl}</code>
-                                                        ${deployBranch ? `(branch: <code class="small">${deployBranch}</code>)` : `(path: <code class="small">${deployPath}</code>)`}
-                                                    </div>
-                                                `;
-                                            }).join('')}
-                                        </div>
+                                    <div class="d-flex align-items-center justify-content-between">
+                                        <div class="fw-semibold">${target.name}</div>
+                                        ${(() => {
+                                            const active = (target.envs || []).some(env => env.is_active !== false);
+                                            return `
+                                                <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
+                                                    ${active ? 'active' : 'inactive'}
+                                                </span>
+                                            `;
+                                        })()}
                                     </div>
-                                </a>
-                            `).join('')}
-                        </div>
-                        ${archivedDeployTargets.length > 0 ? `
-                            <div class="list-group list-group-flush d-none" id="archived-deploy-targets">
-                                ${archivedDeployTargets.map(target => `
-                                    <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                        <div class="d-flex align-items-center gap-3">
-                                            <div class="flex-fill">
-                                                <div class="d-flex align-items-center gap-2">
-                                                    <span>${target.name}</span>
-                                                    <span class="badge bg-secondary text-secondary-fg">archived</span>
-                                                </div>
+                                    <div class="table-responsive mt-2">
+                                        <table class="table table-sm table-vcenter card-table mb-0">
+                                            <thead>
+                                                <tr>
+                                                    <th>Env</th>
+                                                    <th>Env Repo</th>
+                                                    <th>Deploy Repo</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
                                                 ${(target.envs || []).map(env => {
                                                     const envRepo = gitRepoById.get(env.env_repo_id);
                                                     const envUrl = envRepo?.repo_url || '-';
@@ -1234,20 +1221,80 @@ router.on('/tenants/:id', async (params) => {
                                                     const deployPath = env.deploy_repo_path || '-';
                                                     const deployBranch = env.deploy_repo_branch || '';
                                                     return `
-                                                        <div class="text-secondary small">
-                                                            <span class="badge me-1" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">
-                                                                ${env.env_name}
-                                                            </span>
-                                                            Env: <code class="small">${envUrl}</code>
-                                                            ${envBranch ? `(branch: <code class="small">${envBranch}</code>)` : `(path: <code class="small">${envPath}</code>)`}
-                                                        </div>
-                                                        <div class="text-secondary small">
-                                                            Deploy: <code class="small">${deployUrl}</code>
-                                                            ${deployBranch ? `(branch: <code class="small">${deployBranch}</code>)` : `(path: <code class="small">${deployPath}</code>)`}
-                                                        </div>
+                                                        <tr>
+                                                            <td>
+                                                                <span class="badge" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">${env.env_name}</span>
+                                                            </td>
+                                                            <td>
+                                                                <code class="small">${envUrl}</code>
+                                                                <div class="text-secondary small">
+                                                                    ${envBranch ? `branch: ${envBranch}` : `path: ${envPath}`}
+                                                                </div>
+                                                            </td>
+                                                            <td>
+                                                                <code class="small">${deployUrl}</code>
+                                                                <div class="text-secondary small">
+                                                                    ${deployBranch ? `branch: ${deployBranch}` : `path: ${deployPath}`}
+                                                                </div>
+                                                            </td>
+                                                        </tr>
                                                     `;
                                                 }).join('')}
-                                            </div>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </a>
+                            `).join('')}
+                        </div>
+                        ${archivedDeployTargets.length > 0 ? `
+                            <div class="list-group list-group-flush d-none" id="archived-deploy-targets">
+                                ${archivedDeployTargets.map(target => `
+                                    <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
+                                        <div class="d-flex align-items-center justify-content-between">
+                                            <div class="fw-semibold">${target.name}</div>
+                                            <span class="badge bg-secondary text-secondary-fg">archived</span>
+                                        </div>
+                                        <div class="table-responsive mt-2">
+                                            <table class="table table-sm table-vcenter card-table mb-0">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Env</th>
+                                                        <th>Env Repo</th>
+                                                        <th>Deploy Repo</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    ${(target.envs || []).map(env => {
+                                                        const envRepo = gitRepoById.get(env.env_repo_id);
+                                                        const envUrl = envRepo?.repo_url || '-';
+                                                        const envPath = env.env_repo_path || '-';
+                                                        const envBranch = env.env_repo_branch || '';
+                                                        const deployRepo = gitRepoById.get(env.deploy_repo_id);
+                                                        const deployUrl = deployRepo?.repo_url || '-';
+                                                        const deployPath = env.deploy_repo_path || '-';
+                                                        const deployBranch = env.deploy_repo_branch || '';
+                                                        return `
+                                                            <tr>
+                                                                <td>
+                                                                    <span class="badge" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">${env.env_name}</span>
+                                                                </td>
+                                                                <td>
+                                                                    <code class="small">${envUrl}</code>
+                                                                    <div class="text-secondary small">
+                                                                        ${envBranch ? `branch: ${envBranch}` : `path: ${envPath}`}
+                                                                    </div>
+                                                                </td>
+                                                                <td>
+                                                                    <code class="small">${deployUrl}</code>
+                                                                    <div class="text-secondary small">
+                                                                        ${deployBranch ? `branch: ${deployBranch}` : `path: ${deployPath}`}
+                                                                    </div>
+                                                                </td>
+                                                            </tr>
+                                                        `;
+                                                    }).join('')}
+                                                </tbody>
+                                            </table>
                                         </div>
                                     </a>
                                 `).join('')}
