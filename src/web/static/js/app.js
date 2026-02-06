@@ -2453,8 +2453,8 @@ router.on('/bundles/:id', async (params) => {
                                 </li>
                                 <li>
                                     Build deploy from the release to regenerate <code>tsm-deploy/deploy/&lt;env&gt;</code>.
-                                    ${latestRelease ? `
-                                        <a href="#/releases/${latestRelease.id}" class="btn btn-sm btn-outline-secondary ms-2">
+                                    ${releasesForBundle.length > 0 ? `
+                                        <a href="#/releases/${releasesForBundle[0].id}" class="btn btn-sm btn-outline-secondary ms-2">
                                             View Image Release
                                         </a>
                                     ` : ''}
