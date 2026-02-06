@@ -328,6 +328,10 @@ class ApiClient {
         return this.post('/copy/jobs/release', payload);
     }
 
+    async startSelectiveCopyJob(payload) {
+        return this.post('/copy/jobs/selective', payload);
+    }
+
     async startPendingCopyJob(jobId) {
         return this.post(`/copy/jobs/${jobId}/start`, {});
     }

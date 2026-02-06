@@ -75,6 +75,8 @@ pub struct CopyJobStatus {
     pub target_registry_id: Option<Uuid>,
     pub target_tag: String,
     pub is_release_job: bool,
+    pub is_selective: bool,
+    pub base_copy_job_id: Option<Uuid>,
     pub validate_only: bool,
     pub total_images: usize,
     pub copied_images: usize,
@@ -92,6 +94,8 @@ pub struct CopyJobSummary {
     pub target_tag: String,
     pub status: String,
     pub is_release_job: bool,
+    pub is_selective: bool,
+    pub base_copy_job_id: Option<Uuid>,
     pub validate_only: bool,
     pub source_registry_id: Option<Uuid>,
     pub target_registry_id: Option<Uuid>,
@@ -109,6 +113,14 @@ pub struct ReleaseCopyRequest {
     pub validate_only: Option<bool>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SelectiveCopyRequest {
+    pub base_copy_job_id: Uuid,
+    pub selected_image_ids: Vec<Uuid>,
+    pub target_tag: Option<String>,
+    pub timezone_offset_minutes: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,6 +229,7 @@ pub fn router(state: CopyApiState) -> Router {
         )
         .route("/copy/jobs", get(list_copy_jobs))
         .route("/copy/jobs/release", post(start_release_copy_job))
+        .route("/copy/jobs/selective", post(start_selective_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
         .route("/copy/jobs/{job_id}/cancel", post(cancel_copy_job))
         .route("/copy/jobs/{job_id}", get(get_copy_job_status))
@@ -1235,6 +1248,227 @@ async fn start_release_copy_job(
     ))
 }
 
+/// POST /api/v1/copy/jobs/selective - Spustí selective copy job ze zdrojového jobu
+async fn start_selective_copy_job(
+    State(state): State<CopyApiState>,
+    Json(payload): Json<SelectiveCopyRequest>,
+) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
+    if payload.selected_image_ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Select at least one image to update".to_string(),
+            }),
+        ));
+    }
+
+    let base_job = sqlx::query_as::<_, (Uuid, Uuid, String, bool, Option<Uuid>, Option<Uuid>, String, Uuid, bool)>(
+        r#"
+        SELECT
+            cj.id,
+            cj.bundle_version_id,
+            cj.status,
+            cj.is_release_job,
+            cj.source_registry_id,
+            cj.target_registry_id,
+            cj.target_tag,
+            b.id AS bundle_id,
+            b.auto_tag_enabled
+        FROM copy_jobs cj
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        WHERE cj.id = $1
+        "#
+    )
+    .bind(payload.base_copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, base_tag, bundle_id, auto_tag_enabled)) = base_job else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Base copy job not found".to_string(),
+            }),
+        ));
+    };
+
+    if status != "success" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Base copy job must be successful".to_string(),
+            }),
+        ));
+    }
+
+    if is_release_job {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Selective copy is only allowed for normal copy jobs".to_string(),
+            }),
+        ));
+    }
+
+    let (Some(source_registry_id), Some(target_registry_id)) = (source_registry_id, target_registry_id) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Base copy job is missing registries".to_string(),
+            }),
+        ));
+    };
+
+    let target_tag = if auto_tag_enabled {
+        let date = local_date_from_offset(payload.timezone_offset_minutes);
+        let counter: i32 = sqlx::query_scalar(
+            r#"
+            INSERT INTO bundle_tag_counters (bundle_id, target_registry_id, date, counter)
+            VALUES ($1, $2, $3, 1)
+            ON CONFLICT (bundle_id, target_registry_id, date)
+            DO UPDATE SET counter = bundle_tag_counters.counter + 1, updated_at = now()
+            RETURNING counter
+            "#,
+        )
+        .bind(bundle_id)
+        .bind(target_registry_id)
+        .bind(date)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to generate target tag: {}", e),
+                }),
+            )
+        })?;
+        format_tag(date, counter)
+    } else {
+        let tag = payload.target_tag.clone().unwrap_or_default().trim().to_string();
+        if tag.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Target tag is required".to_string(),
+                }),
+            ));
+        }
+        tag
+    };
+
+    let base_images = sqlx::query_as::<_, CopyJobImage>(
+        "SELECT * FROM copy_job_images WHERE copy_job_id = $1 ORDER BY created_at"
+    )
+    .bind(base_job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if base_images.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Base copy job has no images".to_string(),
+            }),
+        ));
+    }
+
+    let selected: std::collections::HashSet<Uuid> = payload.selected_image_ids.into_iter().collect();
+    let invalid_selected = selected
+        .iter()
+        .filter(|id| !base_images.iter().any(|img| &img.id == *id))
+        .count();
+    if invalid_selected > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Some selected images do not belong to the base copy job".to_string(),
+            }),
+        ));
+    }
+
+    let job_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO copy_jobs
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, is_selective, base_copy_job_id)
+         VALUES ($1, $2, $3, 'pending', $4, $5, TRUE, $6)"
+    )
+    .bind(job_id)
+    .bind(bundle_version_id)
+    .bind(&target_tag)
+    .bind(source_registry_id)
+    .bind(target_registry_id)
+    .bind(base_job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to create selective copy job: {}", e),
+            }),
+        )
+    })?;
+
+    for img in base_images {
+        let is_selected = selected.contains(&img.id);
+        let (source_image, source_tag, source_registry_override) = if is_selected {
+            (img.source_image.clone(), img.source_tag.clone(), Some(source_registry_id))
+        } else {
+            (img.target_image.clone(), img.target_tag.clone(), Some(target_registry_id))
+        };
+
+        let _: Uuid = sqlx::query_scalar(
+            "INSERT INTO copy_job_images
+             (copy_job_id, image_mapping_id, source_image, source_tag, source_registry_id, target_image, target_tag)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id"
+        )
+        .bind(job_id)
+        .bind(img.image_mapping_id)
+        .bind(&source_image)
+        .bind(&source_tag)
+        .bind(source_registry_override)
+        .bind(&img.target_image)
+        .bind(&target_tag)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to snapshot selective images: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CopyJobResponse {
+            job_id,
+            message: format!("Selective copy job created (tag {})", target_tag),
+        }),
+    ))
+}
+
 /// GET /api/v1/copy/jobs - seznam copy jobů
 async fn list_copy_jobs(
     State(state): State<CopyApiState>,
@@ -1249,6 +1483,8 @@ async fn list_copy_jobs(
             cj.target_tag,
             cj.status,
             cj.is_release_job,
+            cj.is_selective,
+            cj.base_copy_job_id,
             cj.validate_only,
             cj.source_registry_id,
             cj.target_registry_id,
@@ -1383,29 +1619,46 @@ async fn start_copy_job(
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
     let log_state_clone = state.job_logs.clone();
-    let credentials = state.get_skopeo_credentials(source_registry_id, target_registry_id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get registry credentials: {}", e),
-            }),
-        )
-    })?;
 
-    let source_registry: (String,) = sqlx::query_as(
-        "SELECT base_url FROM registries WHERE id = $1",
-    )
-    .bind(source_registry_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to get source registry: {}", e),
-            }),
+    let mut source_registry_ids = std::collections::HashSet::new();
+    source_registry_ids.insert(source_registry_id);
+    for img in &images {
+        if let Some(id) = img.source_registry_id {
+            source_registry_ids.insert(id);
+        }
+    }
+
+    let mut source_registry_info: std::collections::HashMap<Uuid, (String, Option<String>, Option<String>)> = std::collections::HashMap::new();
+    for registry_id in source_registry_ids {
+        let registry: (String,) = sqlx::query_as(
+            "SELECT base_url FROM registries WHERE id = $1",
         )
-    })?;
+        .bind(registry_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get source registry: {}", e),
+                }),
+            )
+        })?;
+        let (username, password) = state.get_registry_credentials(registry_id).await.map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get registry credentials: {}", e),
+                }),
+            )
+        })?;
+        let base_url = registry
+            .0
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .to_string();
+        source_registry_info.insert(registry_id, (base_url, username, password));
+    }
 
     let target_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
@@ -1422,7 +1675,15 @@ async fn start_copy_job(
         )
     })?;
 
-    let source_base_url = source_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
+    let (target_username, target_password) = state.get_registry_credentials(target_registry_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to get registry credentials: {}", e),
+            }),
+        )
+    })?;
+
     let target_base_url = target_registry.0.trim_start_matches("https://").trim_start_matches("http://").to_string();
     let release_id = release_id.clone();
     let release_notes = release_notes.clone();
@@ -1450,6 +1711,30 @@ async fn start_copy_job(
                 emit_log(&log_tx, "Cancel requested, stopping job".to_string());
                 break;
             }
+            let source_registry_id = img.source_registry_id.unwrap_or(source_registry_id);
+            let Some((source_base_url, source_username, source_password)) = source_registry_info.get(&source_registry_id).cloned() else {
+                failed += 1;
+                let err = format!("Missing source registry {}", source_registry_id);
+                emit_log(&log_tx, format!("FAILED {} - {}", img.source_image, err));
+                let _ = sqlx::query(
+                    "UPDATE copy_job_images
+                     SET copy_status = 'failed', error_message = $1
+                     WHERE id = $2"
+                )
+                .bind(err)
+                .bind(img.id)
+                .execute(&pool_clone)
+                .await;
+                continue;
+            };
+
+            let credentials = SkopeoCredentials {
+                source_username: source_username.clone(),
+                source_password: source_password.clone(),
+                target_username: target_username.clone(),
+                target_password: target_password.clone(),
+            };
+
             let source_url = match build_source_url(&source_base_url, &img, &source_ref_mode) {
                 Ok(url) => url,
                 Err(err) => {
@@ -1750,9 +2035,9 @@ async fn get_copy_job_status(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<CopyJobStatus>, (StatusCode, Json<ErrorResponse>)> {
-    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, String, bool, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool)>(
         r#"
-        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.target_tag, cj.is_release_job, cj.validate_only
+        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.target_tag, cj.is_release_job, cj.is_selective, cj.base_copy_job_id, cj.validate_only
         FROM copy_jobs cj
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         WHERE cj.id = $1
@@ -1770,7 +2055,7 @@ async fn get_copy_job_status(
         )
     })?;
 
-    let Some((bundle_id, version, status, source_registry_id, target_registry_id, target_tag, is_release_job, validate_only)) = row else {
+    let Some((bundle_id, version, status, source_registry_id, target_registry_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only)) = row else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1832,6 +2117,8 @@ async fn get_copy_job_status(
         target_registry_id,
         target_tag,
         is_release_job,
+        is_selective,
+        base_copy_job_id,
         validate_only,
         total_images: totals.0 as usize,
         copied_images: totals.1 as usize,

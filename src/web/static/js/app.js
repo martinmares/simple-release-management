@@ -2529,6 +2529,7 @@ router.on('/bundles/:id', async (params) => {
                                             <td>
                                                 <span class="badge bg-blue text-blue-fg">v${job.version}</span>
                                                 ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                                ${job.is_selective ? '<span class="badge bg-purple-lt text-purple-fg ms-2">selective</span>' : ''}
                                             </td>
                                             <td>
                                                 <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
@@ -2576,6 +2577,10 @@ router.on('/bundles/:id', async (params) => {
                                                             <i class="ti ti-rocket"></i>
                                                             Release Images
                                                         </a>
+                                                        <button type="button" class="btn btn-sm btn-outline-secondary selective-copy-btn" data-job-id="${job.job_id}">
+                                                            <i class="ti ti-adjustments"></i>
+                                                            Selective Copy
+                                                        </button>
                                                         <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
                                                             <i class="ti ti-rocket"></i>
                                                             Deploy (dev/test)
@@ -2654,6 +2659,13 @@ router.on('/bundles/:id', async (params) => {
                 const jobId = btn.getAttribute('data-job-id');
                 const targetTag = btn.getAttribute('data-target-tag');
                 await runAutoDeployFromCopyJob(jobId, tenant?.id, targetTag);
+            });
+        });
+
+        document.querySelectorAll('.selective-copy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const jobId = btn.getAttribute('data-job-id');
+                await runSelectiveCopyFromJob(jobId, bundle);
             });
         });
 
@@ -3473,6 +3485,7 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                     <td>
                                         <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
                                         ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                        ${job.is_selective ? '<span class="badge bg-purple-lt text-purple-fg ms-2">selective</span>' : ''}
                                         <div class="text-secondary small mt-1">
                                             ${job.source_registry_id ? `Source: <code class="small">${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}
                                         </div>
@@ -3505,6 +3518,10 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                                     <i class="ti ti-rocket"></i>
                                                     Release Images
                                                 </a>
+                                                <button type="button" class="btn btn-sm btn-outline-secondary selective-copy-btn" data-job-id="${job.job_id}">
+                                                    <i class="ti ti-adjustments"></i>
+                                                    Selective Copy
+                                                </button>
                                                 <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
                                                     <i class="ti ti-rocket"></i>
                                                     Deploy (dev/test)
@@ -3527,6 +3544,13 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                 const jobId = btn.getAttribute('data-job-id');
                 const targetTag = btn.getAttribute('data-target-tag');
                 await runAutoDeployFromCopyJob(jobId, bundle?.tenant_id, targetTag);
+            });
+        });
+
+        document.querySelectorAll('.selective-copy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const jobId = btn.getAttribute('data-job-id');
+                await runSelectiveCopyFromJob(jobId, bundle);
             });
         });
 
@@ -4705,6 +4729,9 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 ${status.is_release_job ? `
                                     <span class="badge bg-purple-lt text-purple-fg ms-2">image release</span>
                                 ` : ''}
+                                ${status.is_selective ? `
+                                    <span class="badge bg-purple-lt text-purple-fg ms-2">selective</span>
+                                ` : ''}
                                 ${status.validate_only ? `
                                     <span class="badge bg-azure-lt text-azure-fg ms-2">validate-only</span>
                                 ` : ''}
@@ -4715,6 +4742,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
                             <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                             ${linkedRelease ? `<div>Image Release: <a href="#/releases/${linkedRelease.id}"><code>${linkedRelease.release_id}</code></a></div>` : ''}
+                            ${status.base_copy_job_id ? `<div>Base Job: <a href="#/copy-jobs/${status.base_copy_job_id}"><code>${status.base_copy_job_id}</code></a></div>` : ''}
                         </div>
                         </div>
                         <div class="card-subtitle">Job ID: ${status.job_id}</div>
@@ -5139,6 +5167,7 @@ router.on('/copy-jobs', async () => {
                                         ${job.is_release_job ? `
                                             <span class="badge bg-purple-lt text-purple-fg ms-2">release</span>
                                         ` : ''}
+                                        ${job.is_selective ? '<span class="badge bg-purple-lt text-purple-fg ms-2">selective</span>' : ''}
                                         ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
                                     </td>
                                     <td>
@@ -5536,6 +5565,139 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
             const response = await api.startAutoDeployFromCopyJob(copyJobId, targetId, dryRun);
             getApp().showSuccess('Deploy job started');
             router.navigate(`/deploy-jobs/${response.job_id}`);
+        } catch (error) {
+            getApp().showError(error.message);
+        }
+    });
+}
+
+async function runSelectiveCopyFromJob(copyJobId, bundle) {
+    const autoTagEnabled = !!bundle?.auto_tag_enabled;
+    let images = [];
+
+    try {
+        images = await api.getCopyJobImages(copyJobId);
+    } catch (error) {
+        getApp().showError(`Failed to load copy job images: ${error.message}`);
+        return;
+    }
+
+    if (!images.length) {
+        getApp().showError('No images available for selective copy');
+        return;
+    }
+
+    const dialogHtml = `
+        <div class="modal modal-blur fade show" style="display: block;" id="selective-copy-modal">
+            <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-body">
+                        <div class="modal-title">Selective Copy</div>
+                        <div class="text-secondary small mt-1">
+                            Selected images will be copied from source. Unselected images will keep their digest and be retagged.
+                        </div>
+                        ${autoTagEnabled ? `
+                            <div class="text-secondary small mt-2">
+                                Target tag will be auto-generated (YYYY.MM.DD.COUNTER).
+                            </div>
+                        ` : `
+                            <div class="mt-3">
+                                <label class="form-label required">Target Tag</label>
+                                <input type="text" class="form-control" id="selective-target-tag" placeholder="2026.06.02.02">
+                            </div>
+                        `}
+                        <div class="mt-3 d-flex align-items-center justify-content-between">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="selective-select-all">
+                                <label class="form-check-label" for="selective-select-all">Select all</label>
+                            </div>
+                            <div class="text-secondary small">${images.length} images</div>
+                        </div>
+                        <div class="table-responsive mt-3" style="max-height: 380px;">
+                            <table class="table table-vcenter card-table">
+                                <thead>
+                                    <tr>
+                                        <th class="w-1"></th>
+                                        <th>Image</th>
+                                        <th>Current Tag</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${images.map(img => `
+                                        <tr>
+                                            <td>
+                                                <input class="form-check-input selective-image-checkbox" type="checkbox" value="${img.id}">
+                                            </td>
+                                            <td><code class="small">${img.target_image}</code></td>
+                                            <td><span class="badge bg-azure-lt">${img.target_tag}</span></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link link-secondary" id="selective-copy-cancel">
+                            Cancel
+                        </button>
+                        <button type="button" class="btn btn-primary" id="selective-copy-confirm">
+                            Create Selective Copy
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', dialogHtml);
+
+    const modal = document.getElementById('selective-copy-modal');
+    const backdrop = document.querySelector('.modal-backdrop');
+    const cancelBtn = document.getElementById('selective-copy-cancel');
+    const confirmBtn = document.getElementById('selective-copy-confirm');
+    const selectAll = document.getElementById('selective-select-all');
+    const tagInput = document.getElementById('selective-target-tag');
+    const checkboxes = Array.from(document.querySelectorAll('.selective-image-checkbox'));
+
+    const cleanup = () => {
+        modal.remove();
+        backdrop.remove();
+    };
+
+    selectAll.addEventListener('change', () => {
+        checkboxes.forEach(cb => {
+            cb.checked = selectAll.checked;
+        });
+    });
+
+    cancelBtn.addEventListener('click', cleanup);
+
+    confirmBtn.addEventListener('click', async () => {
+        const selectedIds = checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+        if (selectedIds.length === 0) {
+            getApp().showError('Select at least one image');
+            return;
+        }
+        const payload = {
+            base_copy_job_id: copyJobId,
+            selected_image_ids: selectedIds,
+            timezone_offset_minutes: new Date().getTimezoneOffset(),
+        };
+        if (!autoTagEnabled) {
+            const targetTag = tagInput?.value.trim() || '';
+            if (!targetTag) {
+                getApp().showError('Target tag is required');
+                return;
+            }
+            payload.target_tag = targetTag;
+        }
+
+        cleanup();
+        try {
+            const response = await api.startSelectiveCopyJob(payload);
+            getApp().showSuccess('Selective copy job created');
+            router.navigate(`/copy-jobs/${response.job_id}`);
         } catch (error) {
             getApp().showError(error.message);
         }
