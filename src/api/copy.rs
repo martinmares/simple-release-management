@@ -539,17 +539,6 @@ async fn copy_bundle_version(
         )
     })?;
 
-    let source_base_url = source_registry
-        .0
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .to_string();
-    let target_base_url = target_registry
-        .0
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .to_string();
-
     if !is_registry_enabled_for_env(&state.pool, source_registry_id, payload.environment_id)
         .await
         .map_err(|e| {
@@ -587,22 +576,6 @@ async fn copy_bundle_version(
             }),
         ));
     }
-
-    // Získat credentials pro source a target registry
-    let credentials = match state
-        .get_skopeo_credentials(source_registry_id, target_registry_id, payload.environment_id)
-        .await
-    {
-        Ok(creds) => creds,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to get registry credentials: {}", e),
-                }),
-            ));
-        }
-    };
 
     let target_tag = if bundle.auto_tag_enabled {
         let date = local_date_from_offset(payload.timezone_offset_minutes);
@@ -674,33 +647,6 @@ async fn copy_bundle_version(
         )
     })?;
 
-    // Inicializovat log stream pro tento job
-    let (log_tx, _log_rx) = broadcast::channel(512);
-    state.job_logs.write().await.insert(job_id, log_tx.clone());
-
-    // Persist logs to DB
-    let pool_for_log = state.pool.clone();
-    let mut log_rx = log_tx.subscribe();
-    tokio::spawn(async move {
-        while let Ok(line) = log_rx.recv().await {
-            let _ = sqlx::query(
-                "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
-            )
-            .bind(job_id)
-            .bind(line)
-            .execute(&pool_for_log)
-            .await;
-        }
-    });
-
-    // Spustit copy operaci na pozadí
-    let pool_clone = state.pool.clone();
-    let skopeo_clone = state.skopeo.clone();
-    let log_state_clone = state.job_logs.clone();
-    let cancel_flags = state.cancel_flags.clone();
-    let target_tag = target_tag.clone();
-    let credentials_clone = credentials.clone();
-
     let source_project_path = resolve_registry_project_path(
         &state.pool,
         source_registry_id,
@@ -734,7 +680,6 @@ async fn copy_bundle_version(
     })?;
 
     // Vytvořit snapshot image mappings pro tento job
-    let mut job_images: Vec<(Uuid, String, String, String)> = Vec::with_capacity(mappings.len());
     for mapping in &mappings {
         let source_path =
             apply_registry_project_path(&mapping.source_image, source_project_path.as_deref());
@@ -742,8 +687,8 @@ async fn copy_bundle_version(
             apply_registry_project_path(&mapping.target_image, target_project_path.as_deref());
         let copy_job_image_id: Uuid = sqlx::query_scalar(
             "INSERT INTO copy_job_images
-             (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag)
-             VALUES ($1, $2, $3, $4, $5, $6)
+             (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag, copy_status)
+             VALUES ($1, $2, $3, $4, $5, $6, 'pending')
              RETURNING id"
         )
         .bind(job_id)
@@ -762,206 +707,13 @@ async fn copy_bundle_version(
                 }),
             )
         })?;
-
-        job_images.push((
-            copy_job_image_id,
-            source_path,
-            mapping.source_tag.clone(),
-            target_path,
-        ));
     }
-
-    let mapping_count = mappings.len();
-
-    tokio::spawn(async move {
-        let mut failed = 0;
-        let mut cancelled = false;
-
-        emit_log(&log_tx, format!("Starting copy job {} ({} images)", job_id, mapping_count));
-        if cancel_flags.read().await.contains(&job_id) {
-            cancelled = true;
-            emit_log(&log_tx, "Cancel requested, stopping job".to_string());
-        }
-        if !cancelled {
-            let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
-                .bind(job_id)
-                .execute(&pool_clone)
-                .await;
-        }
-
-        for (copy_job_image_id, source_path, source_tag, target_path) in job_images {
-            if cancel_flags.read().await.contains(&job_id) {
-                cancelled = true;
-                emit_log(&log_tx, "Cancel requested, stopping job".to_string());
-                break;
-            }
-            // Sestavit URL
-            let source_url = format!("{}/{}:{}", source_base_url, source_path, source_tag);
-            let target_url = format!("{}/{}:{}", target_base_url, target_path, &target_tag);
-
-            emit_log(&log_tx, format!("Copying {} -> {}", source_url, target_url));
-
-            // Update DB status na in_progress
-            let _ = sqlx::query("UPDATE copy_job_images SET copy_status = 'in_progress' WHERE id = $1")
-                .bind(copy_job_image_id)
-                .execute(&pool_clone)
-                .await;
-
-            let source_sha = match skopeo_clone.inspect_image(
-                &source_url,
-                credentials_clone.source_username.as_deref(),
-                credentials_clone.source_password.as_deref(),
-            ).await {
-                Ok(info) => Some(info.digest),
-                Err(_) => None,
-            };
-
-            if let Some(ref src_digest) = source_sha {
-                match skopeo_clone.inspect_image(
-                    &target_url,
-                    credentials_clone.target_username.as_deref(),
-                    credentials_clone.target_password.as_deref(),
-                ).await {
-                    Ok(info) => {
-                        if info.digest == *src_digest {
-                            let _ = sqlx::query(
-                                "UPDATE copy_job_images
-                                 SET copy_status = 'success',
-                                     source_sha256 = $1,
-                                     target_sha256 = $2,
-                                     copied_at = NOW(),
-                                     bytes_copied = 0
-                                 WHERE id = $3"
-                            )
-                            .bind(&source_sha)
-                            .bind(&info.digest)
-                            .bind(copy_job_image_id)
-                            .execute(&pool_clone)
-                            .await;
-
-                            emit_log(&log_tx, format!("SKIP {} (digest match)", target_url));
-                            continue;
-                        }
-                    }
-                    Err(err) => {
-                        emit_log(&log_tx, format!("WARN target inspect failed for {} ({}) - copying anyway", target_url, err));
-                    }
-                }
-            }
-
-            // Zkopírovat image
-            match skopeo_clone
-                .copy_image_with_retry(
-                    &source_url,
-                    &target_url,
-                    &credentials_clone,
-                    3,
-                    10,
-                    Some(&log_tx),
-                )
-                .await
-            {
-                Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
-                    // Získat target SHA
-                    let target_sha = match skopeo_clone.inspect_image(
-                        &target_url,
-                        credentials_clone.target_username.as_deref(),
-                        credentials_clone.target_password.as_deref(),
-                    ).await {
-                        Ok(info) => Some(info.digest),
-                        Err(_) => None,
-                    };
-
-                    let _ = sqlx::query(
-                        "UPDATE copy_job_images
-                         SET copy_status = 'success',
-                             source_sha256 = $1,
-                             target_sha256 = $2,
-                             copied_at = NOW()
-                         WHERE id = $3"
-                    )
-                    .bind(&source_sha)
-                    .bind(&target_sha)
-                    .bind(copy_job_image_id)
-                    .execute(&pool_clone)
-                    .await;
-
-                    emit_log(&log_tx, format!("SUCCESS {}", target_url));
-                }
-                Ok(progress) => {
-                    // Update DB na failed
-                    let _ = sqlx::query(
-                        "UPDATE copy_job_images
-                         SET copy_status = 'failed', error_message = $1, source_sha256 = $2
-                         WHERE id = $3"
-                    )
-                    .bind(progress.message.trim())
-                    .bind(&source_sha)
-                    .bind(copy_job_image_id)
-                    .execute(&pool_clone)
-                    .await;
-
-                    failed += 1;
-                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, progress.message.trim()));
-                }
-                Err(err) => {
-                    let _ = sqlx::query(
-                        "UPDATE copy_job_images
-                         SET copy_status = 'failed', error_message = $1, source_sha256 = $2
-                         WHERE id = $3"
-                    )
-                    .bind(err.to_string())
-                    .bind(&source_sha)
-                    .bind(copy_job_image_id)
-                    .execute(&pool_clone)
-                    .await;
-
-                    failed += 1;
-                    emit_log(&log_tx, format!("FAILED {} - {}", target_url, err));
-                }
-            }
-
-        }
-
-        if cancelled {
-            let _ = sqlx::query(
-                "UPDATE copy_jobs SET status = 'cancelled', completed_at = NOW() WHERE id = $1",
-            )
-            .bind(job_id)
-            .execute(&pool_clone)
-            .await;
-
-            let _ = sqlx::query(
-                "UPDATE copy_job_images
-                 SET copy_status = 'cancelled', error_message = 'Cancelled'
-                 WHERE copy_job_id = $1 AND copy_status IN ('pending', 'in_progress')",
-            )
-            .bind(job_id)
-            .execute(&pool_clone)
-            .await;
-        } else {
-            // Finalizovat job
-            let _ = sqlx::query(
-                "UPDATE copy_jobs
-                 SET status = $1, completed_at = NOW()
-                 WHERE id = $2"
-            )
-            .bind(if failed == 0 { "success" } else { "failed" })
-            .bind(job_id)
-            .execute(&pool_clone)
-            .await;
-        }
-
-        emit_log(&log_tx, "Copy job finished".to_string());
-        log_state_clone.write().await.remove(&job_id);
-        cancel_flags.write().await.remove(&job_id);
-    });
 
     Ok((
         StatusCode::ACCEPTED,
         Json(CopyJobResponse {
             job_id,
-            message: format!("Copy job started for {} images", mapping_count),
+            message: format!("Copy job created for {} images", mappings.len()),
         }),
     ))
 }
