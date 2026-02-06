@@ -93,6 +93,8 @@ pub struct CopyJobSummary {
     pub status: String,
     pub is_release_job: bool,
     pub validate_only: bool,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -259,6 +261,22 @@ fn apply_override_name(path: &str, override_name: &str) -> String {
     } else {
         override_name.to_string()
     }
+}
+
+fn apply_registry_project_path(path: &str, default_project_path: Option<&str>) -> String {
+    let Some(default_path) = default_project_path.map(str::trim).filter(|p| !p.is_empty()) else {
+        return path.to_string();
+    };
+    let default_path = default_path.trim_matches('/');
+    if default_path.is_empty() {
+        return path.to_string();
+    }
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        return default_path.to_string();
+    }
+    let rest = trimmed.split_once('/').map(|(_, rest)| rest).unwrap_or(trimmed);
+    format!("{}/{}", default_path, rest)
 }
 
 fn build_source_url(base: &str, img: &CopyJobImage, mode: &str) -> Result<String, String> {
@@ -1080,6 +1098,48 @@ async fn start_release_copy_job(
         }
     }
 
+    let target_project_path = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT default_project_path FROM registries WHERE id = $1",
+    )
+    .bind(payload.target_registry_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to load target registry: {}", e),
+            }),
+        )
+    })?
+    .flatten();
+
+    if target_project_path.is_none() {
+        let registry_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM registries WHERE id = $1)",
+        )
+        .bind(payload.target_registry_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to verify target registry: {}", e),
+                }),
+            )
+        })?;
+
+        if !registry_exists {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Target registry not found".to_string(),
+                }),
+            ));
+        }
+    }
+
     // Připravit override map
     let mut overrides = std::collections::HashMap::new();
     for ov in payload.overrides {
@@ -1121,7 +1181,9 @@ async fn start_release_copy_job(
     let mut job_images: Vec<(Uuid, String, String, String)> = Vec::with_capacity(source_images.len());
     let rename_rules = &payload.rename_rules;
     for img in &source_images {
-        let mut target_path = apply_rename_rules(img.target_image.clone(), rename_rules);
+        let mut target_path =
+            apply_registry_project_path(&img.target_image, target_project_path.as_deref());
+        target_path = apply_rename_rules(target_path, rename_rules);
         if let Some(override_name) = overrides.get(&img.id) {
             target_path = apply_override_name(&target_path, override_name);
         }
@@ -1188,6 +1250,8 @@ async fn list_copy_jobs(
             cj.status,
             cj.is_release_job,
             cj.validate_only,
+            cj.source_registry_id,
+            cj.target_registry_id,
             cj.started_at,
             cj.completed_at
         FROM copy_jobs cj

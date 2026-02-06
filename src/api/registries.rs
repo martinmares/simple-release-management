@@ -110,6 +110,7 @@ pub struct CreateRegistryRequest {
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
+    pub default_project_path: Option<String>,
     pub auth_type: String,
     pub username: Option<String>,
     pub password: Option<String>,
@@ -126,6 +127,7 @@ pub struct UpdateRegistryRequest {
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
+    pub default_project_path: Option<String>,
     pub auth_type: String,
     pub username: Option<String>,
     pub password: Option<String>,
@@ -378,16 +380,24 @@ async fn create_registry(
         None
     };
 
+    let default_project_path = payload
+        .default_project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| path.trim_matches('/').to_string());
+
     // Vytvoření registry
     let registry = sqlx::query_as::<_, Registry>(
-        "INSERT INTO registries (tenant_id, name, registry_type, base_url, auth_type, username, password_encrypted, token_encrypted, role, description, is_active)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        "INSERT INTO registries (tenant_id, name, registry_type, base_url, default_project_path, auth_type, username, password_encrypted, token_encrypted, role, description, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *",
     )
     .bind(tenant_id)
     .bind(&payload.name)
     .bind(&payload.registry_type)
     .bind(&payload.base_url)
+    .bind(&default_project_path)
     .bind(&payload.auth_type)
     .bind(&payload.username)
     .bind(&password_encrypted)
@@ -430,6 +440,28 @@ async fn update_registry(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateRegistryRequest>,
 ) -> Result<Json<Registry>, (StatusCode, Json<ErrorResponse>)> {
+    let existing = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+    let Some(existing) = existing else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Registry with id {} not found", id),
+            }),
+        ));
+    };
+
     // Validace
     if payload.name.trim().is_empty() {
         return Err((
@@ -477,10 +509,20 @@ async fn update_registry(
         ));
     }
 
+    let username = payload
+        .username
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .or_else(|| existing.username.clone());
+
     // Validace auth credentials
     match payload.auth_type.as_str() {
         "basic" => {
-            if payload.username.is_none() || payload.password.is_none() {
+            if username.is_none()
+                || (payload.password.is_none() && existing.password_encrypted.is_none())
+            {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -490,7 +532,8 @@ async fn update_registry(
             }
         }
         "token" => {
-            if payload.username.is_none() || payload.token.is_none() {
+            if username.is_none() || (payload.token.is_none() && existing.token_encrypted.is_none())
+            {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -500,7 +543,7 @@ async fn update_registry(
             }
         }
         "bearer" => {
-            if payload.token.is_none() {
+            if payload.token.is_none() && existing.token_encrypted.is_none() {
                 return Err((
                     StatusCode::BAD_REQUEST,
                     Json(ErrorResponse {
@@ -534,7 +577,7 @@ async fn update_registry(
             )
         })?)
     } else {
-        None
+        existing.password_encrypted.clone()
     };
 
     // Encrypt token if provided
@@ -548,23 +591,31 @@ async fn update_registry(
             )
         })?)
     } else {
-        None
+        existing.token_encrypted.clone()
     };
+
+    let default_project_path = payload
+        .default_project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(|path| path.trim_matches('/').to_string());
 
     // Update registry
     let registry = sqlx::query_as::<_, Registry>(
         "UPDATE registries
-         SET tenant_id = $1, name = $2, registry_type = $3, base_url = $4, auth_type = $5, username = $6,
-             password_encrypted = $7, token_encrypted = $8, role = $9, description = $10, is_active = $11
-         WHERE id = $12
+         SET tenant_id = $1, name = $2, registry_type = $3, base_url = $4, default_project_path = $5, auth_type = $6, username = $7,
+             password_encrypted = $8, token_encrypted = $9, role = $10, description = $11, is_active = $12
+         WHERE id = $13
          RETURNING *",
     )
     .bind(&payload.tenant_id)
     .bind(&payload.name)
     .bind(&payload.registry_type)
     .bind(&payload.base_url)
+    .bind(&default_project_path)
     .bind(&payload.auth_type)
-    .bind(&payload.username)
+    .bind(&username)
     .bind(&password_encrypted)
     .bind(&token_encrypted)
     .bind(&payload.role)

@@ -285,6 +285,14 @@ function createRegistryForm(registry = null, tenants = []) {
                     <small class="form-hint">Hostname or URL (e.g. registry.example.com or https://registry.example.com)</small>
                 </div>
 
+                <div class="mb-3">
+                    <label class="form-label">Default project path</label>
+                    <input type="text" class="form-control" name="default_project_path"
+                           value="${registry?.default_project_path || ''}"
+                           placeholder="nac-app">
+                    <small class="form-hint">Optional path prefix for Release Images targets (no leading slash)</small>
+                </div>
+
                 <div class="row">
                     <div class="col-md-6">
                         <div class="mb-3">

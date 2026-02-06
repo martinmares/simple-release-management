@@ -304,6 +304,11 @@ router.on('/', async () => {
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5);
 
+        const registryMap = {};
+        registries.forEach(r => {
+            registryMap[r.id] = r;
+        });
+
         const recentCopyJobs = copyJobs
             .filter(job => job.started_at)
             .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
@@ -671,13 +676,28 @@ router.on('/', async () => {
                                 </div>
                             ` : `
                                 <div class="list-group list-group-flush">
-                                    ${recentCopyJobs.map(job => `
+                                    ${recentCopyJobs.map(job => {
+                                        const sourceReg = job.source_registry_id ? registryMap[job.source_registry_id] : null;
+                                        const targetReg = job.target_registry_id ? registryMap[job.target_registry_id] : null;
+                                        const sourceText = sourceReg?.base_url
+                                            ? `${sourceReg.base_url}${sourceReg.default_project_path ? ` (path: ${sourceReg.default_project_path})` : ''}`
+                                            : '-';
+                                        const targetText = targetReg?.base_url
+                                            ? `${targetReg.base_url}${targetReg.default_project_path ? ` (path: ${targetReg.default_project_path})` : ''}`
+                                            : '-';
+                                        return `
                                         <a href="#/copy-jobs/${job.job_id}" class="list-group-item list-group-item-action">
                                             <div class="row align-items-center">
                                                 <div class="col text-truncate">
                                                     <div class="text-reset d-block">${job.bundle_name}</div>
                                                     <div class="text-secondary text-truncate mt-n1">
                                                         ${job.target_tag}
+                                                    </div>
+                                                    <div class="text-secondary small mt-1">
+                                                        Source: <code class="small">${sourceText}</code>
+                                                    </div>
+                                                    <div class="text-secondary small">
+                                                        Target: <code class="small">${targetText}</code>
                                                     </div>
                                                 </div>
                                                 <div class="col-auto">
@@ -690,7 +710,8 @@ router.on('/', async () => {
                                                 </div>
                                             </div>
                                         </a>
-                                    `).join('')}
+                                    `;
+                                    }).join('')}
                                 </div>
                             `}
                         </div>
@@ -846,7 +867,7 @@ router.on('/tenants', async () => {
                                                 <span class="text-secondary">•</span>
                                                 <span class="text-secondary">${reg.username || '-'}</span>
                                                 <span class="text-secondary">•</span>
-                                                <span class="text-secondary">${reg.base_url}</span>
+                                                <code class="small">${reg.base_url}${reg.default_project_path ? ` (path: ${reg.default_project_path})` : ''}</code>
                                             </div>
                                         `).join('');
                                     const bundleList = bnds.length === 0
@@ -986,6 +1007,7 @@ router.on('/tenants/:id', async (params) => {
                                                     <div>${reg.name}</div>
                                                     <div class="text-secondary small">${reg.registry_type}</div>
                                                     <div class="text-secondary small"><code class="small">${reg.base_url || '-'}</code></div>
+                                                    <div class="text-secondary small">Project path: <code class="small">${reg.default_project_path || '-'}</code></div>
                                                 </div>
                                                 <span class="badge ${window.Alpine?.$data?.app?.getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
                                             </div>
@@ -1254,6 +1276,7 @@ router.on('/registries', async () => {
                                 <th>Tenant</th>
                                 <th>Type</th>
                                 <th>Base URL</th>
+                                <th>Project Path</th>
                                 <th>Username</th>
                                 <th>Role</th>
                                 <th>Status</th>
@@ -1262,7 +1285,7 @@ router.on('/registries', async () => {
                         <tbody>
                             <template x-if="filteredRegistries.length === 0">
                                 <tr>
-                                    <td colspan="7" class="text-center text-secondary py-5">
+                                    <td colspan="8" class="text-center text-secondary py-5">
                                         <div>
                                             <i class="ti ti-database-off" style="font-size: 3rem; opacity: 0.3;"></i>
                                             <div class="mt-2">No registries found</div>
@@ -1288,6 +1311,9 @@ router.on('/registries', async () => {
                                     </td>
                                     <td>
                                         <code class="small" x-text="reg.base_url"></code>
+                                    </td>
+                                    <td>
+                                        <code class="small" x-text="reg.default_project_path || '-'"></code>
                                     </td>
                                     <td>
                                         <span class="text-secondary" x-text="reg.username || '-'"></span>
@@ -1541,6 +1567,10 @@ router.on('/registries/:id', async (params) => {
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Base URL</div>
                                 <code>${registry.base_url}</code>
+                            </div>
+                            <div class="mb-3">
+                                <div class="text-secondary mb-1">Default Project Path</div>
+                                <code>${registry.default_project_path || '-'}</code>
                             </div>
                             <div class="mb-3">
                                 <div class="text-secondary mb-1">Registry Type</div>
@@ -2084,11 +2114,11 @@ router.on('/bundles', async () => {
                                         <div class="small text-secondary" style="line-height: 1.2;">
                                             <div class="mt-1">
                                                 <i class="ti ti-download" style="font-size: 0.8em;"></i>
-                                                <span style="font-size: 0.85em;">${sourceReg?.base_url || 'Unknown'}</span>
+                                                <span style="font-size: 0.85em;">${sourceReg?.base_url || 'Unknown'}${sourceReg?.default_project_path ? ` (path: ${sourceReg.default_project_path})` : ''}</span>
                                             </div>
                                             <div>
                                                 <i class="ti ti-upload" style="font-size: 0.8em;"></i>
-                                                <span style="font-size: 0.85em;">${targetReg?.base_url || 'Unknown'}</span>
+                                                <span style="font-size: 0.85em;">${targetReg?.base_url || 'Unknown'}${targetReg?.default_project_path ? ` (path: ${targetReg.default_project_path})` : ''}</span>
                                             </div>
                                         </div>
                                     </td>
@@ -2356,8 +2386,8 @@ router.on('/bundles/:id', async (params) => {
                                 <h3 class="card-title mb-1">${bundle.name}</h3>
                                 <div class="text-secondary small">
                                     <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
-                                    <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}</code>` : 'Source: -'}</div>
-                                    <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}</code>` : 'Target: -'}</div>
+                                    <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
+                                    <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                                 </div>
                             </div>
                             <div class="card-actions">
@@ -2533,8 +2563,8 @@ router.on('/bundles/:id', async (params) => {
                                             <td>
                                                 <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
                                                 <div class="text-secondary small mt-1">
-                                                    <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}</code>` : 'Source: -'}</div>
-                                                    <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}</code>` : 'Target: -'}</div>
+                                                    <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}</div>
+                                                    <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                                                 </div>
                                             </td>
                                             <td>
@@ -3338,12 +3368,18 @@ router.on('/bundles/:id/versions/:version', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [bundle, version, mappings, copyJobs] = await Promise.all([
+        const [bundle, version, mappings, copyJobs, registries] = await Promise.all([
             api.getBundle(params.id),
             api.getBundleVersion(params.id, params.version),
             api.getImageMappings(params.id, params.version),
             api.getBundleCopyJobs(params.id),
+            api.getRegistries().catch(() => []),
         ]);
+
+        const registryMap = {};
+        (registries || []).forEach(r => {
+            registryMap[r.id] = r;
+        });
 
         const versionJobs = copyJobs.filter(j => j.version === Number(params.version));
 
@@ -3455,6 +3491,12 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                     <td>
                                         <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
                                         ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                        <div class="text-secondary small mt-1">
+                                            ${job.source_registry_id ? `Source: <code class="small">${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}
+                                        </div>
+                                        <div class="text-secondary small">
+                                            ${job.target_registry_id ? `Target: <code class="small">${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}
+                                        </div>
                                     </td>
                                     <td>
                                         <span class="badge ${
@@ -4131,6 +4173,17 @@ router.on('/releases/new', async (params, query) => {
             return out;
         };
 
+        const applyProjectPath = (path, registry) => {
+            const rawDefault = registry?.default_project_path || '';
+            const defaultPath = rawDefault.trim().replace(/^\/+|\/+$/g, '');
+            if (!defaultPath) return path;
+            const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
+            if (!trimmed) return defaultPath;
+            const slashIndex = trimmed.indexOf('/');
+            const rest = slashIndex === -1 ? trimmed : trimmed.slice(slashIndex + 1);
+            return `${defaultPath}/${rest}`;
+        };
+
         const applyOverride = (path, overrideName) => {
             if (!overrideName) return path;
             const idx = path.lastIndexOf('/');
@@ -4139,6 +4192,7 @@ router.on('/releases/new', async (params, query) => {
         };
 
         const render = () => {
+            const sourceRegistry = registries.find(r => r.id === job.target_registry_id);
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
 
@@ -4164,6 +4218,9 @@ router.on('/releases/new', async (params, query) => {
                                             </option>
                                         `).join('')}
                                     </select>
+                                    <div class="form-hint">
+                                        ${sourceRegistry?.default_project_path ? `Project path: ${sourceRegistry.default_project_path}` : 'Project path: -'}
+                                    </div>
                                     <div class="mt-2">
                                         <label class="form-label">Source Reference</label>
                                         <div class="form-selectgroup">
@@ -4198,6 +4255,9 @@ router.on('/releases/new', async (params, query) => {
                                             </option>
                                         `).join('')}
                                     </select>
+                                    <div class="form-hint">
+                                        ${targetRegistry?.default_project_path ? `Project path: ${targetRegistry.default_project_path}` : 'Project path: -'}
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -4261,7 +4321,8 @@ router.on('/releases/new', async (params, query) => {
                                 </thead>
                                 <tbody>
                                     ${images.map((img, idx) => {
-                                        const renamed = applyRules(img.target_image);
+                                        const basePath = applyProjectPath(img.target_image, targetRegistry);
+                                        const renamed = applyRules(basePath);
                                         const override = state.overrides[idx]?.override_name || '';
                                         const finalPath = applyOverride(renamed, override);
                                         const sourceFull = state.sourceRefMode === 'digest'
@@ -4401,7 +4462,8 @@ router.on('/releases/new', async (params, query) => {
             document.querySelectorAll('[data-preview]').forEach(el => {
                 const idx = parseInt(el.getAttribute('data-index'), 10);
                 const sourcePath = el.getAttribute('data-source-path') || '';
-                const renamed = applyRules(sourcePath);
+                const basePath = applyProjectPath(sourcePath, targetRegistry);
+                const renamed = applyRules(basePath);
                 const override = state.overrides[idx]?.override_name || '';
                 const finalPath = applyOverride(renamed, override);
                 const releaseId = state.releaseId.trim();
@@ -4696,8 +4758,8 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             <div class="text-secondary small">
                                 <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
                                 <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
-                                <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}</code>` : 'Source: -'}</div>
-                                <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}</code>` : 'Target: -'}</div>
+                                <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
+                                <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                             </div>
                         </div>
                         <div class="card-subtitle">Job ID: ${status.job_id}</div>
@@ -5053,7 +5115,14 @@ router.on('/copy-jobs', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const jobs = await api.getCopyJobs();
+        const [jobs, registries] = await Promise.all([
+            api.getCopyJobs(),
+            api.getRegistries(),
+        ]);
+        const registryMap = {};
+        registries.forEach(r => {
+            registryMap[r.id] = r;
+        });
 
         const renderJobs = (rows) => `
             <div class="card">
@@ -5120,6 +5189,12 @@ router.on('/copy-jobs', async () => {
                                     <td>
                                         <span class="badge bg-azure-lt">${job.target_tag}</span>
                                         ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
+                                        <div class="text-secondary small mt-1">
+                                            ${job.source_registry_id ? `Source: <code class="small">${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}
+                                        </div>
+                                        <div class="text-secondary small">
+                                            ${job.target_registry_id ? `Target: <code class="small">${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}
+                                        </div>
                                     </td>
                                     <td>
                                         <span class="badge ${

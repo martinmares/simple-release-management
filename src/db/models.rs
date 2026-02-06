@@ -61,6 +61,7 @@ pub struct Registry {
     pub name: String,
     pub registry_type: String,
     pub base_url: String,
+    pub default_project_path: Option<String>,
     pub auth_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
