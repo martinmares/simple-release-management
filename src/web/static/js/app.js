@@ -1975,6 +1975,16 @@ router.on('/argocd-apps/:id', async (params) => {
                         <div class="text-secondary small">Status</div>
                         <div class="text-secondary">Loading...</div>
                     </div>
+                    <div class="mt-2">
+                        <label class="form-label small text-secondary mb-1">Auto refresh</label>
+                        <select class="form-select form-select-sm w-auto" id="argocd-poll-select">
+                            <option value="0">Off</option>
+                            <option value="10">10s</option>
+                            <option value="15">15s</option>
+                            <option value="30">30s</option>
+                            <option value="60">60s</option>
+                        </select>
+                    </div>
                     <div class="mt-3">
                         <div class="card log-panel" style="background: transparent; border: none;">
                             <div class="terminal-header" style="display:flex;align-items:center;gap:6px;padding:10px 12px;background:#12171d;border-bottom:1px solid rgba(255,255,255,0.08);border-top-left-radius:8px;border-top-right-radius:8px;">
@@ -2050,6 +2060,21 @@ router.on('/argocd-apps/:id', async (params) => {
                     <span class="text-secondary small">${status?.operation_phase || ''}</span>
                 </div>
                 <div class="text-secondary small mt-1">${status?.operation_message || ''}</div>
+                ${status?.operation_sync_message ? `<div class="text-secondary small">${status.operation_sync_message}</div>` : ''}
+                ${status?.operation_started_at || status?.operation_finished_at ? `
+                    <div class="text-secondary small mt-1">
+                        ${status.operation_started_at ? `Started: ${status.operation_started_at}` : ''}
+                        ${status.operation_finished_at ? ` · Finished: ${status.operation_finished_at}` : ''}
+                    </div>
+                ` : ''}
+                ${status?.revision ? `<div class="text-secondary small">Revision: <code class="small">${status.revision}</code></div>` : ''}
+                ${status?.last_deployed_at || status?.last_deployed_revision || status?.last_deployed_message ? `
+                    <div class="text-secondary small mt-1">
+                        ${status.last_deployed_at ? `Last deploy: ${status.last_deployed_at}` : ''}
+                        ${status.last_deployed_revision ? ` · ${status.last_deployed_revision}` : ''}
+                    </div>
+                    ${status.last_deployed_message ? `<div class="text-secondary small">${status.last_deployed_message}</div>` : ''}
+                ` : ''}
                 ${conditions.length > 0 || issues.length > 0 ? `
                     <div class="alert alert-warning mt-2 mb-0 p-2">
                         <div class="small mb-1"><strong>Issues:</strong> ${issues.length} ${issues.length > 50 ? '(showing first 50)' : ''}</div>
@@ -2063,26 +2088,18 @@ router.on('/argocd-apps/:id', async (params) => {
         };
 
         let issueMap = new Map();
-        const loadStatus = async () => {
-            try {
-                const status = await api.getArgocdAppStatus(app.id);
-                renderStatus(status);
-                issueMap = new Map((status?.resource_issues || []).map(i => [`${i.kind}|${i.namespace || ''}|${i.name}`, i]));
-                const activeKind = document.querySelector('#argocd-resource-tabs .nav-link.active')?.getAttribute('data-kind') || 'Deployment';
-                renderResources(activeKind);
-            } catch (err) {
-                console.error('Failed to load ArgoCD status:', err);
-                statusEl.innerHTML = `
-                    <div class="text-secondary small">Status</div>
-                    <div class="text-danger small">Failed to load status</div>
-                `;
-            }
-        };
-        // Defer to ensure DOM is ready
-        setTimeout(loadStatus, 0);
-
         let resources = [];
         const resourceBody = document.getElementById('argocd-resource-body');
+        const loadResources = async () => {
+            try {
+                const list = await api.getArgocdAppResources(app.id);
+                resources = Array.isArray(list) ? list : [];
+                const activeKind = document.querySelector('#argocd-resource-tabs .nav-link.active')?.getAttribute('data-kind') || 'Deployment';
+                renderResources(activeKind);
+            } catch {
+                resourceBody.innerHTML = `<tr><td colspan="5" class="text-danger">Failed to load resources</td></tr>`;
+            }
+        };
         const renderResources = (kind) => {
             const rows = resources.filter(r => r.kind === kind);
             if (rows.length === 0) {
@@ -2102,12 +2119,25 @@ router.on('/argocd-apps/:id', async (params) => {
                 </tr>
             `).join('');
         };
-        api.getArgocdAppResources(app.id).then(list => {
-            resources = Array.isArray(list) ? list : [];
-            renderResources('Deployment');
-        }).catch(() => {
-            resourceBody.innerHTML = `<tr><td colspan="5" class="text-danger">Failed to load resources</td></tr>`;
-        });
+        const loadStatus = async () => {
+            try {
+                const status = await api.getArgocdAppStatus(app.id);
+                renderStatus(status);
+                issueMap = new Map((status?.resource_issues || []).map(i => [`${i.kind}|${i.namespace || ''}|${i.name}`, i]));
+                const activeKind = document.querySelector('#argocd-resource-tabs .nav-link.active')?.getAttribute('data-kind') || 'Deployment';
+                renderResources(activeKind);
+                await loadResources();
+            } catch (err) {
+                console.error('Failed to load ArgoCD status:', err);
+                statusEl.innerHTML = `
+                    <div class="text-secondary small">Status</div>
+                    <div class="text-danger small">Failed to load status</div>
+                `;
+            }
+        };
+        // Defer to ensure DOM is ready
+        setTimeout(loadStatus, 0);
+        loadResources();
 
         document.querySelectorAll('#argocd-resource-tabs .nav-link').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -2119,9 +2149,25 @@ router.on('/argocd-apps/:id', async (params) => {
 
         const poll = env.argocd_poll_interval_seconds || 0;
         let pollTimer = null;
-        if (poll > 0) {
-            pollTimer = setInterval(loadStatus, poll * 1000);
+        const pollSelect = document.getElementById('argocd-poll-select');
+        const setPoll = (seconds) => {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            if (seconds > 0) {
+                pollTimer = setInterval(loadStatus, seconds * 1000);
+            }
+        };
+        const defaultPoll = Number.isFinite(poll) && poll > 0 ? poll : 10;
+        if (pollSelect) {
+            pollSelect.value = String(defaultPoll);
+            pollSelect.addEventListener('change', () => {
+                const seconds = parseInt(pollSelect.value, 10);
+                setPoll(Number.isFinite(seconds) ? seconds : 0);
+            });
         }
+        setPoll(defaultPoll);
 
         const refreshBtn = document.getElementById('argocd-refresh-btn');
         const syncBtn = document.getElementById('argocd-sync-btn');

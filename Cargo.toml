@@ -1,6 +1,6 @@
 [package]
 name = "simple-release-management"
-version = "0.17.9"
+version = "0.17.15"
 edition = "2024"
 
 [dependencies]

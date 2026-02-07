@@ -71,6 +71,12 @@ pub struct ArgocdStatus {
     pub operation_resources: Option<Vec<ArgocdOperationResource>>,
     pub conditions: Option<Vec<ArgocdCondition>>,
     pub resource_issues: Option<Vec<ArgocdResourceIssue>>,
+    pub operation_started_at: Option<String>,
+    pub operation_finished_at: Option<String>,
+    pub operation_sync_message: Option<String>,
+    pub last_deployed_at: Option<String>,
+    pub last_deployed_revision: Option<String>,
+    pub last_deployed_message: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -873,7 +879,7 @@ async fn call_argocd_action(
         )
     })?;
     let url = match action {
-        "refresh" => format!("{}/api/v1/applications/{}/refresh", instance.base_url, app.application_name),
+        "refresh" => format!("{}/api/v1/applications/{}?refresh=hard", instance.base_url, app.application_name),
         "sync" => format!("{}/api/v1/applications/{}/sync", instance.base_url, app.application_name),
         "terminate" => format!("{}/api/v1/applications/{}/operation", instance.base_url, app.application_name),
         _ => return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid action".to_string() }))),
@@ -881,6 +887,7 @@ async fn call_argocd_action(
 
     let mut req = match action {
         "terminate" => client.delete(url).json(&serde_json::json!({})),
+        "refresh" => client.get(url),
         _ => client.post(url).json(&serde_json::json!({})),
     };
     req = apply_auth(state, &client, req, instance).await?;
@@ -983,10 +990,18 @@ async fn fetch_argocd_status(
     let health_status = value.pointer("/status/health/status").and_then(|v| v.as_str()).map(str::to_string);
     let operation_phase = value.pointer("/status/operationState/phase").and_then(|v| v.as_str()).map(str::to_string);
     let operation_message = value.pointer("/status/operationState/message").and_then(|v| v.as_str()).map(str::to_string);
+    let operation_started_at = value.pointer("/status/operationState/startedAt").and_then(|v| v.as_str()).map(str::to_string);
+    let operation_finished_at = value.pointer("/status/operationState/finishedAt").and_then(|v| v.as_str()).map(str::to_string);
+    let operation_sync_message = value.pointer("/status/operationState/syncResult/message").and_then(|v| v.as_str()).map(str::to_string);
     let revision = value.pointer("/status/operationState/syncResult/revision")
         .or_else(|| value.pointer("/status/sync/revision"))
         .and_then(|v| v.as_str())
         .map(str::to_string);
+
+    let last_history = value.pointer("/status/history/0");
+    let last_deployed_at = last_history.and_then(|v| v.get("deployedAt")).and_then(|v| v.as_str()).map(str::to_string);
+    let last_deployed_revision = last_history.and_then(|v| v.get("revision")).and_then(|v| v.as_str()).map(str::to_string);
+    let last_deployed_message = last_history.and_then(|v| v.get("message")).and_then(|v| v.as_str()).map(str::to_string);
 
     let operation_resources = value.pointer("/status/operationState/syncResult/resources")
         .and_then(|v| v.as_array())
@@ -1021,12 +1036,18 @@ async fn fetch_argocd_status(
                 let sync_status = item.pointer("/sync/status").and_then(|v| v.as_str()).map(str::to_string);
                 let health_status = item.pointer("/health/status").and_then(|v| v.as_str()).map(str::to_string);
                 let message = item.pointer("/health/message").and_then(|v| v.as_str()).map(str::to_string);
-                let is_issue = match (sync_status.as_deref(), health_status.as_deref()) {
-                    (Some("Synced"), Some("Healthy")) => false,
-                    (None, Some("Healthy")) => false,
-                    (Some("Synced"), None) => false,
+                let is_sync_issue = match sync_status.as_deref() {
+                    None => false,
+                    Some("Synced") => false,
                     _ => true,
                 };
+                let is_health_issue = match health_status.as_deref() {
+                    None => false,
+                    Some("Healthy") => false,
+                    _ => true,
+                };
+                let has_message = message.as_deref().unwrap_or("").trim().len() > 0;
+                let is_issue = (is_sync_issue || is_health_issue) && (has_message || is_health_issue || is_sync_issue);
                 if !is_issue {
                     return None;
                 }
@@ -1050,6 +1071,12 @@ async fn fetch_argocd_status(
         operation_resources,
         conditions,
         resource_issues,
+        operation_started_at,
+        operation_finished_at,
+        operation_sync_message,
+        last_deployed_at,
+        last_deployed_revision,
+        last_deployed_message,
     })
 }
 
