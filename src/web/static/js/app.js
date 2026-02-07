@@ -2571,7 +2571,7 @@ router.on('/bundles/:id', async (params) => {
                                                         </button>
                                                         <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
                                                             <i class="ti ti-rocket"></i>
-                                                            Deploy (dev/test)
+                                                            Deploy Action
                                                         </button>
                                                     </div>
                                                 ` : ''}
@@ -3526,7 +3526,7 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                                 </button>
                                                 <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
                                                     <i class="ti ti-rocket"></i>
-                                                    Deploy (dev/test)
+                                                    Deploy Action
                                                 </button>
                                             </div>
                                         ` : job.is_release_job ? `
@@ -3968,6 +3968,14 @@ router.on('/deploy-jobs/:id', async (params) => {
                         Deploy Job Monitor
                         ${job.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                     </h3>
+                    ${job.status === 'pending' ? `
+                        <div class="card-actions">
+                            <button class="btn btn-primary btn-sm" id="start-deploy-job-btn">
+                                <i class="ti ti-player-play"></i>
+                                Start Deploy
+                            </button>
+                        </div>
+                    ` : ''}
                 </div>
                 <div class="card-body">
                     <dl class="row mb-0">
@@ -4090,6 +4098,22 @@ router.on('/deploy-jobs/:id', async (params) => {
             }, (err) => {
                 deployLines.push(`[Log stream error] ${err}`);
                 renderDeployLogs();
+            });
+        }
+
+        const startBtn = document.getElementById('start-deploy-job-btn');
+        if (startBtn) {
+            startBtn.addEventListener('click', async () => {
+                startBtn.disabled = true;
+                try {
+                    await api.startDeployJob(params.id);
+                    getApp().showSuccess('Deploy job started');
+                    router.navigate(`/deploy-jobs/${params.id}`);
+                    router.handleRoute();
+                } catch (error) {
+                    startBtn.disabled = false;
+                    getApp().showError(error.message);
+                }
             });
         }
 
@@ -4994,7 +5018,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                     </a>
                                     <button class="btn btn-outline-primary" id="auto-deploy-btn">
                                         <i class="ti ti-rocket"></i>
-                                        Deploy (dev/test)
+                                        Deploy Action
                                     </button>
                                 ` : ''}
                                 <a href="#/copy-jobs" class="btn btn-outline-secondary">
@@ -5714,7 +5738,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
                             Cancel
                         </button>
                         <button type="button" class="btn btn-primary" id="auto-deploy-confirm" disabled>
-                            Start Deploy
+                            Create Deploy Job
                         </button>
                     </div>
                 </div>
@@ -5792,7 +5816,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         cleanup();
         try {
             const response = await api.startAutoDeployFromCopyJob(copyJobId, targetEnvId, dryRun);
-            getApp().showSuccess('Deploy job started');
+            getApp().showSuccess('Deploy job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
             getApp().showError(error.message);
@@ -5970,7 +5994,7 @@ async function runDeployFromRelease(release, environments) {
                             Cancel
                         </button>
                         <button type="button" class="btn btn-primary" id="release-deploy-confirm" disabled>
-                            Start Deploy
+                            Create Deploy Job
                         </button>
                     </div>
                 </div>
@@ -6052,7 +6076,7 @@ async function runDeployFromRelease(release, environments) {
                 environment_id: targetEnvId,
                 dry_run: dryRun,
             });
-            getApp().showSuccess('Deploy job started');
+            getApp().showSuccess('Deploy job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
             getApp().showError(error.message);

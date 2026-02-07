@@ -614,6 +614,7 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy/jobs", get(list_deploy_jobs).post(create_deploy_job))
         .route("/deploy/jobs/from-copy", post(auto_deploy_from_copy_job))
         .route("/deploy/jobs/{id}", get(get_deploy_job))
+        .route("/deploy/jobs/{id}/start", post(start_deploy_job))
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
         .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
         .route("/deploy/jobs/{id}/diff", get(deploy_job_diff))
@@ -2642,7 +2643,7 @@ async fn create_deploy_job(
         ));
     }
 
-    let job_id = enqueue_deploy_job(
+    let job_id = create_deploy_job_record(
         &state,
         payload.release_id,
         environment.id,
@@ -2654,7 +2655,7 @@ async fn create_deploy_job(
         StatusCode::ACCEPTED,
         Json(DeployJobResponse {
             job_id,
-            message: "Deploy job started".to_string(),
+            message: "Deploy job created".to_string(),
         }),
     ))
 }
@@ -2803,18 +2804,18 @@ async fn auto_deploy_from_copy_job(
     };
 
     let dry_run = payload.dry_run.unwrap_or(true);
-    let job_id = enqueue_deploy_job(&state, release.id, environment.id, dry_run).await?;
+    let job_id = create_deploy_job_record(&state, release.id, environment.id, dry_run).await?;
 
     Ok((
         StatusCode::ACCEPTED,
         Json(DeployJobResponse {
             job_id,
-            message: "Deploy job started".to_string(),
+            message: "Deploy job created".to_string(),
         }),
     ))
 }
 
-async fn enqueue_deploy_job(
+async fn create_deploy_job_record(
     state: &DeployApiState,
     release_id: Uuid,
     environment_id: Uuid,
@@ -2840,10 +2841,19 @@ async fn enqueue_deploy_job(
         )
     })?;
 
-    let (log_tx, _log_rx) = broadcast::channel(512);
-    state.job_logs.write().await.insert(job_id, log_tx.clone());
+    ensure_deploy_job_log_channel(state, job_id).await;
 
-    let state_clone = state.clone();
+    Ok(job_id)
+}
+
+async fn ensure_deploy_job_log_channel(state: &DeployApiState, job_id: Uuid) -> broadcast::Sender<String> {
+    let mut logs = state.job_logs.write().await;
+    if let Some(existing) = logs.get(&job_id) {
+        return existing.clone();
+    }
+    let (log_tx, _log_rx) = broadcast::channel(512);
+    logs.insert(job_id, log_tx.clone());
+
     let log_persist_state = state.clone();
     let mut log_rx = log_tx.subscribe();
     tokio::spawn(async move {
@@ -2858,20 +2868,59 @@ async fn enqueue_deploy_job(
         }
     });
 
+    log_tx
+}
+
+async fn start_deploy_job(
+    State(state): State<DeployApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<(StatusCode, Json<DeployJobResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let updated = sqlx::query(
+        "UPDATE deploy_jobs SET status = 'in_progress', started_at = NOW() WHERE id = $1 AND status = 'pending'",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if updated.rows_affected() == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy job is not pending".to_string(),
+            }),
+        ));
+    }
+
+    let log_tx = ensure_deploy_job_log_channel(&state, id).await;
+    let state_clone = state.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_deploy_job(state_clone.clone(), job_id, log_tx.clone()).await {
+        if let Err(e) = run_deploy_job(state_clone.clone(), id, log_tx.clone()).await {
             let _ = log_tx.send(format!("Deploy job failed: {}", e));
             let _ = sqlx::query(
                 "UPDATE deploy_jobs SET status = 'failed', completed_at = NOW(), error_message = $1 WHERE id = $2",
             )
             .bind(e.to_string())
-            .bind(job_id)
+            .bind(id)
             .execute(&state_clone.pool)
             .await;
         }
     });
 
-    Ok(job_id)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DeployJobResponse {
+            job_id: id,
+            message: "Deploy job started".to_string(),
+        }),
+    ))
 }
 
 async fn store_encjson_keys(

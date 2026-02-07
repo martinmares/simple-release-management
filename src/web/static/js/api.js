@@ -502,6 +502,10 @@ class ApiClient {
         return this.post(`/deploy/jobs`, data);
     }
 
+    async startDeployJob(id) {
+        return this.post(`/deploy/jobs/${id}/start`, {});
+    }
+
     async getDeployJob(id) {
         return this.get(`/deploy/jobs/${id}`);
     }
