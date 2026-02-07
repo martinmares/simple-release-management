@@ -3586,13 +3586,32 @@ router.on('/releases', async () => {
             api.getBundles(),
         ]);
 
-        const renderReleases = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '') => {
+        const tenantIds = [...new Set(bundles.map(b => b.tenant_id).filter(Boolean))];
+        const environmentLists = await Promise.all(
+            tenantIds.map(id => api.getEnvironments(id).catch(() => []))
+        );
+        const environmentMap = new Map();
+        environmentLists.flat().forEach(env => {
+            environmentMap.set(env.id, env);
+        });
+
+        let selectedReleases = new Set();
+        const releaseById = new Map(releases.map(r => [r.id, r]));
+
+        const renderReleases = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedEnv = '') => {
             const filteredBundles = bundles.filter(b => !selectedTenant || b.tenant_id === selectedTenant);
+            const filteredEnvs = Array.from(environmentMap.values())
+                .filter(env => !selectedTenant || env.tenant_id === selectedTenant)
+                .sort((a, b) => a.name.localeCompare(b.name));
             return `
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">Image Releases</h3>
                         <div class="card-actions">
+                            <button class="btn btn-outline-secondary" id="releases-compare" ${selectedReleases.size === 2 ? '' : 'disabled'}>
+                                <i class="ti ti-arrows-diff"></i>
+                                <span id="releases-compare-label">Compare (${selectedReleases.size}/2)</span>
+                            </button>
                             <a href="#/releases/new" class="btn btn-primary">
                                 <i class="ti ti-plus"></i>
                                 New Image Release
@@ -3601,37 +3620,46 @@ router.on('/releases', async () => {
                     </div>
                     <div class="card-body border-bottom py-3">
                         <div class="row g-2">
-                            <div class="col-md-4">
-                                <div class="input-group">
-                                    <span class="input-group-text">
-                                        <i class="ti ti-search"></i>
-                                    </span>
-                                    <input class="form-control" id="releases-search" placeholder="Search by release id..."
-                                           value="${searchQuery}">
-                                </div>
-                            </div>
-                            <div class="col-md-4">
-                                <select class="form-select" id="releases-tenant">
-                                    <option value="">All Tenants</option>
-                                    ${tenants.map(t => `
-                                        <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
-                                    `).join('')}
-                                </select>
-                            </div>
-                            <div class="col-md-4">
-                                <select class="form-select" id="releases-bundle">
-                                    <option value="">All Bundles</option>
-                                    ${filteredBundles.map(b => `
-                                        <option value="${b.id}" ${b.id === selectedBundle ? 'selected' : ''}>${b.name}</option>
-                                    `).join('')}
-                                </select>
+                        <div class="col-md-3">
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="ti ti-search"></i>
+                                </span>
+                                <input class="form-control" id="releases-search" placeholder="Search by release id..."
+                                       value="${searchQuery}">
                             </div>
                         </div>
+                        <div class="col-md-3">
+                            <select class="form-select" id="releases-tenant">
+                                <option value="">All Tenants</option>
+                                ${tenants.map(t => `
+                                    <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <select class="form-select" id="releases-env">
+                                <option value="">All Environments</option>
+                                ${filteredEnvs.map(env => `
+                                    <option value="${env.id}" ${env.id === selectedEnv ? 'selected' : ''}>${env.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <select class="form-select" id="releases-bundle">
+                                <option value="">All Bundles</option>
+                                ${filteredBundles.map(b => `
+                                    <option value="${b.id}" ${b.id === selectedBundle ? 'selected' : ''}>${b.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
                     </div>
+                </div>
                     <div class="table-responsive">
                         <table class="table table-vcenter card-table table-hover">
                             <thead>
                                 <tr>
+                                    <th class="w-1"></th>
                                     <th>Image Release ID</th>
                                     <th>Tenant</th>
                                     <th>Bundle</th>
@@ -3645,7 +3673,7 @@ router.on('/releases', async () => {
                             <tbody>
                                 ${rows.length === 0 ? `
                                     <tr>
-                                        <td colspan="5" class="text-center text-secondary py-5">
+                                        <td colspan="6" class="text-center text-secondary py-5">
                                             No image releases yet. Create one from a successful copy job.
                                         </td>
                                     </tr>
@@ -3668,9 +3696,19 @@ router.on('/releases', async () => {
                                     return `
                                         <tr>
                                             <td>
+                                                <input class="form-check-input release-select" type="checkbox" value="${release.id}" ${selectedReleases.has(release.id) ? 'checked' : ''}>
+                                            </td>
+                                            <td>
                                                 <a href="#/releases/${release.id}"><strong>${release.release_id}</strong></a>
                                                 ${isAuto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                                                 <span class="badge bg-azure-lt text-azure-fg ms-2">${release.source_ref_mode || 'tag'}</span>
+                                                <div class="text-secondary small mt-1">
+                                                    ${
+                                                        release.environment_id && environmentMap.get(release.environment_id)
+                                                            ? `Env: <span class="badge" style="${environmentMap.get(release.environment_id).color ? `background:${environmentMap.get(release.environment_id).color};color:#fff;` : ''}">${environmentMap.get(release.environment_id).name}</span>`
+                                                            : 'Env: -'
+                                                    }
+                                                </div>
                                             </td>
                                             <td>
                                                 ${release.tenant_id ? `<a href="#/tenants/${release.tenant_id}">${release.tenant_name || 'Unknown'}</a>` : (release.tenant_name || 'Unknown')}
@@ -3692,13 +3730,196 @@ router.on('/releases', async () => {
 
         content.innerHTML = renderReleases(releases);
 
+        const showReleaseCompareModal = (releaseA, releaseB, rows) => {
+            const modalHtml = `
+                <div class="modal modal-blur fade show" style="display: block;" id="releases-compare-modal">
+                    <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Release Digest Comparison</h5>
+                                <button type="button" class="btn-close" data-modal-close></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="text-secondary small mb-3">
+                                    Release A: <code>${releaseA.release_id}</code><br>
+                                    Release B: <code>${releaseB.release_id}</code>
+                                </div>
+                                <div class="text-secondary small mb-3" id="release-compare-summary"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="release-compare-changes">
+                                            <span class="form-check-label">Changes</span>
+                                        </label>
+                                    </div>
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="release-compare-missing">
+                                            <span class="form-check-label">Missing</span>
+                                        </label>
+                                    </div>
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="release-compare-new">
+                                            <span class="form-check-label">New</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="table-responsive">
+                                    <table class="table table-vcenter">
+                                        <thead>
+                                            <tr>
+                                                <th>App</th>
+                                                <th>Container</th>
+                                                <th>Digest A</th>
+                                                <th>Digest B</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="release-compare-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-modal-close>Close</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-backdrop fade show"></div>
+            `;
+
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('releases-compare-modal');
+            const backdrop = document.querySelector('.modal-backdrop');
+            const closeModal = () => {
+                modal?.remove();
+                backdrop?.remove();
+            };
+            modal.querySelectorAll('[data-modal-close]').forEach(btn => btn.addEventListener('click', closeModal));
+
+            const shortDigest = (value) => {
+                if (!value) return '';
+                const cleaned = value.startsWith('sha256:') ? value.slice(7) : value;
+                return cleaned.slice(0, 7);
+            };
+            const digestCell = (value) => {
+                if (!value) return '-';
+                const short = shortDigest(value);
+                return `
+                    <div class="d-flex align-items-center gap-2">
+                        <code class="small" title="${value}">${short}</code>
+                        <button type="button" class="btn btn-ghost-secondary btn-sm copy-digest" data-digest="${value}">
+                            <i class="ti ti-copy"></i>
+                        </button>
+                    </div>
+                `;
+            };
+            const renderRows = (filtered) => {
+                const body = modal.querySelector('#release-compare-body');
+                if (!body) return;
+                if (!filtered.length) {
+                    body.innerHTML = '<tr><td colspan="5" class="text-center text-secondary">No data</td></tr>';
+                    return;
+                }
+                body.innerHTML = filtered.map(row => {
+                    const status = row.status;
+                    const badgeClass =
+                        status === 'same' ? 'bg-success text-success-fg' :
+                        status === 'changed' ? 'bg-warning text-warning-fg' :
+                        status === 'missing_in_a' ? 'bg-danger text-danger-fg' :
+                        status === 'missing_in_b' ? 'bg-danger text-danger-fg' :
+                        'bg-secondary text-secondary-fg';
+                    const label = status.replaceAll('_', ' ');
+                    return `
+                        <tr>
+                            <td><code class="small">${row.app_name}</code></td>
+                            <td><code class="small">${row.container_name}</code></td>
+                            <td>${digestCell(row.digest_a)}</td>
+                            <td>${digestCell(row.digest_b)}</td>
+                            <td><span class="badge ${badgeClass}">${label}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+            };
+            const renderSummary = (allRows, filteredRows) => {
+                const summaryEl = modal.querySelector('#release-compare-summary');
+                if (!summaryEl) return;
+                const countBy = (rows, status) => rows.filter(r => r.status === status).length;
+                const total = allRows.length;
+                const same = countBy(filteredRows, 'same');
+                const changed = countBy(filteredRows, 'changed');
+                const missingA = countBy(filteredRows, 'missing_in_a');
+                const missingB = countBy(filteredRows, 'missing_in_b');
+                summaryEl.innerHTML = `
+                    Showing <strong>${filteredRows.length}</strong> / ${total} &nbsp;|&nbsp;
+                    <span class="text-success">same: ${same}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-warning">changes: ${changed}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-danger">missing: ${missingB}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-info">new: ${missingA}</span>
+                `;
+            };
+            const applyFilters = () => {
+                const onlyChanges = modal.querySelector('#release-compare-changes')?.checked;
+                const onlyMissing = modal.querySelector('#release-compare-missing')?.checked;
+                const onlyNew = modal.querySelector('#release-compare-new')?.checked;
+                let filtered = rows.slice();
+                const active = [];
+                if (onlyChanges) active.push('changed');
+                if (onlyMissing) active.push('missing_in_b');
+                if (onlyNew) active.push('missing_in_a');
+                if (active.length > 0) {
+                    filtered = filtered.filter(r => active.includes(r.status));
+                }
+                renderRows(filtered);
+                renderSummary(rows, filtered);
+                modal.querySelectorAll('.copy-digest').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const value = btn.getAttribute('data-digest') || '';
+                        if (!value) return;
+                        try {
+                            await navigator.clipboard.writeText(value);
+                            app.showSuccess('Digest copied to clipboard');
+                        } catch (_) {
+                            app.showError('Failed to copy digest');
+                        }
+                    });
+                });
+            };
+
+            ['release-compare-changes', 'release-compare-missing', 'release-compare-new'].forEach(id => {
+                const el = modal.querySelector(`#${id}`);
+                if (el) el.addEventListener('change', applyFilters);
+            });
+
+            renderRows(rows);
+            renderSummary(rows, rows);
+            modal.querySelectorAll('.copy-digest').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const value = btn.getAttribute('data-digest') || '';
+                    if (!value) return;
+                    try {
+                        await navigator.clipboard.writeText(value);
+                        app.showSuccess('Digest copied to clipboard');
+                    } catch (_) {
+                        app.showError('Failed to copy digest');
+                    }
+                });
+            });
+        };
+
         const applyFilters = () => {
             const searchEl = document.getElementById('releases-search');
             const tenantEl = document.getElementById('releases-tenant');
+            const envEl = document.getElementById('releases-env');
             const bundleEl = document.getElementById('releases-bundle');
 
             const q = searchEl.value.trim().toLowerCase();
             const tenantId = tenantEl.value;
+            const envId = envEl.value;
             let bundleId = bundleEl.value;
 
             if (tenantId) {
@@ -3711,19 +3932,55 @@ router.on('/releases', async () => {
             const filtered = releases.filter(r => {
                 const nameOk = !q || r.release_id.toLowerCase().includes(q);
                 const tenantOk = !tenantId || r.tenant_id === tenantId;
+                const envOk = !envId || r.environment_id === envId;
                 const bundleOk = !bundleId || r.bundle_id === bundleId;
-                return nameOk && tenantOk && bundleOk;
+                return nameOk && tenantOk && envOk && bundleOk;
             });
 
-            content.innerHTML = renderReleases(filtered, q, tenantId, bundleId);
+            content.innerHTML = renderReleases(filtered, q, tenantId, bundleId, envId);
             document.getElementById('releases-search').addEventListener('input', applyFilters);
             document.getElementById('releases-tenant').addEventListener('change', applyFilters);
+            document.getElementById('releases-env').addEventListener('change', applyFilters);
             document.getElementById('releases-bundle').addEventListener('change', applyFilters);
+
+            const compareBtn = document.getElementById('releases-compare');
+            document.querySelectorAll('.release-select').forEach(cb => {
+                cb.addEventListener('change', () => {
+                    if (cb.checked) {
+                        if (selectedReleases.size >= 2) {
+                            cb.checked = false;
+                            alert('Select only two releases to compare.');
+                            return;
+                        }
+                        selectedReleases.add(cb.value);
+                    } else {
+                        selectedReleases.delete(cb.value);
+                    }
+                    compareBtn.disabled = selectedReleases.size !== 2;
+                    const label = document.getElementById('releases-compare-label');
+                    if (label) label.textContent = `Compare (${selectedReleases.size}/2)`;
+                });
+            });
+
+            compareBtn.addEventListener('click', async () => {
+                if (selectedReleases.size !== 2) return;
+                const [releaseAId, releaseBId] = Array.from(selectedReleases);
+                try {
+                    const rows = await api.compareReleases(releaseAId, releaseBId);
+                    const releaseA = releaseById.get(releaseAId) || { id: releaseAId, release_id: '-' };
+                    const releaseB = releaseById.get(releaseBId) || { id: releaseBId, release_id: '-' };
+                    showReleaseCompareModal(releaseA, releaseB, rows);
+                } catch (error) {
+                    alert(`Failed to compare releases: ${error.message}`);
+                }
+            });
         };
 
         document.getElementById('releases-search').addEventListener('input', applyFilters);
         document.getElementById('releases-tenant').addEventListener('change', applyFilters);
+        document.getElementById('releases-env').addEventListener('change', applyFilters);
         document.getElementById('releases-bundle').addEventListener('change', applyFilters);
+        applyFilters();
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">
@@ -5324,10 +5581,17 @@ router.on('/copy-jobs', async () => {
                         </a>
                     </div>
                 </div>
-                <div class="card-body">
-                    <div class="row g-2 align-items-end">
-                        <div class="col-sm-3">
-                            <label class="form-label">Tenant</label>
+                <div class="card-body border-bottom py-3">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="ti ti-search"></i>
+                                </span>
+                                <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id" value="${searchQuery}">
+                            </div>
+                        </div>
+                        <div class="col-md-3">
                             <select class="form-select" id="copy-jobs-tenant">
                                 <option value="">All Tenants</option>
                                 ${tenants.map(t => `
@@ -5335,8 +5599,7 @@ router.on('/copy-jobs', async () => {
                                 `).join('')}
                             </select>
                         </div>
-                        <div class="col-sm-3">
-                            <label class="form-label">Environment</label>
+                        <div class="col-md-3">
                             <select class="form-select" id="copy-jobs-env">
                                 <option value="">All Environments</option>
                                 ${allEnvironments.map(env => `
@@ -5344,8 +5607,7 @@ router.on('/copy-jobs', async () => {
                                 `).join('')}
                             </select>
                         </div>
-                        <div class="col-sm-3">
-                            <label class="form-label">Status</label>
+                        <div class="col-md-2">
                             <select class="form-select" id="copy-jobs-status">
                                 <option value="">All</option>
                                 <option value="in_progress" ${selectedStatus === 'in_progress' ? 'selected' : ''}>in_progress</option>
@@ -5353,10 +5615,6 @@ router.on('/copy-jobs', async () => {
                                 <option value="success" ${selectedStatus === 'success' ? 'selected' : ''}>success</option>
                                 <option value="failed" ${selectedStatus === 'failed' ? 'selected' : ''}>failed</option>
                             </select>
-                        </div>
-                        <div class="col-sm-3">
-                            <label class="form-label">Search</label>
-                            <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id" value="${searchQuery}">
                         </div>
                     </div>
                 </div>

@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State, Query},
     http::{header, StatusCode},
     response::IntoResponse,
     routing::{get, post, put},
@@ -7,6 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::{db::models::Release, services::release_manifest::build_release_manifest};
@@ -28,6 +29,21 @@ pub struct UpdateReleaseRequest {
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CompareReleasesQuery {
+    pub release_a: Uuid,
+    pub release_b: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompareReleaseRow {
+    pub app_name: String,
+    pub container_name: String,
+    pub digest_a: Option<String>,
+    pub digest_b: Option<String>,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct ReleaseSummary {
     pub id: Uuid,
@@ -46,6 +62,9 @@ pub struct ReleaseSummary {
     pub deploy_failed: i64,
     pub deploy_in_progress: i64,
     pub deploy_pending: i64,
+    pub environment_id: Option<Uuid>,
+    pub environment_name: Option<String>,
+    pub environment_color: Option<String>,
 }
 
 /// Response s chybou
@@ -59,6 +78,7 @@ pub fn router(pool: PgPool) -> Router {
     Router::new()
         .route("/releases", get(list_all_releases).post(create_release_global))
         .route("/tenants/{tenant_id}/releases", get(list_releases).post(create_release))
+        .route("/releases/compare", get(compare_releases))
         .route("/releases/{id}", get(get_release).put(update_release))
         .route("/releases/{id}/manifest", get(get_release_manifest))
         .with_state(pool)
@@ -86,14 +106,18 @@ async fn list_all_releases(
             COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
             COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
             COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
-            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending
+            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending,
+            e.id AS environment_id,
+            e.name AS environment_name,
+            e.color AS environment_color
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         JOIN bundles b ON b.id = bv.bundle_id
         JOIN tenants t ON t.id = b.tenant_id
+        LEFT JOIN environments e ON e.id = cj.environment_id
         LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
-        GROUP BY r.id, t.id, b.id
+        GROUP BY r.id, t.id, b.id, e.id
         ORDER BY r.created_at DESC
         "#
     )
@@ -134,15 +158,19 @@ async fn list_releases(
             COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
             COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
             COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
-            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending
+            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending,
+            e.id AS environment_id,
+            e.name AS environment_name,
+            e.color AS environment_color
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         JOIN bundles b ON b.id = bv.bundle_id
         JOIN tenants t ON t.id = b.tenant_id
+        LEFT JOIN environments e ON e.id = cj.environment_id
         LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
         WHERE b.tenant_id = $1
-        GROUP BY r.id, t.id, b.id
+        GROUP BY r.id, t.id, b.id, e.id
         ORDER BY r.created_at DESC
         "#
     )
@@ -159,6 +187,95 @@ async fn list_releases(
     })?;
 
     Ok(Json(releases))
+}
+
+/// GET /api/v1/releases/compare?release_a=...&release_b=... - porovnání digestů mezi dvěma releases
+async fn compare_releases(
+    State(pool): State<PgPool>,
+    Query(params): Query<CompareReleasesQuery>,
+) -> Result<Json<Vec<CompareReleaseRow>>, (StatusCode, Json<ErrorResponse>)> {
+    if params.release_a == params.release_b {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Select two different releases".to_string(),
+            }),
+        ));
+    }
+
+    let manifest_a = build_release_manifest(&pool, params.release_a).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to build manifest A: {}", e),
+            }),
+        )
+    })?;
+    let manifest_b = build_release_manifest(&pool, params.release_b).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to build manifest B: {}", e),
+            }),
+        )
+    })?;
+
+    let mut map_a: HashMap<(String, String), Option<String>> = HashMap::new();
+    for img in manifest_a.images {
+        let key = (
+            img.app_name,
+            img.container_name.unwrap_or_default(),
+        );
+        map_a.insert(key, img.digest);
+    }
+
+    let mut map_b: HashMap<(String, String), Option<String>> = HashMap::new();
+    for img in manifest_b.images {
+        let key = (
+            img.app_name,
+            img.container_name.unwrap_or_default(),
+        );
+        map_b.insert(key, img.digest);
+    }
+
+    let mut keys: Vec<(String, String)> = map_a
+        .keys()
+        .chain(map_b.keys())
+        .cloned()
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let mut results = Vec::with_capacity(keys.len());
+    for (app_name, container_name) in keys {
+        let digest_a = map_a
+            .get(&(app_name.clone(), container_name.clone()))
+            .cloned()
+            .flatten();
+        let digest_b = map_b
+            .get(&(app_name.clone(), container_name.clone()))
+            .cloned()
+            .flatten();
+
+        let status = match (&digest_a, &digest_b) {
+            (Some(a), Some(b)) if a == b => "same",
+            (Some(_), Some(_)) => "changed",
+            (None, Some(_)) => "missing_in_a",
+            (Some(_), None) => "missing_in_b",
+            _ => "missing",
+        }
+        .to_string();
+
+        results.push(CompareReleaseRow {
+            app_name,
+            container_name,
+            digest_a,
+            digest_b,
+            status,
+        });
+    }
+
+    Ok(Json(results))
 }
 
 /// GET /api/v1/releases/{id} - Detail release

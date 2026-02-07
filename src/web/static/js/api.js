@@ -522,6 +522,14 @@ class ApiClient {
         return this.get(`/releases/${releaseId}/deploy-jobs`);
     }
 
+    async compareReleases(releaseA, releaseB) {
+        const params = new URLSearchParams({
+            release_a: releaseA,
+            release_b: releaseB,
+        });
+        return this.get(`/releases/compare?${params.toString()}`);
+    }
+
     createDeployJobStream(jobId, onMessage, onError) {
         return this.createEventSource(`/deploy/jobs/${jobId}/logs`, onMessage, onError);
     }
