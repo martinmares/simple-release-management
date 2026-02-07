@@ -147,6 +147,7 @@ pub struct ReleaseCopyRequest {
     pub source_ref_mode: Option<String>,
     pub source_tag_override: Option<String>,
     pub validate_only: Option<bool>,
+    pub extra_tags: Option<Vec<String>>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
 }
@@ -1046,7 +1047,6 @@ async fn precheck_release_copy_images(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-
     if source_ref_mode == "digest" && source_tag_override.is_some() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -1259,6 +1259,16 @@ async fn start_release_copy_job(
         .map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string);
+    let mut extra_tags = payload
+        .extra_tags
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .filter(|t| t != &release_id)
+        .collect::<Vec<String>>();
+    extra_tags.sort();
+    extra_tags.dedup();
 
     if source_ref_mode == "digest" && source_tag_override.is_some() {
         return Err((
@@ -1468,8 +1478,8 @@ async fn start_release_copy_job(
 
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9, $10)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9, $10, $11)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
@@ -1481,6 +1491,7 @@ async fn start_release_copy_job(
     .bind(&payload.notes)
     .bind(validate_only)
     .bind(Some(environment_id))
+    .bind(&extra_tags)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1954,8 +1965,8 @@ async fn start_copy_job(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool, Option<Uuid>)>(
-        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id
+    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool, Option<Uuid>, Option<Vec<String>>)>(
+        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags
          FROM copy_jobs WHERE id = $1"
     )
     .bind(job_id)
@@ -1970,7 +1981,7 @@ async fn start_copy_job(
         )
     })?;
 
-    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id)) = job else {
+    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags)) = job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2057,6 +2068,8 @@ async fn start_copy_job(
     let pool_clone = state.pool.clone();
     let skopeo_clone = state.skopeo.clone();
     let log_state_clone = state.job_logs.clone();
+
+    let extra_tags = extra_tags.unwrap_or_default();
 
     let mut source_registry_ids = std::collections::HashSet::new();
     source_registry_ids.insert(source_registry_id);
@@ -2270,6 +2283,57 @@ async fn start_copy_job(
                             .await;
 
                             emit_log(&log_tx, format!("SKIP {} (digest match)", target_url));
+                            if !extra_tags.is_empty() {
+                                for tag in &extra_tags {
+                                    if tag == &target_tag {
+                                        continue;
+                                    }
+                                    let extra_target_url =
+                                        format!("{}/{}:{}", target_base_url, img.target_image, tag);
+                                    emit_log(&log_tx, format!("Tagging {} -> {}", source_url, extra_target_url));
+                                    match skopeo_clone
+                                        .copy_image_with_retry(
+                                            &source_url,
+                                            &extra_target_url,
+                                            &credentials,
+                                            3,
+                                            10,
+                                            Some(&log_tx),
+                                        )
+                                        .await
+                                    {
+                                        Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
+                                            emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
+                                        }
+                                        Ok(progress) => {
+                                            failed += 1;
+                                            emit_log(&log_tx, format!("FAILED {} - {}", extra_target_url, progress.message.trim()));
+                                            let _ = sqlx::query(
+                                                "UPDATE copy_job_images
+                                                 SET copy_status = 'failed', error_message = $1
+                                                 WHERE id = $2"
+                                            )
+                                            .bind(format!("Extra tag {} failed: {}", tag, progress.message.trim()))
+                                            .bind(img.id)
+                                            .execute(&pool_clone)
+                                            .await;
+                                        }
+                                        Err(err) => {
+                                            failed += 1;
+                                            emit_log(&log_tx, format!("FAILED {} - {}", extra_target_url, err));
+                                            let _ = sqlx::query(
+                                                "UPDATE copy_job_images
+                                                 SET copy_status = 'failed', error_message = $1
+                                                 WHERE id = $2"
+                                            )
+                                            .bind(format!("Extra tag {} failed: {}", tag, err))
+                                            .bind(img.id)
+                                            .execute(&pool_clone)
+                                            .await;
+                                        }
+                                    }
+                                }
+                            }
                             continue;
                         }
                     }
@@ -2315,6 +2379,57 @@ async fn start_copy_job(
                     .await;
 
                     emit_log(&log_tx, format!("SUCCESS {}", target_url));
+                    if !extra_tags.is_empty() {
+                        for tag in &extra_tags {
+                            if tag == &target_tag {
+                                continue;
+                            }
+                            let extra_target_url =
+                                format!("{}/{}:{}", target_base_url, img.target_image, tag);
+                            emit_log(&log_tx, format!("Tagging {} -> {}", source_url, extra_target_url));
+                            match skopeo_clone
+                                .copy_image_with_retry(
+                                    &source_url,
+                                    &extra_target_url,
+                                    &credentials,
+                                    3,
+                                    10,
+                                    Some(&log_tx),
+                                )
+                                .await
+                            {
+                                Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
+                                    emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
+                                }
+                                Ok(progress) => {
+                                    failed += 1;
+                                    emit_log(&log_tx, format!("FAILED {} - {}", extra_target_url, progress.message.trim()));
+                                    let _ = sqlx::query(
+                                        "UPDATE copy_job_images
+                                         SET copy_status = 'failed', error_message = $1
+                                         WHERE id = $2"
+                                    )
+                                    .bind(format!("Extra tag {} failed: {}", tag, progress.message.trim()))
+                                    .bind(img.id)
+                                    .execute(&pool_clone)
+                                    .await;
+                                }
+                                Err(err) => {
+                                    failed += 1;
+                                    emit_log(&log_tx, format!("FAILED {} - {}", extra_target_url, err));
+                                    let _ = sqlx::query(
+                                        "UPDATE copy_job_images
+                                         SET copy_status = 'failed', error_message = $1
+                                         WHERE id = $2"
+                                    )
+                                    .bind(format!("Extra tag {} failed: {}", tag, err))
+                                    .bind(img.id)
+                                    .execute(&pool_clone)
+                                    .await;
+                                }
+                            }
+                        }
+                    }
                 }
                 Ok(progress) => {
                     let _ = sqlx::query(
@@ -2380,13 +2495,14 @@ async fn start_copy_job(
         if !cancelled && failed == 0 && is_release_job {
             if let Some(release_id) = release_id {
                 let _ = sqlx::query(
-                    "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, is_auto)
-                     VALUES ($1, $2, 'draft', $3, $4, false)"
+                    "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, is_auto, extra_tags)
+                     VALUES ($1, $2, 'draft', $3, $4, false, $5)"
                 )
                 .bind(job_id)
                 .bind(&release_id)
                 .bind(&source_ref_mode)
                 .bind(&release_notes)
+                .bind(&extra_tags)
                 .execute(&pool_clone)
                 .await;
             }

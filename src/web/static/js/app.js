@@ -3500,6 +3500,8 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                                             job.status === 'success' ? 'bg-success text-success-fg' :
                                             job.status === 'failed' ? 'bg-danger text-danger-fg' :
                                             job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                            job.status === 'pending' ? 'bg-warning text-warning-fg' :
+                                            job.status === 'cancelled' || job.status === 'canceled' ? 'bg-warning text-warning-fg' :
                                             'bg-secondary text-secondary-fg'
                                         }">${job.status}</span>
                                     </td>
@@ -4134,6 +4136,8 @@ router.on('/releases/:id', async (params) => {
                                             job.status === 'success' ? 'bg-success text-success-fg' :
                                             job.status === 'failed' ? 'bg-danger text-danger-fg' :
                                             job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                            job.status === 'pending' ? 'bg-warning text-warning-fg' :
+                                            job.status === 'cancelled' || job.status === 'canceled' ? 'bg-warning text-warning-fg' :
                                             'bg-secondary text-secondary-fg'
                                         }">${job.status}</span>
                                     </td>
@@ -4450,6 +4454,7 @@ router.on('/releases/new', async (params, query) => {
             sourceRefMode: 'tag',
             sourceTagOverride: '',
             validateOnly: true,
+            extraTagsInput: '',
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
@@ -4601,6 +4606,12 @@ router.on('/releases/new', async (params, query) => {
                         </div>
 
                         <div class="mb-3">
+                            <label class="form-label">Extra tags (optional)</label>
+                            <textarea class="form-control" id="release-extra-tags" rows="2" placeholder="latest, latest-prod, 2026">${state.extraTagsInput}</textarea>
+                            <small class="form-hint">Comma or newline separated tags. Applied to the same target images after the main release tag.</small>
+                        </div>
+
+                        <div class="mb-3">
                             <label class="form-label">Notes</label>
                             <textarea class="form-control" id="release-notes" rows="3">${state.notes || ''}</textarea>
                         </div>
@@ -4696,6 +4707,7 @@ router.on('/releases/new', async (params, query) => {
                         </div>
                     </div>
                     <div class="card-footer">
+                        <div id="release-precheck-result-footer" class="mb-3"></div>
                         <div class="d-flex gap-2">
                             <button type="button" class="btn btn-outline-primary w-100" id="release-precheck-btn">
                                 <i class="ti ti-search"></i>
@@ -4737,6 +4749,9 @@ router.on('/releases/new', async (params, query) => {
             document.getElementById('release-notes').addEventListener('input', (e) => {
                 state.notes = e.target.value;
             });
+            document.getElementById('release-extra-tags').addEventListener('input', (e) => {
+                state.extraTagsInput = e.target.value;
+            });
             document.getElementById('release-validate-only').addEventListener('change', (e) => {
                 state.validateOnly = e.target.checked;
             });
@@ -4775,7 +4790,7 @@ router.on('/releases/new', async (params, query) => {
             });
 
             const renderPrecheck = (result) => {
-                const box = document.getElementById('release-precheck-result');
+                const box = document.getElementById('release-precheck-result-footer');
                 if (!box) return;
                 if (result.failed && result.failed.length > 0) {
                     box.innerHTML = `
@@ -4831,12 +4846,16 @@ router.on('/releases/new', async (params, query) => {
                     source_ref_mode: state.sourceRefMode,
                     source_tag_override: state.sourceTagOverride.trim() || null,
                     validate_only: state.validateOnly,
+                    extra_tags: state.extraTagsInput
+                        .split(/[,\n]/)
+                        .map(t => t.trim())
+                        .filter(t => t && t !== state.releaseId.trim()),
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
                 };
 
                 const btn = document.getElementById('release-precheck-btn');
-                const box = document.getElementById('release-precheck-result');
+                const box = document.getElementById('release-precheck-result-footer');
                 if (box) {
                     box.innerHTML = `
                         <div class="alert alert-info">
@@ -4907,6 +4926,10 @@ router.on('/releases/new', async (params, query) => {
                     source_ref_mode: state.sourceRefMode,
                     source_tag_override: state.sourceTagOverride.trim() || null,
                     validate_only: state.validateOnly,
+                    extra_tags: state.extraTagsInput
+                        .split(/[,\n]/)
+                        .map(t => t.trim())
+                        .filter(t => t && t !== releaseId),
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
                 };
@@ -5692,23 +5715,34 @@ router.on('/copy-jobs', async () => {
 
         const allEnvironments = Array.from(environmentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
         let selectedJobs = new Set();
+        let activeTab = 'copy';
 
-        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '') => `
+        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '', tab = 'copy') => `
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Copy Jobs</h3>
                     <div class="card-actions">
-                        <button class="btn btn-outline-secondary" id="copy-jobs-compare" ${selectedJobs.size === 2 ? '' : 'disabled'}>
-                            <i class="ti ti-arrows-diff"></i>
-                            <span id="copy-jobs-compare-label">Compare (${selectedJobs.size}/2)</span>
-                        </button>
-                        <a href="#/bundles" class="btn btn-primary">
-                            <i class="ti ti-package"></i>
-                            New Copy Job
-                        </a>
+                        ${tab === 'copy' ? `
+                            <button class="btn btn-outline-secondary" id="copy-jobs-compare" ${selectedJobs.size === 2 ? '' : 'disabled'}>
+                                <i class="ti ti-arrows-diff"></i>
+                                <span id="copy-jobs-compare-label">Compare (${selectedJobs.size}/2)</span>
+                            </button>
+                        ` : ''}
                     </div>
                 </div>
                 <div class="card-body border-bottom py-3">
+                    <ul class="nav nav-tabs">
+                        <li class="nav-item">
+                            <a class="nav-link ${tab === 'copy' ? 'active' : ''}" href="#" data-tab="copy">
+                                Copy Jobs
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link ${tab === 'release' ? 'active' : ''}" href="#" data-tab="release">
+                                Release Jobs
+                            </a>
+                        </li>
+                    </ul>
                     <div class="row g-2">
                         <div class="col-md-4">
                             <div class="input-group">
@@ -5749,21 +5783,21 @@ router.on('/copy-jobs', async () => {
                     <table class="table table-vcenter card-table">
                         <thead>
                             <tr>
-                                <th class="w-1"></th>
-                                <th>Job ID</th>
-                                <th>Tenant</th>
-                                <th>Bundle</th>
-                                <th>Version</th>
-                                <th>Target Tag</th>
-                                <th>Status</th>
-                                <th>Started</th>
+                                    <th class="w-1"></th>
+                                    <th>Job ID</th>
+                                    <th>Tenant</th>
+                                    <th>Bundle</th>
+                                    <th>Version</th>
+                                    <th>Target Tag</th>
+                                    <th>Status</th>
+                                    <th>Started</th>
                             </tr>
                         </thead>
                         <tbody>
                             ${rows.length === 0 ? `
                                 <tr>
                                     <td colspan="8" class="text-center text-secondary py-5">
-                                        No copy jobs yet. Start one from a bundle version.
+                                        ${tab === 'copy' ? 'No copy jobs yet.' : 'No release jobs yet.'}
                                     </td>
                                 </tr>
                             ` : rows.map(job => `
@@ -5807,6 +5841,8 @@ router.on('/copy-jobs', async () => {
                                             job.status === 'success' ? 'bg-success text-success-fg' :
                                             job.status === 'failed' ? 'bg-danger text-danger-fg' :
                                             job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                            job.status === 'pending' ? 'bg-warning text-warning-fg' :
+                                            job.status === 'cancelled' || job.status === 'canceled' ? 'bg-warning text-warning-fg' :
                                             'bg-secondary text-secondary-fg'
                                         }">${job.status}</span>
                                     </td>
@@ -6015,8 +6051,8 @@ router.on('/copy-jobs', async () => {
             });
         };
 
-        const renderAndBind = (rows, q = '', status = '', tenantId = '', envId = '') => {
-            content.innerHTML = renderJobs(rows, q, status, tenantId, envId);
+        const renderAndBind = (rows, q = '', status = '', tenantId = '', envId = '', tab = 'copy') => {
+            content.innerHTML = renderJobs(rows, q, status, tenantId, envId, tab);
 
             const tenantEl = document.getElementById('copy-jobs-tenant');
             const envEl = document.getElementById('copy-jobs-env');
@@ -6034,9 +6070,10 @@ router.on('/copy-jobs', async () => {
                     const envOk = !envValue || job.environment_id === envValue;
                     const statusOk = !statusValue || job.status === statusValue;
                     const searchOk = !qValue || job.bundle_name.toLowerCase().includes(qValue) || job.job_id.toLowerCase().includes(qValue);
-                    return tenantOk && envOk && statusOk && searchOk;
+                    const tabOk = activeTab === 'release' ? job.is_release_job : !job.is_release_job;
+                    return tenantOk && envOk && statusOk && searchOk && tabOk;
                 });
-                renderAndBind(filtered, qValue, statusValue, tenantValue, envValue);
+                renderAndBind(filtered, qValue, statusValue, tenantValue, envValue, activeTab);
             };
 
             tenantEl.addEventListener('change', applyFilters);
@@ -6044,39 +6081,54 @@ router.on('/copy-jobs', async () => {
             statusEl.addEventListener('change', applyFilters);
             searchEl.addEventListener('input', applyFilters);
 
-            document.querySelectorAll('.copy-job-select').forEach(cb => {
-                cb.addEventListener('change', () => {
-                    if (cb.checked) {
-                        if (selectedJobs.size >= 2) {
-                            cb.checked = false;
-                            alert('Select only two copy jobs to compare.');
-                            return;
+            if (activeTab === 'copy') {
+                document.querySelectorAll('.copy-job-select').forEach(cb => {
+                    cb.addEventListener('change', () => {
+                        if (cb.checked) {
+                            if (selectedJobs.size >= 2) {
+                                cb.checked = false;
+                                alert('Select only two copy jobs to compare.');
+                                return;
+                            }
+                            selectedJobs.add(cb.value);
+                        } else {
+                            selectedJobs.delete(cb.value);
                         }
-                        selectedJobs.add(cb.value);
-                    } else {
-                        selectedJobs.delete(cb.value);
-                    }
-                    compareBtn.disabled = selectedJobs.size !== 2;
-                    const label = document.getElementById('copy-jobs-compare-label');
-                    if (label) label.textContent = `Compare (${selectedJobs.size}/2)`;
+                        if (compareBtn) {
+                            compareBtn.disabled = selectedJobs.size !== 2;
+                            const label = document.getElementById('copy-jobs-compare-label');
+                            if (label) label.textContent = `Compare (${selectedJobs.size}/2)`;
+                        }
+                    });
                 });
-            });
 
-            compareBtn.addEventListener('click', async () => {
-                if (selectedJobs.size !== 2) return;
-                const [jobAId, jobBId] = Array.from(selectedJobs);
-                try {
-                    const rows = await api.compareCopyJobs(jobAId, jobBId);
-                    const jobA = jobById.get(jobAId) || { job_id: jobAId, target_tag: '-' };
-                    const jobB = jobById.get(jobBId) || { job_id: jobBId, target_tag: '-' };
-                    showCompareModal(jobA, jobB, rows);
-                } catch (error) {
-                    alert(`Failed to compare copy jobs: ${error.message}`);
+                if (compareBtn) {
+                    compareBtn.addEventListener('click', async () => {
+                        if (selectedJobs.size !== 2) return;
+                        const [jobAId, jobBId] = Array.from(selectedJobs);
+                        try {
+                            const rows = await api.compareCopyJobs(jobAId, jobBId);
+                            const jobA = jobById.get(jobAId) || { job_id: jobAId, target_tag: '-' };
+                            const jobB = jobById.get(jobBId) || { job_id: jobBId, target_tag: '-' };
+                            showCompareModal(jobA, jobB, rows);
+                        } catch (error) {
+                            alert(`Failed to compare copy jobs: ${error.message}`);
+                        }
+                    });
                 }
+            }
+
+            document.querySelectorAll('[data-tab]').forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    activeTab = link.getAttribute('data-tab') || 'copy';
+                    selectedJobs = new Set();
+                    applyFilters();
+                });
             });
         };
 
-        renderAndBind(hydratedJobs);
+        renderAndBind(hydratedJobs, '', '', '', '', activeTab);
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">

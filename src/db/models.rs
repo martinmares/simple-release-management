@@ -155,6 +155,7 @@ pub struct CopyJob {
     pub base_copy_job_id: Option<Uuid>,
     pub release_id: Option<String>,
     pub release_notes: Option<String>,
+    pub extra_tags: Option<Vec<String>>,
     pub validate_only: bool,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
@@ -222,6 +223,7 @@ pub struct Release {
     pub created_by: Option<String>,
     pub is_auto: bool,
     pub auto_reason: Option<String>,
+    pub extra_tags: Option<Vec<String>>,
     pub created_at: DateTime<Utc>,
 }
 

@@ -9,6 +9,7 @@ pub struct ReleaseManifest {
     pub release_id: String,
     pub created_at: DateTime<Utc>,
     pub images: Vec<ReleaseManifestImage>,
+    pub extra_tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +27,7 @@ struct ReleaseBaseRow {
     created_at: DateTime<Utc>,
     copy_job_id: Uuid,
     target_registry_id: Option<Uuid>,
+    extra_tags: Option<Vec<String>>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -40,7 +42,7 @@ struct ManifestImageRow {
 pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Result<ReleaseManifest> {
     let base = sqlx::query_as::<_, ReleaseBaseRow>(
         r#"
-        SELECT r.release_id, r.created_at, r.copy_job_id, cj.target_registry_id
+        SELECT r.release_id, r.created_at, r.copy_job_id, cj.target_registry_id, r.extra_tags
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         WHERE r.id = $1
@@ -95,6 +97,7 @@ pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Resul
         release_id: base.release_id,
         created_at: base.created_at,
         images,
+        extra_tags: base.extra_tags.unwrap_or_default(),
     })
 }
 
