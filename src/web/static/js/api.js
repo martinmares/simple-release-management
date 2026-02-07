@@ -301,6 +301,14 @@ class ApiClient {
         return this.get(`/copy/jobs/${jobId}/images`);
     }
 
+    async compareCopyJobs(jobA, jobB) {
+        const params = new URLSearchParams({
+            job_a: jobA,
+            job_b: jobB,
+        });
+        return this.get(`/copy/jobs/compare?${params.toString()}`);
+    }
+
     async cancelCopyJob(jobId) {
         return this.post(`/copy/jobs/${jobId}/cancel`, {});
     }

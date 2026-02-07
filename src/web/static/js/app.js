@@ -5306,11 +5306,18 @@ router.on('/copy-jobs', async () => {
             environmentMap.set(env.id, env);
         });
 
-        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '') => `
+        const allEnvironments = Array.from(environmentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+        let selectedJobs = new Set();
+
+        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '') => `
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Copy Jobs</h3>
                     <div class="card-actions">
+                        <button class="btn btn-outline-secondary" id="copy-jobs-compare" ${selectedJobs.size === 2 ? '' : 'disabled'}>
+                            <i class="ti ti-arrows-diff"></i>
+                            <span id="copy-jobs-compare-label">Compare (${selectedJobs.size}/2)</span>
+                        </button>
                         <a href="#/bundles" class="btn btn-primary">
                             <i class="ti ti-package"></i>
                             New Copy Job
@@ -5329,6 +5336,15 @@ router.on('/copy-jobs', async () => {
                             </select>
                         </div>
                         <div class="col-sm-3">
+                            <label class="form-label">Environment</label>
+                            <select class="form-select" id="copy-jobs-env">
+                                <option value="">All Environments</option>
+                                ${allEnvironments.map(env => `
+                                    <option value="${env.id}" ${env.id === selectedEnv ? 'selected' : ''}>${env.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
                             <label class="form-label">Status</label>
                             <select class="form-select" id="copy-jobs-status">
                                 <option value="">All</option>
@@ -5338,7 +5354,7 @@ router.on('/copy-jobs', async () => {
                                 <option value="failed" ${selectedStatus === 'failed' ? 'selected' : ''}>failed</option>
                             </select>
                         </div>
-                        <div class="col-sm-6">
+                        <div class="col-sm-3">
                             <label class="form-label">Search</label>
                             <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id" value="${searchQuery}">
                         </div>
@@ -5348,6 +5364,7 @@ router.on('/copy-jobs', async () => {
                     <table class="table table-vcenter card-table">
                         <thead>
                             <tr>
+                                <th class="w-1"></th>
                                 <th>Job ID</th>
                                 <th>Tenant</th>
                                 <th>Bundle</th>
@@ -5360,12 +5377,15 @@ router.on('/copy-jobs', async () => {
                         <tbody>
                             ${rows.length === 0 ? `
                                 <tr>
-                                    <td colspan="7" class="text-center text-secondary py-5">
+                                    <td colspan="8" class="text-center text-secondary py-5">
                                         No copy jobs yet. Start one from a bundle version.
                                     </td>
                                 </tr>
                             ` : rows.map(job => `
                                 <tr>
+                                    <td>
+                                        <input class="form-check-input copy-job-select" type="checkbox" value="${job.job_id}" ${selectedJobs.has(job.job_id) ? 'checked' : ''}>
+                                    </td>
                                     <td><a href="#/copy-jobs/${job.job_id}"><code class="small">${job.job_id}</code></a></td>
                                     <td>${job.tenant_name ? `<a href="#/tenants/${job.tenant_id}">${job.tenant_name}</a>` : '-'}</td>
                                     <td>
@@ -5425,30 +5445,253 @@ router.on('/copy-jobs', async () => {
             };
         });
 
-        content.innerHTML = renderJobs(hydratedJobs);
-        const tenantEl = document.getElementById('copy-jobs-tenant');
-        const statusEl = document.getElementById('copy-jobs-status');
-        const searchEl = document.getElementById('copy-jobs-search');
+        const jobById = new Map(hydratedJobs.map(job => [job.job_id, job]));
 
-        const applyFilters = () => {
-            const tenantId = tenantEl.value;
-            const status = statusEl.value;
-            const q = searchEl.value.trim().toLowerCase();
-            const filtered = hydratedJobs.filter(job => {
-                const tenantOk = !tenantId || job.tenant_id === tenantId;
-                const statusOk = !status || job.status === status;
-                const searchOk = !q || job.bundle_name.toLowerCase().includes(q) || job.job_id.toLowerCase().includes(q);
-                return tenantOk && statusOk && searchOk;
+        const showCompareModal = (jobA, jobB, rows) => {
+            const modalHtml = `
+                <div class="modal modal-blur fade show" style="display: block;" id="copy-jobs-compare-modal">
+                    <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Digest Comparison</h5>
+                                <button type="button" class="btn-close" data-modal-close></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="text-secondary small mb-3">
+                                    Job A: <code>${jobA.job_id}</code> (${jobA.target_tag})<br>
+                                    Job B: <code>${jobB.job_id}</code> (${jobB.target_tag})
+                                </div>
+                                <div class="text-secondary small mb-3" id="compare-summary"></div>
+                                <div class="row g-2 mb-3">
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="compare-only-changes">
+                                            <span class="form-check-label">Changes</span>
+                                        </label>
+                                    </div>
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="compare-only-missing">
+                                            <span class="form-check-label">Missing</span>
+                                        </label>
+                                    </div>
+                                    <div class="col-auto">
+                                        <label class="form-check form-check-inline">
+                                            <input class="form-check-input" type="checkbox" id="compare-only-new">
+                                            <span class="form-check-label">New</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="table-responsive">
+                                    <table class="table table-vcenter">
+                                        <thead>
+                                            <tr>
+                                                <th>App</th>
+                                                <th>Container</th>
+                                                <th>Digest A</th>
+                                                <th>Digest B</th>
+                                                <th>Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="compare-results-body"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-modal-close>Close</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-backdrop fade show"></div>
+            `;
+
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('copy-jobs-compare-modal');
+            const backdrop = document.querySelector('.modal-backdrop');
+            const closeModal = () => {
+                modal?.remove();
+                backdrop?.remove();
+            };
+            modal.querySelectorAll('[data-modal-close]').forEach(btn => btn.addEventListener('click', closeModal));
+
+                const renderRows = (filtered) => {
+                    const body = modal.querySelector('#compare-results-body');
+                    if (!body) return;
+                    if (!filtered.length) {
+                        body.innerHTML = '<tr><td colspan="5" class="text-center text-secondary">No data</td></tr>';
+                        return;
+                    }
+                    body.innerHTML = filtered.map(row => {
+                        const status = row.status;
+                        const badgeClass =
+                            status === 'same' ? 'bg-success text-success-fg' :
+                            status === 'changed' ? 'bg-warning text-warning-fg' :
+                            status === 'missing_in_a' ? 'bg-danger text-danger-fg' :
+                            status === 'missing_in_b' ? 'bg-danger text-danger-fg' :
+                            'bg-secondary text-secondary-fg';
+                    const label = status.replaceAll('_', ' ');
+                    const shortDigest = (value) => {
+                        if (!value) return '';
+                        const cleaned = value.startsWith('sha256:') ? value.slice(7) : value;
+                        return cleaned.slice(0, 7);
+                    };
+                    const digestCell = (value) => {
+                        if (!value) return '-';
+                        const short = shortDigest(value);
+                        return `
+                            <div class="d-flex align-items-center gap-2">
+                                <code class="small" title="${value}">${short}</code>
+                                <button type="button" class="btn btn-ghost-secondary btn-sm copy-digest" data-digest="${value}">
+                                    <i class="ti ti-copy"></i>
+                                </button>
+                            </div>
+                        `;
+                    };
+                    return `
+                        <tr>
+                            <td><code class="small">${row.app_name}</code></td>
+                            <td><code class="small">${row.container_name}</code></td>
+                            <td>${digestCell(row.digest_a)}</td>
+                            <td>${digestCell(row.digest_b)}</td>
+                            <td><span class="badge ${badgeClass}">${label}</span></td>
+                        </tr>
+                    `;
+                }).join('');
+            };
+
+            const renderSummary = (allRows, filteredRows) => {
+                const summaryEl = modal.querySelector('#compare-summary');
+                if (!summaryEl) return;
+                const countBy = (rows, status) => rows.filter(r => r.status === status).length;
+                const total = allRows.length;
+                const same = countBy(filteredRows, 'same');
+                const changed = countBy(filteredRows, 'changed');
+                const missingA = countBy(filteredRows, 'missing_in_a');
+                const missingB = countBy(filteredRows, 'missing_in_b');
+                summaryEl.innerHTML = `
+                    Showing <strong>${filteredRows.length}</strong> / ${total} &nbsp;|&nbsp;
+                    <span class="text-success">same: ${same}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-warning">changes: ${changed}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-danger">missing: ${missingB}</span>
+                    &nbsp;|&nbsp;
+                    <span class="text-info">new: ${missingA}</span>
+                `;
+            };
+
+            const applyFilters = () => {
+                const onlyChanges = modal.querySelector('#compare-only-changes')?.checked;
+                const onlyMissing = modal.querySelector('#compare-only-missing')?.checked;
+                const onlyNew = modal.querySelector('#compare-only-new')?.checked;
+                let filtered = rows.slice();
+                const active = [];
+                if (onlyChanges) active.push('changed');
+                if (onlyMissing) active.push('missing_in_b');
+                if (onlyNew) active.push('missing_in_a');
+                if (active.length > 0) {
+                    filtered = filtered.filter(r => active.includes(r.status));
+                }
+                renderRows(filtered);
+                renderSummary(rows, filtered);
+                modal.querySelectorAll('.copy-digest').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const value = btn.getAttribute('data-digest') || '';
+                        if (!value) return;
+                        try {
+                            await navigator.clipboard.writeText(value);
+                            app.showSuccess('Digest copied to clipboard');
+                        } catch (_) {
+                            app.showError('Failed to copy digest');
+                        }
+                    });
+                });
+            };
+
+            ['compare-only-changes', 'compare-only-missing', 'compare-only-new'].forEach(id => {
+                const el = modal.querySelector(`#${id}`);
+                if (el) el.addEventListener('change', applyFilters);
             });
-            content.innerHTML = renderJobs(filtered, q, status, tenantId);
-            document.getElementById('copy-jobs-tenant').value = tenantId;
-            document.getElementById('copy-jobs-status').value = status;
-            document.getElementById('copy-jobs-search').value = q;
+
+            renderRows(rows);
+            renderSummary(rows, rows);
+            modal.querySelectorAll('.copy-digest').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const value = btn.getAttribute('data-digest') || '';
+                    if (!value) return;
+                    try {
+                        await navigator.clipboard.writeText(value);
+                        app.showSuccess('Digest copied to clipboard');
+                    } catch (_) {
+                        app.showError('Failed to copy digest');
+                    }
+                });
+            });
         };
 
-        tenantEl.addEventListener('change', applyFilters);
-        statusEl.addEventListener('change', applyFilters);
-        searchEl.addEventListener('input', applyFilters);
+        const renderAndBind = (rows, q = '', status = '', tenantId = '', envId = '') => {
+            content.innerHTML = renderJobs(rows, q, status, tenantId, envId);
+
+            const tenantEl = document.getElementById('copy-jobs-tenant');
+            const envEl = document.getElementById('copy-jobs-env');
+            const statusEl = document.getElementById('copy-jobs-status');
+            const searchEl = document.getElementById('copy-jobs-search');
+            const compareBtn = document.getElementById('copy-jobs-compare');
+
+            const applyFilters = () => {
+                const tenantValue = tenantEl.value;
+                const envValue = envEl.value;
+                const statusValue = statusEl.value;
+                const qValue = searchEl.value.trim().toLowerCase();
+                const filtered = hydratedJobs.filter(job => {
+                    const tenantOk = !tenantValue || job.tenant_id === tenantValue;
+                    const envOk = !envValue || job.environment_id === envValue;
+                    const statusOk = !statusValue || job.status === statusValue;
+                    const searchOk = !qValue || job.bundle_name.toLowerCase().includes(qValue) || job.job_id.toLowerCase().includes(qValue);
+                    return tenantOk && envOk && statusOk && searchOk;
+                });
+                renderAndBind(filtered, qValue, statusValue, tenantValue, envValue);
+            };
+
+            tenantEl.addEventListener('change', applyFilters);
+            envEl.addEventListener('change', applyFilters);
+            statusEl.addEventListener('change', applyFilters);
+            searchEl.addEventListener('input', applyFilters);
+
+            document.querySelectorAll('.copy-job-select').forEach(cb => {
+                cb.addEventListener('change', () => {
+                    if (cb.checked) {
+                        if (selectedJobs.size >= 2) {
+                            cb.checked = false;
+                            alert('Select only two copy jobs to compare.');
+                            return;
+                        }
+                        selectedJobs.add(cb.value);
+                    } else {
+                        selectedJobs.delete(cb.value);
+                    }
+                    compareBtn.disabled = selectedJobs.size !== 2;
+                    const label = document.getElementById('copy-jobs-compare-label');
+                    if (label) label.textContent = `Compare (${selectedJobs.size}/2)`;
+                });
+            });
+
+            compareBtn.addEventListener('click', async () => {
+                if (selectedJobs.size !== 2) return;
+                const [jobAId, jobBId] = Array.from(selectedJobs);
+                try {
+                    const rows = await api.compareCopyJobs(jobAId, jobBId);
+                    const jobA = jobById.get(jobAId) || { job_id: jobAId, target_tag: '-' };
+                    const jobB = jobById.get(jobBId) || { job_id: jobBId, target_tag: '-' };
+                    showCompareModal(jobA, jobB, rows);
+                } catch (error) {
+                    alert(`Failed to compare copy jobs: ${error.message}`);
+                }
+            });
+        };
+
+        renderAndBind(hydratedJobs);
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">

@@ -9,7 +9,7 @@ use futures::stream::{self, BoxStream, Stream, StreamExt};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
@@ -57,6 +57,29 @@ pub struct NextTagQuery {
 #[derive(Debug, Serialize)]
 pub struct NextTagResponse {
     pub tag: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompareCopyJobsQuery {
+    pub job_a: Uuid,
+    pub job_b: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompareCopyJobsRow {
+    pub app_name: String,
+    pub container_name: String,
+    pub digest_a: Option<String>,
+    pub digest_b: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CopyJobDigestRow {
+    app_name: String,
+    container_name: String,
+    source_sha256: Option<String>,
+    target_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -324,6 +347,7 @@ pub fn router(state: CopyApiState) -> Router {
             post(precheck_copy_images),
         )
         .route("/copy/jobs", get(list_copy_jobs))
+        .route("/copy/jobs/compare", get(compare_copy_jobs))
         .route("/copy/jobs/release", post(start_release_copy_job))
         .route("/copy/jobs/selective", post(start_selective_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
@@ -1594,6 +1618,135 @@ async fn list_copy_jobs(
     })?;
 
     Ok(Json(jobs))
+}
+
+/// GET /api/v1/copy/jobs/compare?job_a=...&job_b=... - porovnání digestů mezi dvěma copy joby
+async fn compare_copy_jobs(
+    State(state): State<CopyApiState>,
+    Query(params): Query<CompareCopyJobsQuery>,
+) -> Result<Json<Vec<CompareCopyJobsRow>>, (StatusCode, Json<ErrorResponse>)> {
+    if params.job_a == params.job_b {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Select two different copy jobs".to_string(),
+            }),
+        ));
+    }
+
+    let rows_a = sqlx::query_as::<_, CopyJobDigestRow>(
+        r#"
+        SELECT
+            im.app_name,
+            im.container_name,
+            cji.source_sha256,
+            cji.target_sha256
+        FROM copy_job_images cji
+        JOIN image_mappings im ON im.id = cji.image_mapping_id
+        WHERE cji.copy_job_id = $1
+        "#,
+    )
+    .bind(params.job_a)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let rows_b = sqlx::query_as::<_, CopyJobDigestRow>(
+        r#"
+        SELECT
+            im.app_name,
+            im.container_name,
+            cji.source_sha256,
+            cji.target_sha256
+        FROM copy_job_images cji
+        JOIN image_mappings im ON im.id = cji.image_mapping_id
+        WHERE cji.copy_job_id = $1
+        "#,
+    )
+    .bind(params.job_b)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if rows_a.is_empty() || rows_b.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Both copy jobs must contain images".to_string(),
+            }),
+        ));
+    }
+
+    let pick_digest = |row: &CopyJobDigestRow| {
+        row.target_sha256
+            .clone()
+            .or_else(|| row.source_sha256.clone())
+    };
+
+    let mut map_a: HashMap<(String, String), Option<String>> = HashMap::new();
+    for row in rows_a {
+        let digest = pick_digest(&row);
+        map_a.insert((row.app_name, row.container_name), digest);
+    }
+
+    let mut map_b: HashMap<(String, String), Option<String>> = HashMap::new();
+    for row in rows_b {
+        let digest = pick_digest(&row);
+        map_b.insert((row.app_name, row.container_name), digest);
+    }
+
+    let mut keys: Vec<(String, String)> = map_a
+        .keys()
+        .chain(map_b.keys())
+        .cloned()
+        .collect();
+    keys.sort();
+    keys.dedup();
+
+    let mut results = Vec::with_capacity(keys.len());
+    for (app_name, container_name) in keys {
+        let digest_a = map_a
+            .get(&(app_name.clone(), container_name.clone()))
+            .cloned()
+            .flatten();
+        let digest_b = map_b
+            .get(&(app_name.clone(), container_name.clone()))
+            .cloned()
+            .flatten();
+
+        let status = match (&digest_a, &digest_b) {
+            (Some(a), Some(b)) if a == b => "same",
+            (Some(_), Some(_)) => "changed",
+            (None, Some(_)) => "missing_in_a",
+            (Some(_), None) => "missing_in_b",
+            _ => "missing",
+        }
+        .to_string();
+
+        results.push(CompareCopyJobsRow {
+            app_name,
+            container_name,
+            digest_a,
+            digest_b,
+            status,
+        });
+    }
+
+    Ok(Json(results))
 }
 
 /// POST /api/v1/copy/jobs/{job_id}/start - Spustí pending copy job
