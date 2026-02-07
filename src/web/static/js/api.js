@@ -32,11 +32,17 @@ class ApiClient {
                 return null;
             }
 
-            const data = await response.json();
+            let data = null;
+            try {
+                const text = await response.text();
+                data = text ? JSON.parse(text) : null;
+            } catch (e) {
+                data = null;
+            }
 
             if (!response.ok) {
                 throw new ApiError(
-                    data.error || 'Request failed',
+                    (data && data.error) || 'Request failed',
                     response.status,
                     data
                 );
@@ -450,6 +456,72 @@ class ApiClient {
 
     async getDeployTargets(tenantId) {
         return this.get(`/tenants/${tenantId}/deploy-targets`);
+    }
+
+    // ArgoCD instances
+    async getArgocdInstances(tenantId) {
+        return this.get(`/tenants/${tenantId}/argocd`);
+    }
+
+    async getArgocdInstance(id) {
+        return this.get(`/argocd/${id}`);
+    }
+
+    async createArgocdInstance(tenantId, payload) {
+        return this.post(`/tenants/${tenantId}/argocd`, payload);
+    }
+
+    async updateArgocdInstance(id, payload) {
+        return this.put(`/argocd/${id}`, payload);
+    }
+
+    async deleteArgocdInstance(id) {
+        return this.delete(`/argocd/${id}`);
+    }
+
+    // ArgoCD apps
+    async getArgocdApps(environmentId) {
+        return this.get(`/environments/${environmentId}/argocd-apps`);
+    }
+
+    async getArgocdApp(id) {
+        return this.get(`/argocd-apps/${id}`);
+    }
+
+    async createArgocdApp(environmentId, payload) {
+        return this.post(`/environments/${environmentId}/argocd-apps`, payload);
+    }
+
+    async updateArgocdApp(id, payload) {
+        return this.put(`/argocd-apps/${id}`, payload);
+    }
+
+    async deleteArgocdApp(id) {
+        return this.delete(`/argocd-apps/${id}`);
+    }
+
+    async getArgocdAppStatus(id) {
+        return this.get(`/argocd-apps/${id}/status`);
+    }
+
+    async getArgocdAppResources(id) {
+        return this.get(`/argocd-apps/${id}/resources`);
+    }
+
+    async getArgocdAppEvents(id) {
+        return this.get(`/argocd-apps/${id}/events`);
+    }
+
+    async refreshArgocdApp(id) {
+        return this.post(`/argocd-apps/${id}/refresh`, {});
+    }
+
+    async syncArgocdApp(id) {
+        return this.post(`/argocd-apps/${id}/sync`, {});
+    }
+
+    async terminateArgocdApp(id) {
+        return this.post(`/argocd-apps/${id}/terminate`, {});
     }
 
     async getEnvironments(tenantId) {

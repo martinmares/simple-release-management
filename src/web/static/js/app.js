@@ -1079,18 +1079,65 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles, gitRepos, environments] = await Promise.all([
+        const [tenant, registries, bundles, gitRepos, environments, argocdInstances] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
             api.getGitRepos(params.id),
             api.getEnvironments(params.id),
+            api.getArgocdInstances(params.id),
         ]);
+        const argocdAppsByEnv = await Promise.all(
+            environments.map(async env => ({
+                env,
+                apps: await api.getArgocdApps(env.id).catch(() => []),
+            }))
+        );
+        const argocdApps = argocdAppsByEnv.flatMap(entry =>
+            entry.apps.map(app => ({
+                ...app,
+                environment: entry.env,
+            }))
+        );
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
         const registryById = new Map(registries.map(reg => [reg.id, reg]));
 
         content.innerHTML = `
+            <style>
+                .log-panel pre {
+                    margin: 0;
+                    max-height: 320px;
+                    overflow: auto;
+                    font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+                    font-size: 12px;
+                    line-height: 1.4;
+                    background: #0b0f14;
+                    color: #cfe3f4;
+                    padding: 12px;
+                    border-radius: 6px;
+                    white-space: pre-wrap;
+                }
+                .terminal-header {
+                    display: flex;
+                    align-items: center;
+                    gap: 6px;
+                    padding: 10px 12px;
+                    background: #12171d;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                    border-top-left-radius: 8px;
+                    border-top-right-radius: 8px;
+                }
+                .terminal-dot {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 999px;
+                    display: inline-block;
+                }
+                .terminal-dot.red { background: #ff5f57; }
+                .terminal-dot.yellow { background: #febc2e; }
+                .terminal-dot.green { background: #28c840; }
+            </style>
             <div class="row mb-3">
                 <div class="col">
                     <a href="#/tenants" class="btn btn-ghost-secondary">
@@ -1314,6 +1361,75 @@ router.on('/tenants/:id', async (params) => {
                                             </div>
                                         </a>
                                     `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">ArgoCD Instances</h3>
+                                    <div class="card-actions">
+                                        <a href="#/argocd/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            Add
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${argocdInstances.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No ArgoCD instances yet
+                                        </div>
+                                    ` : argocdInstances.map(inst => `
+                                        <a href="#/argocd/${inst.id}/edit" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center justify-content-between">
+                                                <div>
+                                                    <div class="fw-semibold">${inst.name}</div>
+                                                    <div class="text-secondary small"><code class="small">${inst.base_url}</code></div>
+                                                </div>
+                                                <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
+                                                    ${inst.verify_tls === false ? 'insecure' : 'tls'}
+                                                </span>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">ArgoCD Apps</h3>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${argocdApps.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No ArgoCD apps yet
+                                        </div>
+                                    ` : argocdApps.map(app => {
+                                        const env = app.environment;
+                                        return `
+                                            <a href="#/argocd-apps/${app.id}" class="list-group-item list-group-item-action">
+                                                <div class="d-flex align-items-center justify-content-between">
+                                                    <div>
+                                                        <div class="fw-semibold">${app.application_name}</div>
+                                                        <div class="text-secondary small">
+                                                            Env:
+                                                            <span class="badge ms-1" style="${env?.color ? `background:${env.color};color:#fff;` : ''}">
+                                                                ${env?.name || '-'}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                                        ${app.is_active ? 'active' : 'inactive'}
+                                                    </span>
+                                                </div>
+                                            </a>
+                                        `;
+                                    }).join('')}
                                 </div>
                             </div>
                         </div>
@@ -1681,6 +1797,17 @@ router.on('/git-repos/:id/edit', async (params) => {
             api.getTenants(),
         ]);
         content.innerHTML = `
+            <style>
+                .terminal-window { background: #1e1e1e; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.3); overflow: hidden; }
+                .terminal-header { background: linear-gradient(180deg, #3c3c3c 0%, #2c2c2c 100%); color: #ccc; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #1a1a1a; }
+                .terminal-controls { display: flex; gap: 6px; }
+                .terminal-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+                .terminal-dot-red { background: #ff5f56; }
+                .terminal-dot-yellow { background: #ffbd2e; }
+                .terminal-dot-green { background: #27c93f; }
+                .terminal-title { flex: 1; text-align: center; font-size: 13px; font-weight: 500; }
+                .terminal-body { background: #1e1e1e; color: #c9d1d9; font-family: Monaco, Menlo, ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 13px; padding: 12px; height: 360px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
+            </style>
             <div class="row mb-3">
                 <div class="col">
                     <a href="#/tenants/${repo.tenant_id}" class="btn btn-ghost-secondary">
@@ -1715,6 +1842,346 @@ router.on('/git-repos/:id/edit', async (params) => {
                 Failed to load git repository: ${error.message}
             </div>
         `;
+    }
+});
+
+// ArgoCD instances
+router.on('/argocd/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const tenants = await api.getTenants();
+        const form = createArgocdInstanceForm(null, tenants);
+        content.innerHTML = form;
+
+        const formEl = document.getElementById('argocd-instance-form');
+        if (query.tenant_id) {
+            const tenantSelect = formEl.querySelector('select[name="tenant_id"]');
+            if (tenantSelect) {
+                tenantSelect.value = query.tenant_id;
+            }
+        }
+
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                await api.createArgocdInstance(data.tenant_id, data);
+                router.navigate(`/tenants/${data.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load form</div>`;
+    }
+});
+
+router.on('/argocd/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const instance = await api.getArgocdInstance(params.id);
+        const tenants = await api.getTenants();
+        const form = createArgocdInstanceForm(instance, tenants);
+        content.innerHTML = form;
+        const formEl = document.getElementById('argocd-instance-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                await api.updateArgocdInstance(params.id, data);
+                router.navigate(`/tenants/${instance.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load instance</div>`;
+    }
+});
+
+// ArgoCD apps
+router.on('/argocd-apps/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const environment = await api.getEnvironment(query.environment_id);
+        const instances = await api.getArgocdInstances(environment.tenant_id);
+        content.innerHTML = createArgocdAppForm(null, instances, environment);
+
+        const formEl = document.getElementById('argocd-app-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                const envId = data.environment_id;
+                delete data.environment_id;
+                await api.createArgocdApp(envId, data);
+                router.navigate(`/environments/${envId}/edit`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load form</div>`;
+    }
+});
+
+router.on('/argocd-apps/:id', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const app = await api.getArgocdApp(params.id);
+        const instance = await api.getArgocdInstance(app.argocd_instance_id);
+        const env = await api.getEnvironment(app.environment_id);
+
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/environments/${env.id}/edit" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Environment
+                    </a>
+                </div>
+                <div class="col-auto">
+                    <a href="${instance.base_url}/applications/${encodeURIComponent(app.application_name)}" target="_blank" class="btn btn-outline-primary">
+                        <i class="ti ti-external-link"></i>
+                        Open ArgoCD
+                    </a>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">${app.application_name}</h3>
+                    <div class="card-actions">
+                        <a href="#/argocd-apps/${app.id}/edit" class="btn btn-primary btn-sm">
+                            <i class="ti ti-pencil"></i>
+                            Edit
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="text-secondary">Instance</div>
+                            <div>${instance.name}</div>
+                            <div class="text-secondary small"><code class="small">${instance.base_url}</code></div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-secondary">Environment</div>
+                            <div><span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span> <span class="text-secondary small">${env.slug}</span></div>
+                        </div>
+                    </div>
+                    <div class="mt-3" id="argocd-status-card">
+                        <div class="text-secondary small">Status</div>
+                        <div class="text-secondary">Loading...</div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="card log-panel" style="background: transparent; border: none;">
+                            <div class="terminal-header" style="display:flex;align-items:center;gap:6px;padding:10px 12px;background:#12171d;border-bottom:1px solid rgba(255,255,255,0.08);border-top-left-radius:8px;border-top-right-radius:8px;">
+                                <span class="terminal-dot red" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#ff5f57;"></span>
+                                <span class="terminal-dot yellow" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#febc2e;"></span>
+                                <span class="terminal-dot green" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#28c840;"></span>
+                                <span class="ms-2 text-secondary" style="font-size:12px;">ArgoCD Live Events</span>
+                            </div>
+                            <div class="card-body p-0">
+                                <pre id="argocd-event-log" style="margin:0;max-height:320px;overflow:auto;font-family:SFMono-Regular,Consolas,'Liberation Mono',monospace;font-size:12px;line-height:1.4;background:#0b0f14;color:#cfe3f4;padding:12px;border-bottom-left-radius:8px;border-bottom-right-radius:8px;white-space:pre-wrap;"></pre>
+                            </div>
+                            <div class="card-footer" style="border-top:1px solid rgba(255,255,255,0.08); background:#12171d;">
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-outline-secondary" id="argocd-refresh-btn"><i class="ti ti-refresh"></i> Refresh</button>
+                                    <button class="btn btn-success" id="argocd-sync-btn"><i class="ti ti-rocket"></i> Sync</button>
+                                    <button class="btn btn-outline-danger" id="argocd-terminate-btn"><i class="ti ti-circle-x"></i> Terminate</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <hr class="my-4">
+                    <ul class="nav nav-tabs" id="argocd-resource-tabs">
+                        <li class="nav-item"><button class="nav-link active" data-kind="Deployment">Deployments</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="Pod">Pods</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="Route">Routes</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="Ingress">Ingresses</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="ConfigMap">ConfigMaps</button></li>
+                    </ul>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-vcenter card-table">
+                            <thead>
+                                <tr>
+                                    <th>Kind</th>
+                                    <th>Name</th>
+                                    <th>Namespace</th>
+                                    <th>Health</th>
+                                    <th>Sync</th>
+                                </tr>
+                            </thead>
+                            <tbody id="argocd-resource-body">
+                                <tr><td colspan="5" class="text-secondary">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card-footer d-none"></div>
+            </div>
+        `;
+
+        const statusEl = document.getElementById('argocd-status-card');
+        const renderStatus = (status) => {
+            if (!status) {
+                statusEl.innerHTML = '<div class="text-secondary small">Status</div><div class="text-secondary">-</div>';
+                return;
+            }
+            statusEl.innerHTML = `
+                <div class="text-secondary small">Status</div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge ${status?.sync_status === 'Synced' ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">${status?.sync_status || 'unknown'}</span>
+                    <span class="badge ${status?.health_status === 'Healthy' ? 'bg-green-lt text-green-fg' : 'bg-red-lt text-red-fg'}">${status?.health_status || 'unknown'}</span>
+                    <span class="text-secondary small">${status?.operation_phase || ''}</span>
+                </div>
+                <div class="text-secondary small mt-1">${status?.message || ''}</div>
+            `;
+        };
+
+        const loadStatus = async () => {
+            try {
+                const status = await api.getArgocdAppStatus(app.id);
+                renderStatus(status);
+            } catch (err) {
+                console.error('Failed to load ArgoCD status:', err);
+                statusEl.innerHTML = `
+                    <div class="text-secondary small">Status</div>
+                    <div class="text-danger small">Failed to load status</div>
+                `;
+            }
+        };
+        // Defer to ensure DOM is ready
+        setTimeout(loadStatus, 0);
+
+        let resources = [];
+        const resourceBody = document.getElementById('argocd-resource-body');
+        const renderResources = (kind) => {
+            const rows = resources.filter(r => r.kind === kind);
+            if (rows.length === 0) {
+                resourceBody.innerHTML = `<tr><td colspan="5" class="text-secondary">No resources</td></tr>`;
+                return;
+            }
+            resourceBody.innerHTML = rows.map(r => `
+                <tr>
+                    <td>${r.kind}</td>
+                    <td><code class="small">${r.name}</code></td>
+                    <td>${r.namespace || '-'}</td>
+                    <td><span class="badge ${r.health === 'Healthy' ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">${r.health || '-'}</span></td>
+                    <td><span class="badge ${r.sync === 'Synced' ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">${r.sync || '-'}</span></td>
+                </tr>
+            `).join('');
+        };
+        api.getArgocdAppResources(app.id).then(list => {
+            resources = Array.isArray(list) ? list : [];
+            renderResources('Deployment');
+        }).catch(() => {
+            resourceBody.innerHTML = `<tr><td colspan="5" class="text-danger">Failed to load resources</td></tr>`;
+        });
+
+        document.querySelectorAll('#argocd-resource-tabs .nav-link').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('#argocd-resource-tabs .nav-link').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                renderResources(btn.getAttribute('data-kind'));
+            });
+        });
+
+        const poll = env.argocd_poll_interval_seconds || 0;
+        let pollTimer = null;
+        if (poll > 0) {
+            pollTimer = setInterval(loadStatus, poll * 1000);
+        }
+
+        const refreshBtn = document.getElementById('argocd-refresh-btn');
+        const syncBtn = document.getElementById('argocd-sync-btn');
+        const termBtn = document.getElementById('argocd-terminate-btn');
+
+        const runAction = async (btn, actionLabel, fn) => {
+            const original = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-2"></span>${actionLabel}`;
+            try {
+                await fn();
+                getApp().showSuccess(`${actionLabel} requested`);
+            } catch (err) {
+                getApp().showError(`${actionLabel} failed: ${err.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = original;
+                await loadStatus();
+            }
+        };
+
+        refreshBtn.addEventListener('click', async () => {
+            await runAction(refreshBtn, 'Refreshing', () => api.refreshArgocdApp(app.id));
+        });
+        syncBtn.addEventListener('click', async () => {
+            await runAction(syncBtn, 'Syncing', () => api.syncArgocdApp(app.id));
+        });
+        termBtn.addEventListener('click', async () => {
+            await runAction(termBtn, 'Terminating', () => api.terminateArgocdApp(app.id));
+        });
+
+        const eventLog = document.getElementById('argocd-event-log');
+        const logLines = [];
+        const renderLog = () => {
+            eventLog.textContent = logLines.join('\n');
+            eventLog.scrollTop = eventLog.scrollHeight;
+        };
+        const appendEvent = (ev) => {
+            const ts = ev.last_timestamp || ev.first_timestamp || '';
+            const reason = ev.reason || '';
+            const kind = ev.kind || '';
+            const name = ev.name || '';
+            const msg = ev.message || '';
+            const line = `[${ts}] ${reason} ${kind}/${name} ${msg}`.trim();
+            logLines.push(line);
+            renderLog();
+        };
+        api.getArgocdAppEvents(app.id).then(events => {
+            if (Array.isArray(events)) {
+                events.forEach(appendEvent);
+            }
+        }).catch(() => {});
+        let eventSource = null;
+        try {
+            eventSource = new EventSource(`${api.baseUrl}/argocd-apps/${app.id}/events/stream`);
+            eventSource.onmessage = (evt) => {
+                try {
+                    const ev = JSON.parse(evt.data);
+                    appendEvent(ev);
+                } catch {}
+            };
+        } catch {}
+
+        if (pollTimer) {
+            window.addEventListener('hashchange', () => clearInterval(pollTimer), { once: true });
+        }
+        if (eventSource) {
+            window.addEventListener('hashchange', () => eventSource.close(), { once: true });
+        }
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load ArgoCD app</div>`;
+    }
+});
+
+router.on('/argocd-apps/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const app = await api.getArgocdApp(params.id);
+        const environment = await api.getEnvironment(app.environment_id);
+        const instances = await api.getArgocdInstances(environment.tenant_id);
+        content.innerHTML = createArgocdAppForm(app, instances, environment);
+        const formEl = document.getElementById('argocd-app-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                delete data.environment_id;
+                await api.updateArgocdApp(params.id, data);
+                router.navigate(`/environments/${environment.id}/edit`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load app</div>`;
     }
 });
 
@@ -1920,6 +2387,10 @@ router.on('/environments/new', async (params, query) => {
             await handleFormSubmit(e, async (data) => {
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
+                if (data.argocd_poll_interval_seconds !== undefined) {
+                    const parsed = parseInt(data.argocd_poll_interval_seconds, 10);
+                    data.argocd_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
+                }
                 data.release_env_var_mappings = collectEnvironmentVarMappings();
                 data.extra_env_vars = collectEnvironmentExtraVars();
                 await api.createEnvironment(tenantId, data);
@@ -1941,13 +2412,52 @@ router.on('/environments/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [environment, tenants] = await Promise.all([
-            api.getEnvironment(params.id),
+        const environment = await api.getEnvironment(params.id);
+        const [tenants, argocdApps, argocdInstances] = await Promise.all([
             api.getTenants(),
+            api.getArgocdApps(params.id),
+            api.getArgocdInstances(environment.tenant_id),
         ]);
         const registries = environment?.tenant_id ? await api.getRegistries(environment.tenant_id).catch(() => []) : [];
         const gitRepos = environment?.tenant_id ? await api.getGitRepos(environment.tenant_id).catch(() => []) : [];
-        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos);
+        const appList = `
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">ArgoCD Apps</h3>
+                    <div class="card-actions">
+                        <a href="#/argocd-apps/new?environment_id=${environment.id}" class="btn btn-primary btn-sm">
+                            <i class="ti ti-plus"></i>
+                            Add
+                        </a>
+                    </div>
+                </div>
+                <div class="list-group list-group-flush">
+                    ${argocdApps.length === 0 ? `
+                        <div class="list-group-item text-center text-secondary py-4">
+                            No ArgoCD apps yet
+                        </div>
+                    ` : argocdApps.map(app => {
+                        const instance = argocdInstances.find(i => i.id === app.argocd_instance_id);
+                        return `
+                            <a href="#/argocd-apps/${app.id}" class="list-group-item list-group-item-action">
+                                <div class="d-flex align-items-center justify-content-between">
+                                    <div>
+                                        <div class="fw-semibold">${app.application_name}</div>
+                                        <div class="text-secondary small">
+                                            ${instance ? `${instance.name} · ${instance.base_url}` : 'instance'}
+                                        </div>
+                                    </div>
+                                    <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                        ${app.is_active ? 'active' : 'inactive'}
+                                    </span>
+                                </div>
+                            </a>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos) + appList;
         attachEnvironmentColorPreview();
         attachEnvironmentSlugPreview();
         attachEnvironmentVarHandlers();
@@ -1955,6 +2465,10 @@ router.on('/environments/:id/edit', async (params) => {
         document.getElementById('environment-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 delete data.tenant_id;
+                if (data.argocd_poll_interval_seconds !== undefined) {
+                    const parsed = parseInt(data.argocd_poll_interval_seconds, 10);
+                    data.argocd_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
+                }
                 data.release_env_var_mappings = collectEnvironmentVarMappings();
                 data.extra_env_vars = collectEnvironmentExtraVars();
                 await api.updateEnvironment(params.id, data);

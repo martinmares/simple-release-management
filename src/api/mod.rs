@@ -2,6 +2,7 @@ pub mod bundles;
 pub mod copy;
 pub mod deploy;
 pub mod git_repos;
+pub mod argocd;
 pub mod registries;
 pub mod releases;
 pub mod tenants;
@@ -21,11 +22,16 @@ pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
         pool: pool.clone(),
         encryption_secret: registry_state.encryption_secret.clone(),
     };
+    let argocd_state = argocd::ArgocdApiState {
+        pool: pool.clone(),
+        encryption_secret: registry_state.encryption_secret.clone(),
+    };
 
     let api_v1 = Router::new()
         .nest("/tenants", tenants::router(pool.clone()))
         .merge(registries::router(registry_state))
         .merge(git_repos::router(git_repo_state))
+        .merge(argocd::router(argocd_state))
         .merge(bundles::router(pool.clone()))
         .merge(releases::router(pool.clone()))
         .route("/version", get(get_version));

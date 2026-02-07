@@ -284,7 +284,39 @@ pub struct Environment {
     pub encjson_key_dir: Option<String>,
     pub release_env_var_mappings: serde_json::Value,
     pub extra_env_vars: serde_json::Value,
+    pub argocd_poll_interval_seconds: i32,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ArgocdInstance {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub name: String,
+    pub base_url: String,
+    pub auth_type: String,
+    pub username: Option<String>,
+    #[serde(skip_serializing)]
+    pub password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub token_encrypted: Option<String>,
+    pub verify_tls: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnvironmentArgocdApp {
+    pub id: Uuid,
+    pub environment_id: Uuid,
+    pub argocd_instance_id: Uuid,
+    pub application_name: String,
+    pub is_active: bool,
+    pub last_sync_status: Option<String>,
+    pub last_health_status: Option<String>,
+    pub last_operation_phase: Option<String>,
+    pub last_operation_message: Option<String>,
+    pub last_revision: Option<String>,
+    pub last_checked_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
