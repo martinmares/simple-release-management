@@ -254,6 +254,34 @@ pub struct Environment {
     pub name: String,
     pub slug: String,
     pub color: Option<String>,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
+    pub source_project_path: Option<String>,
+    pub target_project_path: Option<String>,
+    pub source_auth_type: Option<String>,
+    pub source_username: Option<String>,
+    #[serde(skip_serializing)]
+    pub source_password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub source_token_encrypted: Option<String>,
+    pub target_auth_type: Option<String>,
+    pub target_username: Option<String>,
+    #[serde(skip_serializing)]
+    pub target_password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub target_token_encrypted: Option<String>,
+    pub env_repo_id: Option<Uuid>,
+    pub env_repo_path: Option<String>,
+    pub env_repo_branch: Option<String>,
+    pub deploy_repo_id: Option<Uuid>,
+    pub deploy_repo_path: Option<String>,
+    pub deploy_repo_branch: Option<String>,
+    pub allow_auto_release: bool,
+    pub append_env_suffix: bool,
+    pub release_manifest_mode: Option<String>,
+    pub encjson_key_dir: Option<String>,
+    pub release_env_var_mappings: serde_json::Value,
+    pub extra_env_vars: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 
@@ -359,8 +387,9 @@ pub struct DeployTargetEncjsonKey {
 pub struct DeployJob {
     pub id: Uuid,
     pub release_id: Uuid,
-    pub deploy_target_id: Uuid,
-    pub deploy_target_env_id: Uuid,
+    pub environment_id: Uuid,
+    pub deploy_target_id: Option<Uuid>,
+    pub deploy_target_env_id: Option<Uuid>,
     pub status: String,
     pub started_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,

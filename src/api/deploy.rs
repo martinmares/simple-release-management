@@ -97,6 +97,72 @@ fn slugify_env_name(name: &str) -> String {
     out
 }
 
+fn sanitize_path(value: Option<String>) -> Option<String> {
+    value
+        .map(|v| v.trim().trim_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn env_vars_to_json(vars: Option<Vec<DeployTargetEnvVarInput>>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(items) = vars {
+        for item in items {
+            let key = item.source_key.trim();
+            let value = item.target_key.trim();
+            if !key.is_empty() && !value.is_empty() {
+                map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            }
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+fn extra_env_vars_to_json(vars: Option<Vec<DeployTargetExtraEnvVarInput>>) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    if let Some(items) = vars {
+        for item in items {
+            let key = item.key.trim();
+            let value = item.value.trim();
+            if !key.is_empty() {
+                map.insert(key.to_string(), serde_json::Value::String(value.to_string()));
+            }
+        }
+    }
+    serde_json::Value::Object(map)
+}
+
+fn env_vars_from_json(value: &serde_json::Value) -> Vec<DeployTargetEnvVarInput> {
+    let mut items = Vec::new();
+    if let serde_json::Value::Object(map) = value {
+        for (source_key, target_val) in map {
+            let target_key = target_val.as_str().unwrap_or("").to_string();
+            if !source_key.trim().is_empty() && !target_key.trim().is_empty() {
+                items.push(DeployTargetEnvVarInput {
+                    source_key: source_key.to_string(),
+                    target_key,
+                });
+            }
+        }
+    }
+    items
+}
+
+fn extra_env_vars_from_json(value: &serde_json::Value) -> Vec<DeployTargetExtraEnvVarInput> {
+    let mut items = Vec::new();
+    if let serde_json::Value::Object(map) = value {
+        for (key, val) in map {
+            let value = val.as_str().unwrap_or("").to_string();
+            if !key.trim().is_empty() {
+                items.push(DeployTargetExtraEnvVarInput {
+                    key: key.to_string(),
+                    value,
+                });
+            }
+        }
+    }
+    items
+}
+
 async fn upsert_deploy_target_env(
     pool: &PgPool,
     deploy_target_id: Uuid,
@@ -248,14 +314,14 @@ pub struct UpdateDeployTargetRequest {
 #[derive(Debug, Deserialize)]
 pub struct CreateDeployJobRequest {
     pub release_id: Uuid,
-    pub deploy_target_env_id: Uuid,
+    pub environment_id: Uuid,
     pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct AutoDeployFromCopyJobRequest {
     pub copy_job_id: Uuid,
-    pub deploy_target_env_id: Uuid,
+    pub environment_id: Uuid,
     pub dry_run: Option<bool>,
 }
 
@@ -264,6 +330,30 @@ pub struct EnvironmentRequest {
     pub name: String,
     pub slug: Option<String>,
     pub color: Option<String>,
+    pub source_registry_id: Option<Uuid>,
+    pub target_registry_id: Option<Uuid>,
+    pub source_project_path: Option<String>,
+    pub target_project_path: Option<String>,
+    pub source_auth_type: Option<String>,
+    pub source_username: Option<String>,
+    pub source_password: Option<String>,
+    pub source_token: Option<String>,
+    pub target_auth_type: Option<String>,
+    pub target_username: Option<String>,
+    pub target_password: Option<String>,
+    pub target_token: Option<String>,
+    pub env_repo_id: Option<Uuid>,
+    pub env_repo_path: Option<String>,
+    pub env_repo_branch: Option<String>,
+    pub deploy_repo_id: Option<Uuid>,
+    pub deploy_repo_path: Option<String>,
+    pub deploy_repo_branch: Option<String>,
+    pub allow_auto_release: Option<bool>,
+    pub append_env_suffix: Option<bool>,
+    pub release_manifest_mode: Option<String>,
+    pub encjson_key_dir: Option<String>,
+    pub release_env_var_mappings: Option<Vec<DeployTargetEnvVarInput>>,
+    pub extra_env_vars: Option<Vec<DeployTargetExtraEnvVarInput>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -443,8 +533,6 @@ pub struct DeployJobResponse {
 pub struct DeployJobSummary {
     pub id: Uuid,
     pub release_id: Uuid,
-    pub deploy_target_id: Uuid,
-    pub deploy_target_env_id: Uuid,
     pub environment_id: Uuid,
     pub status: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
@@ -454,6 +542,7 @@ pub struct DeployJobSummary {
     pub tag_name: Option<String>,
     pub target_name: String,
     pub env_name: String,
+    pub env_color: Option<String>,
     pub is_auto: bool,
     pub copy_job_id: Option<Uuid>,
     pub bundle_id: Option<Uuid>,
@@ -471,7 +560,8 @@ pub struct DeployJobListRow {
     pub tag_name: Option<String>,
     pub target_name: String,
     pub env_name: String,
-    pub deploy_target_env_id: Uuid,
+    pub env_color: Option<String>,
+    pub environment_id: Uuid,
     pub release_db_id: Uuid,
     pub release_id: String,
     pub is_auto: bool,
@@ -518,13 +608,8 @@ pub struct ErrorResponse {
 
 pub fn router(state: DeployApiState) -> Router {
     Router::new()
-        .route("/tenants/{tenant_id}/deploy-targets", get(list_deploy_targets).post(create_deploy_target))
         .route("/tenants/{tenant_id}/environments", get(list_environments).post(create_environment))
         .route("/environments/{id}", get(get_environment).put(update_environment).delete(delete_environment))
-        .route("/deploy-targets/{id}", get(get_deploy_target).put(update_deploy_target).delete(delete_deploy_target))
-        .route("/deploy-targets/{id}/archive", post(archive_deploy_target))
-        .route("/deploy-targets/{id}/unarchive", post(unarchive_deploy_target))
-        .route("/releases/{id}/deploy-targets", get(list_release_deploy_targets))
         .route("/releases/{id}/deploy-jobs", get(list_release_deploy_jobs))
         .route("/deploy/jobs", get(list_deploy_jobs).post(create_deploy_job))
         .route("/deploy/jobs/from-copy", post(auto_deploy_from_copy_job))
@@ -673,10 +758,104 @@ async fn create_environment(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| slugify_env_name(name));
 
+    let env_repo_path = sanitize_path(payload.env_repo_path);
+    let deploy_repo_path = sanitize_path(payload.deploy_repo_path);
+    if env_repo_path.is_some() && payload.env_repo_branch.as_deref().unwrap_or("").trim().len() > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment repo path or branch must be set (not both)".to_string(),
+            }),
+        ));
+    }
+    if deploy_repo_path.is_some() && payload.deploy_repo_branch.as_deref().unwrap_or("").trim().len() > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy repo path or branch must be set (not both)".to_string(),
+            }),
+        ));
+    }
+
+    let source_auth_type = payload.source_auth_type.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let target_auth_type = payload.target_auth_type.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let source_password_encrypted = payload.source_password.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| crypto::encrypt(v, &state.encryption_secret))
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt source password: {}", e),
+                }),
+            )
+        })?;
+    let source_token_encrypted = payload.source_token.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| crypto::encrypt(v, &state.encryption_secret))
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt source token: {}", e),
+                }),
+            )
+        })?;
+    let target_password_encrypted = payload.target_password.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| crypto::encrypt(v, &state.encryption_secret))
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt target password: {}", e),
+                }),
+            )
+        })?;
+    let target_token_encrypted = payload.target_token.as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| crypto::encrypt(v, &state.encryption_secret))
+        .transpose()
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt target token: {}", e),
+                }),
+            )
+        })?;
+
     let env = sqlx::query_as::<_, Environment>(
         r#"
-        INSERT INTO environments (tenant_id, name, slug, color)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO environments (
+            tenant_id, name, slug, color,
+            source_registry_id, target_registry_id,
+            source_project_path, target_project_path,
+            source_auth_type, source_username, source_password_encrypted, source_token_encrypted,
+            target_auth_type, target_username, target_password_encrypted, target_token_encrypted,
+            env_repo_id, env_repo_path, env_repo_branch,
+            deploy_repo_id, deploy_repo_path, deploy_repo_branch,
+            allow_auto_release, append_env_suffix, release_manifest_mode, encjson_key_dir,
+            release_env_var_mappings, extra_env_vars
+        )
+        VALUES (
+            $1, $2, $3, $4,
+            $5, $6,
+            $7, $8,
+            $9, $10, $11, $12,
+            $13, $14, $15, $16,
+            $17, $18, $19,
+            $20, $21, $22,
+            $23, $24, $25, $26,
+            $27, $28
+        )
         RETURNING *
         "#
     )
@@ -684,6 +863,30 @@ async fn create_environment(
     .bind(name)
     .bind(slug)
     .bind(payload.color)
+    .bind(payload.source_registry_id)
+    .bind(payload.target_registry_id)
+    .bind(sanitize_path(payload.source_project_path))
+    .bind(sanitize_path(payload.target_project_path))
+    .bind(source_auth_type)
+    .bind(payload.source_username)
+    .bind(source_password_encrypted)
+    .bind(source_token_encrypted)
+    .bind(target_auth_type)
+    .bind(payload.target_username)
+    .bind(target_password_encrypted)
+    .bind(target_token_encrypted)
+    .bind(payload.env_repo_id)
+    .bind(env_repo_path)
+    .bind(payload.env_repo_branch.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(payload.deploy_repo_id)
+    .bind(deploy_repo_path)
+    .bind(payload.deploy_repo_branch.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(payload.allow_auto_release.unwrap_or(false))
+    .bind(payload.append_env_suffix.unwrap_or(false))
+    .bind(payload.release_manifest_mode.clone())
+    .bind(payload.encjson_key_dir.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(env_vars_to_json(payload.release_env_var_mappings.clone()))
+    .bind(extra_env_vars_to_json(payload.extra_env_vars.clone()))
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -755,17 +958,157 @@ async fn update_environment(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| slugify_env_name(name));
 
+    let current = sqlx::query_as::<_, Environment>(
+        "SELECT * FROM environments WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let Some(current) = current else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Environment with id {} not found", id),
+            }),
+        ));
+    };
+
+    let env_repo_path = sanitize_path(payload.env_repo_path);
+    let deploy_repo_path = sanitize_path(payload.deploy_repo_path);
+    if env_repo_path.is_some() && payload.env_repo_branch.as_deref().unwrap_or("").trim().len() > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment repo path or branch must be set (not both)".to_string(),
+            }),
+        ));
+    }
+    if deploy_repo_path.is_some() && payload.deploy_repo_branch.as_deref().unwrap_or("").trim().len() > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Deploy repo path or branch must be set (not both)".to_string(),
+            }),
+        ));
+    }
+
+    let source_auth_type = payload.source_auth_type.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let target_auth_type = payload.target_auth_type.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let source_password_encrypted = match payload.source_password.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(crypto::encrypt(v, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt source password: {}", e),
+                }),
+            )
+        })?),
+        _ => current.source_password_encrypted.clone(),
+    };
+    let source_token_encrypted = match payload.source_token.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(crypto::encrypt(v, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt source token: {}", e),
+                }),
+            )
+        })?),
+        _ => current.source_token_encrypted.clone(),
+    };
+    let target_password_encrypted = match payload.target_password.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(crypto::encrypt(v, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt target password: {}", e),
+                }),
+            )
+        })?),
+        _ => current.target_password_encrypted.clone(),
+    };
+    let target_token_encrypted = match payload.target_token.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => Some(crypto::encrypt(v, &state.encryption_secret).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to encrypt target token: {}", e),
+                }),
+            )
+        })?),
+        _ => current.target_token_encrypted.clone(),
+    };
+
     let env = sqlx::query_as::<_, Environment>(
         r#"
         UPDATE environments
-        SET name = $1, slug = $2, color = $3
-        WHERE id = $4
+        SET name = $1,
+            slug = $2,
+            color = $3,
+            source_registry_id = $4,
+            target_registry_id = $5,
+            source_project_path = $6,
+            target_project_path = $7,
+            source_auth_type = $8,
+            source_username = $9,
+            source_password_encrypted = $10,
+            source_token_encrypted = $11,
+            target_auth_type = $12,
+            target_username = $13,
+            target_password_encrypted = $14,
+            target_token_encrypted = $15,
+            env_repo_id = $16,
+            env_repo_path = $17,
+            env_repo_branch = $18,
+            deploy_repo_id = $19,
+            deploy_repo_path = $20,
+            deploy_repo_branch = $21,
+            allow_auto_release = $22,
+            append_env_suffix = $23,
+            release_manifest_mode = $24,
+            encjson_key_dir = $25,
+            release_env_var_mappings = $26,
+            extra_env_vars = $27
+        WHERE id = $28
         RETURNING *
         "#
     )
     .bind(name)
     .bind(slug)
     .bind(payload.color)
+    .bind(payload.source_registry_id)
+    .bind(payload.target_registry_id)
+    .bind(sanitize_path(payload.source_project_path))
+    .bind(sanitize_path(payload.target_project_path))
+    .bind(source_auth_type)
+    .bind(payload.source_username)
+    .bind(source_password_encrypted)
+    .bind(source_token_encrypted)
+    .bind(target_auth_type)
+    .bind(payload.target_username)
+    .bind(target_password_encrypted)
+    .bind(target_token_encrypted)
+    .bind(payload.env_repo_id)
+    .bind(env_repo_path)
+    .bind(payload.env_repo_branch.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(payload.deploy_repo_id)
+    .bind(deploy_repo_path)
+    .bind(payload.deploy_repo_branch.as_deref().map(str::trim).filter(|v| !v.is_empty()))
+    .bind(payload.allow_auto_release.unwrap_or(current.allow_auto_release))
+    .bind(payload.append_env_suffix.unwrap_or(current.append_env_suffix))
+    .bind(payload.release_manifest_mode.clone().or_else(|| current.release_manifest_mode.clone()))
+        .bind(payload.encjson_key_dir.as_deref().map(str::trim).filter(|v| !v.is_empty()).or_else(|| current.encjson_key_dir.as_deref()))
+    .bind(if payload.release_env_var_mappings.is_some() { env_vars_to_json(payload.release_env_var_mappings.clone()) } else { current.release_env_var_mappings.clone() })
+    .bind(if payload.extra_env_vars.is_some() { extra_env_vars_to_json(payload.extra_env_vars.clone()) } else { current.extra_env_vars.clone() })
     .bind(id)
     .fetch_optional(&state.pool)
     .await
@@ -794,7 +1137,7 @@ async fn delete_environment(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let in_use = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM deploy_target_envs WHERE environment_id = $1)",
+        "SELECT EXISTS(SELECT 1 FROM deploy_jobs WHERE environment_id = $1)",
     )
     .bind(id)
     .fetch_one(&state.pool)
@@ -812,7 +1155,31 @@ async fn delete_environment(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Environment is used by deploy targets and cannot be deleted".to_string(),
+                error: "Environment is used by deploy jobs and cannot be deleted".to_string(),
+            }),
+        ));
+    }
+
+    let in_use_copy = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM copy_jobs WHERE environment_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if in_use_copy {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is used by copy jobs and cannot be deleted".to_string(),
             }),
         ));
     }
@@ -2064,14 +2431,12 @@ async fn list_release_deploy_jobs(
 ) -> Result<Json<Vec<DeployJobSummary>>, (StatusCode, Json<ErrorResponse>)> {
     let jobs = sqlx::query_as::<_, DeployJobSummary>(
         r#"
-        SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.deploy_target_env_id, dj.status, dj.started_at, dj.completed_at,
-               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, e.slug AS env_name,
-               dte.environment_id,
+        SELECT dj.id, dj.release_id, dj.environment_id, dj.status, dj.started_at, dj.completed_at,
+               dj.error_message, dj.commit_sha, dj.tag_name,
+               e.name as target_name, e.slug AS env_name, e.color AS env_color,
                r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
-        JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
-        JOIN deploy_target_envs dte ON dte.id = dj.deploy_target_env_id
-        JOIN environments e ON e.id = dte.environment_id
+        JOIN environments e ON e.id = dj.environment_id
         JOIN releases r ON r.id = dj.release_id
         LEFT JOIN copy_jobs cj ON cj.id = r.copy_job_id
         LEFT JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
@@ -2108,9 +2473,10 @@ async fn list_deploy_jobs(
             dj.error_message,
             dj.commit_sha,
             dj.tag_name,
-            dt.name as target_name,
+            e.name as target_name,
             e.slug AS env_name,
-            dj.deploy_target_env_id,
+            e.color AS env_color,
+            dj.environment_id,
             r.id as release_db_id,
             r.release_id,
             r.is_auto,
@@ -2120,9 +2486,7 @@ async fn list_deploy_jobs(
             t.name as tenant_name,
             dj.dry_run
         FROM deploy_jobs dj
-        JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
-        JOIN deploy_target_envs dte ON dte.id = dj.deploy_target_env_id
-        JOIN environments e ON e.id = dte.environment_id
+        JOIN environments e ON e.id = dj.environment_id
         JOIN releases r ON r.id = dj.release_id
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
@@ -2152,14 +2516,12 @@ async fn get_deploy_job(
 ) -> Result<Json<DeployJobSummary>, (StatusCode, Json<ErrorResponse>)> {
     let job = sqlx::query_as::<_, DeployJobSummary>(
         r#"
-        SELECT dj.id, dj.release_id, dj.deploy_target_id, dj.deploy_target_env_id, dj.status, dj.started_at, dj.completed_at,
-               dj.error_message, dj.commit_sha, dj.tag_name, dt.name as target_name, e.slug AS env_name,
-               dte.environment_id,
+        SELECT dj.id, dj.release_id, dj.environment_id, dj.status, dj.started_at, dj.completed_at,
+               dj.error_message, dj.commit_sha, dj.tag_name,
+               e.name as target_name, e.slug AS env_name, e.color AS env_color,
                r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
         FROM deploy_jobs dj
-        JOIN deploy_targets dt ON dt.id = dj.deploy_target_id
-        JOIN deploy_target_envs dte ON dte.id = dj.deploy_target_env_id
-        JOIN environments e ON e.id = dte.environment_id
+        JOIN environments e ON e.id = dj.environment_id
         JOIN releases r ON r.id = dj.release_id
         LEFT JOIN copy_jobs cj ON cj.id = r.copy_job_id
         LEFT JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
@@ -2218,10 +2580,10 @@ async fn create_deploy_job(
         ));
     }
 
-    let target_env = sqlx::query_as::<_, DeployTargetEnv>(
-        "SELECT * FROM deploy_target_envs WHERE id = $1",
+    let environment = sqlx::query_as::<_, Environment>(
+        "SELECT * FROM environments WHERE id = $1",
     )
-    .bind(payload.deploy_target_env_id)
+    .bind(payload.environment_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -2236,16 +2598,54 @@ async fn create_deploy_job(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Deploy target environment not found".to_string(),
+                error: "Environment not found".to_string(),
             }),
         )
     })?;
 
+    let release_tenant_id = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT b.tenant_id
+        FROM releases r
+        JOIN copy_jobs cj ON cj.id = r.copy_job_id
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        WHERE r.id = $1
+        "#,
+    )
+    .bind(payload.release_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Release tenant not found".to_string(),
+            }),
+        )
+    })?;
+
+    if environment.tenant_id != release_tenant_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment does not belong to this tenant".to_string(),
+            }),
+        ));
+    }
+
     let job_id = enqueue_deploy_job(
         &state,
         payload.release_id,
-        target_env.deploy_target_id,
-        payload.deploy_target_env_id,
+        environment.id,
         payload.dry_run.unwrap_or(true),
     )
     .await?;
@@ -2263,10 +2663,10 @@ async fn auto_deploy_from_copy_job(
     State(state): State<DeployApiState>,
     Json(payload): Json<AutoDeployFromCopyJobRequest>,
 ) -> Result<(StatusCode, Json<DeployJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let target_env = sqlx::query_as::<_, DeployTargetEnv>(
-        "SELECT * FROM deploy_target_envs WHERE id = $1",
+    let environment = sqlx::query_as::<_, Environment>(
+        "SELECT * FROM environments WHERE id = $1",
     )
-    .bind(payload.deploy_target_env_id)
+    .bind(payload.environment_id)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -2281,42 +2681,19 @@ async fn auto_deploy_from_copy_job(
         (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Deploy target environment not found".to_string(),
+                error: "Environment not found".to_string(),
             }),
         )
     })?;
 
-    if !target_env.allow_auto_release {
+    if !environment.allow_auto_release {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Deploy target does not allow auto release".to_string(),
+                error: "Environment does not allow auto release".to_string(),
             }),
         ));
     }
-
-    let target_tenant_id = sqlx::query_scalar::<_, Uuid>(
-        "SELECT tenant_id FROM deploy_targets WHERE id = $1",
-    )
-    .bind(target_env.deploy_target_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Database error: {}", e),
-            }),
-        )
-    })?
-    .ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Deploy target not found".to_string(),
-            }),
-        )
-    })?;
 
     let job_row = sqlx::query_as::<_, (String, String, Uuid)>(
         r#"
@@ -2357,11 +2734,11 @@ async fn auto_deploy_from_copy_job(
         ));
     }
 
-    if tenant_id != target_tenant_id {
+    if tenant_id != environment.tenant_id {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Deploy target does not belong to this tenant".to_string(),
+                error: "Environment does not belong to this tenant".to_string(),
             }),
         ));
     }
@@ -2426,14 +2803,7 @@ async fn auto_deploy_from_copy_job(
     };
 
     let dry_run = payload.dry_run.unwrap_or(true);
-    let job_id = enqueue_deploy_job(
-        &state,
-        release.id,
-        target_env.deploy_target_id,
-        payload.deploy_target_env_id,
-        dry_run,
-    )
-    .await?;
+    let job_id = enqueue_deploy_job(&state, release.id, environment.id, dry_run).await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -2447,19 +2817,17 @@ async fn auto_deploy_from_copy_job(
 async fn enqueue_deploy_job(
     state: &DeployApiState,
     release_id: Uuid,
-    deploy_target_id: Uuid,
-    deploy_target_env_id: Uuid,
+    environment_id: Uuid,
     dry_run: bool,
 ) -> Result<Uuid, (StatusCode, Json<ErrorResponse>)> {
     let job_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deploy_jobs (id, release_id, deploy_target_id, deploy_target_env_id, status, dry_run)
-         VALUES ($1, $2, $3, $4, 'pending', $5)",
+        "INSERT INTO deploy_jobs (id, release_id, environment_id, status, dry_run)
+         VALUES ($1, $2, $3, 'pending', $4)",
     )
     .bind(job_id)
     .bind(release_id)
-    .bind(deploy_target_id)
-    .bind(deploy_target_env_id)
+    .bind(environment_id)
     .bind(dry_run)
     .execute(&state.pool)
     .await
@@ -2777,22 +3145,10 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .fetch_one(&state.pool)
         .await?;
 
-    let target = sqlx::query_as::<_, DeployTarget>("SELECT * FROM deploy_targets WHERE id = $1")
-        .bind(job.deploy_target_id)
-        .fetch_one(&state.pool)
-        .await?;
-
-    let target_env = sqlx::query_as::<_, DeployTargetEnv>(
-        "SELECT * FROM deploy_target_envs WHERE id = $1",
-    )
-    .bind(job.deploy_target_env_id)
-    .fetch_one(&state.pool)
-    .await?;
-
     let environment = sqlx::query_as::<_, Environment>(
         "SELECT * FROM environments WHERE id = $1",
     )
-    .bind(target_env.environment_id)
+    .bind(job.environment_id)
     .fetch_one(&state.pool)
     .await?;
 
@@ -2801,18 +3157,18 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .fetch_one(&state.pool)
         .await?;
 
-    let env_var_rows = load_deploy_target_env_vars(&state.pool, target.id).await?;
-    let extra_env_rows = load_deploy_target_extra_env_vars(&state.pool, target.id).await?;
+    let env_var_rows = env_vars_from_json(&environment.release_env_var_mappings);
+    let extra_env_rows = extra_env_vars_from_json(&environment.extra_env_vars);
     let mapped_vars = build_release_env_var_map(&env_var_rows, &release, &log_tx);
 
     let temp_dir = TempDir::new()?;
     let env_repo_path = temp_dir.path().join("environments");
     let deploy_repo_path = temp_dir.path().join("deploy");
 
-    let env_repo_id = target_env
+    let env_repo_id = environment
         .env_repo_id
         .ok_or_else(|| anyhow::anyhow!("Deploy target env missing env_repo_id"))?;
-    let deploy_repo_id = target_env
+    let deploy_repo_id = environment
         .deploy_repo_id
         .ok_or_else(|| anyhow::anyhow!("Deploy target env missing deploy_repo_id"))?;
 
@@ -2828,12 +3184,12 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let git_env_env = build_git_env_for_repo(&state, &env_repo, temp_dir.path())?;
     let git_env_deploy = build_git_env_for_repo(&state, &deploy_repo, temp_dir.path())?;
 
-    let env_branch = target_env
+    let env_branch = environment
         .env_repo_branch
         .as_deref()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or(&env_repo.default_branch);
-    let deploy_branch = target_env
+    let deploy_branch = environment
         .deploy_repo_branch
         .as_deref()
         .filter(|v| !v.trim().is_empty())
@@ -2843,13 +3199,16 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     run_git_clone(&deploy_repo.repo_url, deploy_branch, &deploy_repo_path, &git_env_deploy, &log_tx).await?;
 
     let mut release_manifest = build_release_manifest(&state.pool, release.id).await?;
-    let env_repo_subdir = target_env
+    let env_repo_subdir = environment
         .env_repo_path
         .as_deref()
         .unwrap_or(&environment.slug);
     let env_repo_subdir = env_repo_subdir.trim().trim_start_matches('/').to_string();
     apply_release_manifest_mode(
-        target_env.release_manifest_mode.as_str(),
+        environment
+            .release_manifest_mode
+            .as_deref()
+            .unwrap_or("strict"),
         &mut release_manifest,
         &env_repo_path,
         &environment.slug,
@@ -2862,7 +3221,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         .await
         .with_context(|| format!("Failed to write release manifest to {}", manifest_path.display()))?;
 
-    let deploy_rel_path = target_env
+    let deploy_rel_path = environment
         .deploy_repo_path
         .as_deref()
         .unwrap_or("")
@@ -2912,9 +3271,8 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     let env_file_path = temp_dir.path().join("release.env");
     build_env_file(
         &state,
-        &target,
-        target.id,
-        target_env.encjson_key_dir.as_deref(),
+        &environment,
+        environment.encjson_key_dir.as_deref(),
         &env_repo_path,
         env_repo_subdir.as_str(),
         &env_file_path,
@@ -2922,7 +3280,6 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         &env_var_rows,
         &extra_env_rows,
         &log_tx,
-        temp_dir.path(),
     )
     .await?;
 
@@ -2959,7 +3316,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     }
 
     let diff_info = collect_deploy_diff(&deploy_repo_path, deploy_rel_path, &log_tx).await?;
-    let tag_name = if target_env.append_env_suffix {
+    let tag_name = if environment.append_env_suffix {
         format!("{}-{}", release.release_id, environment.slug)
     } else {
         release.release_id.clone()
@@ -3101,7 +3458,7 @@ fn build_kube_build_env(
     manifest_path: &FsPath,
     env_repo_path: &FsPath,
     mapped_vars: &HashMap<String, String>,
-    extra_env_vars: &[DeployTargetExtraEnvVar],
+    extra_env_vars: &[DeployTargetExtraEnvVarInput],
 ) -> anyhow::Result<HashMap<String, String>> {
     let mut env = HashMap::new();
     env.insert(
@@ -3129,17 +3486,15 @@ fn build_kube_build_env(
 
 async fn build_env_file(
     state: &DeployApiState,
-    target: &DeployTarget,
-    deploy_target_id: Uuid,
+    environment: &Environment,
     encjson_key_dir: Option<&str>,
     env_repo_path: &FsPath,
     env_subdir: &str,
     env_file_path: &FsPath,
     release: &Release,
-    env_vars: &[DeployTargetEnvVar],
-    extra_env_vars: &[DeployTargetExtraEnvVar],
+    env_vars: &[DeployTargetEnvVarInput],
+    extra_env_vars: &[DeployTargetExtraEnvVarInput],
     log_tx: &broadcast::Sender<String>,
-    temp_root: &FsPath,
 ) -> anyhow::Result<()> {
     let env_dir = env_repo_path.join(env_subdir);
     let secured = env_dir.join("env.secured.json");
@@ -3147,21 +3502,18 @@ async fn build_env_file(
 
     let mut combined = String::new();
 
-    let temp_key_dir = build_encjson_keydir(state, deploy_target_id, encjson_key_dir, temp_root).await?;
-    let key_dir_override = if let Some(dir) = encjson_key_dir.filter(|v| !v.trim().is_empty()) {
-        Some(PathBuf::from(dir))
-    } else {
-        temp_key_dir.clone().map(|p| p)
-    };
+    let key_dir_override = encjson_key_dir
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from);
     let key_dir_override = key_dir_override.as_ref().map(|p| p.as_path());
 
     if secured.exists() {
-        let output = run_encjson_dotenv(state, target, &secured, log_tx, key_dir_override).await?;
+        let output = run_encjson_dotenv(state, environment, &secured, log_tx, key_dir_override).await?;
         combined.push_str(&output);
     }
 
     if unsecured.exists() {
-        let output = run_encjson_dotenv(state, target, &unsecured, log_tx, key_dir_override).await?;
+        let output = run_encjson_dotenv(state, environment, &unsecured, log_tx, key_dir_override).await?;
         combined.push_str(&output);
     }
 
@@ -3207,7 +3559,7 @@ async fn load_deploy_target_extra_env_vars(
 }
 
 fn build_release_env_var_map(
-    env_vars: &[DeployTargetEnvVar],
+    env_vars: &[DeployTargetEnvVarInput],
     release: &Release,
     log_tx: &broadcast::Sender<String>,
 ) -> HashMap<String, String> {
@@ -3236,7 +3588,7 @@ fn build_release_env_var_map(
 
 async fn run_encjson_dotenv(
     state: &DeployApiState,
-    target: &DeployTarget,
+    environment: &Environment,
     file_path: &FsPath,
     log_tx: &broadcast::Sender<String>,
     keydir_override: Option<&FsPath>,
@@ -3252,14 +3604,14 @@ async fn run_encjson_dotenv(
                 "encjson legacy detected in {}, using legacy pipeline",
                 file_path.display()
             ));
-            run_encjson_legacy_pipeline(state, target, file_path, keydir_override).await
+            run_encjson_legacy_pipeline(state, environment, file_path, keydir_override).await
         }
         EncJsonApi::Modern => {
             let _ = log_tx.send(format!(
                 "encjson modern detected in {}, using encjson-rs",
                 file_path.display()
             ));
-            run_encjson_modern(state, target, file_path, keydir_override).await
+            run_encjson_modern(state, environment, file_path, keydir_override).await
         }
     }
 }
@@ -3282,7 +3634,7 @@ fn detect_encjson_api(contents: &str) -> EncJsonApi {
 
 async fn run_encjson_modern(
     state: &DeployApiState,
-    target: &DeployTarget,
+    environment: &Environment,
     file_path: &FsPath,
     keydir_override: Option<&FsPath>,
 ) -> anyhow::Result<String> {
@@ -3295,13 +3647,8 @@ async fn run_encjson_modern(
 
     if let Some(keydir) = keydir_override {
         cmd.arg("-k").arg(keydir);
-    } else if let Some(keydir) = &target.encjson_key_dir {
+    } else if let Some(keydir) = &environment.encjson_key_dir {
         cmd.arg("-k").arg(keydir);
-    }
-
-    if let Some(enc_key) = &target.encjson_private_key_encrypted {
-        let key = crypto::decrypt(enc_key, &state.encryption_secret)?;
-        cmd.env("ENCJSON_PRIVATE_KEY", key);
     }
 
     let output = cmd.output().await?;
@@ -3314,7 +3661,7 @@ async fn run_encjson_modern(
 
 async fn run_encjson_legacy_pipeline(
     state: &DeployApiState,
-    target: &DeployTarget,
+    environment: &Environment,
     file_path: &FsPath,
     keydir_override: Option<&FsPath>,
 ) -> anyhow::Result<String> {
@@ -3327,13 +3674,8 @@ async fn run_encjson_legacy_pipeline(
 
     if let Some(keydir) = keydir_override {
         legacy_cmd.arg("-k").arg(keydir);
-    } else if let Some(keydir) = &target.encjson_key_dir {
+    } else if let Some(keydir) = &environment.encjson_key_dir {
         legacy_cmd.arg("-k").arg(keydir);
-    }
-
-    if let Some(enc_key) = &target.encjson_private_key_encrypted {
-        let key = crypto::decrypt(enc_key, &state.encryption_secret)?;
-        legacy_cmd.env("ENCJSON_PRIVATE_KEY", key);
     }
 
     let mut legacy_child = legacy_cmd.spawn()?;

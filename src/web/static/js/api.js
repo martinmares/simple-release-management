@@ -468,10 +468,10 @@ class ApiClient {
         return this.post(`/tenants/${tenantId}/deploy-targets`, data);
     }
 
-    async startAutoDeployFromCopyJob(copyJobId, deployTargetEnvId, dryRun = true) {
+    async startAutoDeployFromCopyJob(copyJobId, environmentId, dryRun = true) {
         return this.post(`/deploy/jobs/from-copy`, {
             copy_job_id: copyJobId,
-            deploy_target_env_id: deployTargetEnvId,
+            environment_id: environmentId,
             dry_run: dryRun,
         });
     }

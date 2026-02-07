@@ -82,6 +82,156 @@ function ansiToHtml(line) {
     return out;
 }
 
+function attachEnvironmentColorPreview() {
+    const colorInput = document.querySelector('.env-color-input');
+    const textInput = document.querySelector('.env-color-text');
+    const preview = document.getElementById('env-color-preview');
+    if (!colorInput || !textInput || !preview) return;
+
+    const normalize = (value) => {
+        const trimmed = value.trim();
+        if (!trimmed) return '';
+        if (trimmed.startsWith('#')) return trimmed;
+        const hex = trimmed.replace(/[^0-9a-fA-F]/g, '');
+        if (hex.length === 3 || hex.length === 6) {
+            return `#${hex}`;
+        }
+        return trimmed;
+    };
+
+    const updatePreview = (value) => {
+        const color = normalize(value);
+        if (color) {
+            preview.style.background = color;
+            preview.style.color = '#fff';
+            preview.textContent = color;
+        } else {
+            preview.style.background = '';
+            preview.style.color = '';
+            preview.textContent = 'Preview';
+        }
+    };
+
+    colorInput.addEventListener('input', () => {
+        textInput.value = colorInput.value;
+        updatePreview(colorInput.value);
+    });
+
+    textInput.addEventListener('input', () => {
+        const normalized = normalize(textInput.value);
+        if (normalized.startsWith('#')) {
+            colorInput.value = normalized;
+        }
+        updatePreview(textInput.value);
+    });
+
+    updatePreview(textInput.value || colorInput.value);
+}
+
+function attachEnvironmentSlugPreview() {
+    const nameInput = document.querySelector('input[name="name"]');
+    const slugInput = document.querySelector('input[name="slug"]');
+    if (!nameInput || !slugInput) return;
+
+    let manuallyEdited = false;
+    slugInput.addEventListener('input', () => {
+        manuallyEdited = true;
+    });
+
+    nameInput.addEventListener('input', (e) => {
+        if (manuallyEdited) return;
+        if (typeof slugify === 'function') {
+            slugInput.value = slugify(e.target.value);
+        }
+    });
+}
+
+function attachEnvironmentVarHandlers() {
+    const mappings = document.getElementById('env-var-mappings');
+    const addMappingBtn = document.getElementById('env-var-add');
+    const extraVars = document.getElementById('extra-env-vars');
+    const addExtraBtn = document.getElementById('extra-var-add');
+
+    const attachRemoveHandlers = () => {
+        mappings?.querySelectorAll('.env-var-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const rows = mappings.querySelectorAll('[data-env-var-index]');
+                const row = btn.closest('[data-env-var-index]');
+                if (!row) return;
+                if (rows.length <= 1) {
+                    row.querySelector('.env-var-source').value = '';
+                    row.querySelector('.env-var-target').value = '';
+                    return;
+                }
+                row.remove();
+            });
+        });
+        extraVars?.querySelectorAll('.extra-var-remove').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const rows = extraVars.querySelectorAll('[data-extra-var-index]');
+                const row = btn.closest('[data-extra-var-index]');
+                if (!row) return;
+                if (rows.length <= 1) {
+                    row.querySelector('.extra-var-key').value = '';
+                    row.querySelector('.extra-var-value').value = '';
+                    return;
+                }
+                row.remove();
+            });
+        });
+    };
+
+    if (addMappingBtn && mappings) {
+        addMappingBtn.addEventListener('click', () => {
+            const index = mappings.querySelectorAll('[data-env-var-index]').length;
+            const row = document.createElement('div');
+            row.className = 'row g-2 mb-2';
+            row.setAttribute('data-env-var-index', index.toString());
+            row.innerHTML = `
+                <div class="col-md-5">
+                    <input type="text" class="form-control env-var-source" placeholder="SIMPLE_RELEASE_ID">
+                </div>
+                <div class="col-md-5">
+                    <input type="text" class="form-control env-var-target" placeholder="TSM_RELEASE_ID">
+                </div>
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-outline-danger w-100 env-var-remove">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </div>
+            `;
+            mappings.insertBefore(row, addMappingBtn);
+            attachRemoveHandlers();
+        });
+    }
+
+    if (addExtraBtn && extraVars) {
+        addExtraBtn.addEventListener('click', () => {
+            const index = extraVars.querySelectorAll('[data-extra-var-index]').length;
+            const row = document.createElement('div');
+            row.className = 'row g-2 mb-2';
+            row.setAttribute('data-extra-var-index', index.toString());
+            row.innerHTML = `
+                <div class="col-md-5">
+                    <input type="text" class="form-control extra-var-key" placeholder="KEY">
+                </div>
+                <div class="col-md-5">
+                    <input type="text" class="form-control extra-var-value" placeholder="VALUE">
+                </div>
+                <div class="col-md-2">
+                    <button type="button" class="btn btn-outline-danger w-100 extra-var-remove">
+                        <i class="ti ti-trash"></i>
+                    </button>
+                </div>
+            `;
+            extraVars.insertBefore(row, addExtraBtn);
+            attachRemoveHandlers();
+        });
+    }
+
+    attachRemoveHandlers();
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         // State
@@ -283,13 +433,13 @@ router.on('/', async () => {
             api.getGitRepos(),
         ]);
 
-        const deployTargetsByTenant = await Promise.all(
+        const environmentsByTenant = await Promise.all(
             tenants.map(async tenant => ({
                 tenant_id: tenant.id,
-                targets: await api.getDeployTargets(tenant.id),
+                environments: await api.getEnvironments(tenant.id),
             }))
         );
-        const deployTargets = deployTargetsByTenant.flatMap(entry => entry.targets);
+        const environments = environmentsByTenant.flatMap(entry => entry.environments);
 
         // Spočítat registry podle rolí
         const sourceRegistries = registries.filter(r => r.role === 'source' || r.role === 'both').length;
@@ -457,12 +607,12 @@ router.on('/', async () => {
                             <div class="row align-items-center">
                                 <div class="col-auto">
                                     <span class="bg-teal text-white avatar">
-                                        <i class="ti ti-target"></i>
+                                        <i class="ti ti-planet"></i>
                                     </span>
                                 </div>
                                 <div class="col">
-                                    <div class="font-weight-medium">${deployTargets.length}</div>
-                                    <div class="text-secondary">Deploy Targets</div>
+                                    <div class="font-weight-medium">${environments.length}</div>
+                                    <div class="text-secondary">Environments</div>
                                 </div>
                             </div>
                         </div>
@@ -929,30 +1079,16 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles, deployTargets, gitRepos, environments] = await Promise.all([
+        const [tenant, registries, bundles, gitRepos, environments] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
-            api.getDeployTargets(params.id),
             api.getGitRepos(params.id),
             api.getEnvironments(params.id),
         ]);
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
-        const registryEnvPathsById = new Map();
-        const registryEnvAccessById = new Map();
-        if (registries.length > 0) {
-            await Promise.all(registries.map(async (reg) => {
-                const [paths, access] = await Promise.all([
-                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
-                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
-                ]);
-                registryEnvPathsById.set(reg.id, paths);
-                registryEnvAccessById.set(reg.id, access);
-            }));
-        }
-        const activeDeployTargets = deployTargets.filter(t => !t.is_archived);
-        const archivedDeployTargets = deployTargets.filter(t => t.is_archived);
+        const registryById = new Map(registries.map(reg => [reg.id, reg]));
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -1015,14 +1151,24 @@ router.on('/tenants/:id', async (params) => {
                                         </div>
                                     ` : environments.map(env => {
                                         const envColor = env.color || '';
+                                        const sourceRegistry = env.source_registry_id ? registryById.get(env.source_registry_id) : null;
+                                        const targetRegistry = env.target_registry_id ? registryById.get(env.target_registry_id) : null;
+                                        const envRepo = env.env_repo_id ? gitRepoById.get(env.env_repo_id) : null;
+                                        const deployRepo = env.deploy_repo_id ? gitRepoById.get(env.deploy_repo_id) : null;
                                         return `
                                         <a href="#/environments/${env.id}/edit" class="list-group-item list-group-item-action">
-                                            <div class="d-flex align-items-center">
+                                            <div class="d-flex align-items-start">
                                                 <span class="avatar avatar-sm me-2" style="background-color:${envColor || 'transparent'} !important;border:1px solid rgba(98,105,118,0.4);" title="${envColor || 'no color'}"></span>
                                                 <div class="flex-fill">
                                                     <div class="d-flex align-items-center gap-2">
                                                         <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
                                                         <span class="text-secondary small">${env.slug}</span>
+                                                    </div>
+                                                    <div class="text-secondary small mt-2">
+                                                        <div>↳ Source Reg: <code class="small">${sourceRegistry?.base_url || '-'}</code> (path: <code class="small">${env.source_project_path || '-'}</code>)</div>
+                                                        <div>↳ Target Reg: <code class="small">${targetRegistry?.base_url || '-'}</code> (path: <code class="small">${env.target_project_path || '-'}</code>)</div>
+                                                        <div>↳ Env Git: <code class="small">${envRepo?.repo_url || '-'}</code> (path: <code class="small">${env.env_repo_path || '-'}</code>)</div>
+                                                        <div>↳ Deploy Git: <code class="small">${deployRepo?.repo_url || '-'}</code> (path: <code class="small">${env.deploy_repo_path || '-'}</code>)</div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1050,14 +1196,9 @@ router.on('/tenants/:id', async (params) => {
                                             No registries yet
                                         </div>
                                     ` : registries.map(reg => {
-                                        const envPaths = registryEnvPathsById.get(reg.id) || [];
-                                        const envAccess = registryEnvAccessById.get(reg.id) || [];
-                                        const envPathMap = new Map(envPaths.map(p => [p.environment_id, p]));
-                                        const envAccessMap = new Map(envAccess.map(a => [a.environment_id, a.is_enabled]));
-                                        const enabledEnvs = environments.filter(env => {
-                                            if (!envAccessMap.has(env.id)) return true;
-                                            return envAccessMap.get(env.id) !== false;
-                                        });
+                                        const linkedEnvs = environments.filter(env =>
+                                            env.source_registry_id === reg.id || env.target_registry_id === reg.id
+                                        );
                                         return `
                                         <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
                                             <div class="d-flex align-items-start gap-2">
@@ -1080,13 +1221,12 @@ router.on('/tenants/:id', async (params) => {
                                                             <div><code class="small">${reg.default_project_path || '-'}</code></div>
                                                         </div>
                                                         <div class="col-md-6">
-                                                            ${enabledEnvs.length > 0 ? `
+                                                            ${linkedEnvs.length > 0 ? `
                                                                 <div class="text-secondary small mb-1">Environment paths</div>
                                                                 <div class="d-flex flex-column gap-1">
-                                                                    ${enabledEnvs.map(env => {
-                                                                        const entry = envPathMap.get(env.id);
-                                                                        const src = entry?.source_project_path_override || '-';
-                                                                        const trg = entry?.target_project_path_override || '-';
+                                                                    ${linkedEnvs.map(env => {
+                                                                        const src = env.source_registry_id === reg.id ? (env.source_project_path || '-') : '-';
+                                                                        const trg = env.target_registry_id === reg.id ? (env.target_project_path || '-') : '-';
                                                                         return `
                                                                             <div class="d-flex align-items-center gap-2 small">
                                                                                 <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
@@ -1179,155 +1319,9 @@ router.on('/tenants/:id', async (params) => {
                         </div>
                     </div>
 
-                    <div class="card">
-                        <div class="card-header">
-                            <h3 class="card-title">Deploy Targets</h3>
-                            <div class="card-actions">
-                                ${archivedDeployTargets.length > 0 ? `
-                                    <button class="btn btn-ghost-secondary btn-sm" id="toggle-archived-deploy-targets">
-                                        Show archived (${archivedDeployTargets.length})
-                                    </button>
-                                ` : ''}
-                                <a href="#/deploy-targets/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-plus"></i>
-                                    Add
-                                </a>
-                            </div>
-                        </div>
-                        <div class="list-group list-group-flush">
-                            ${activeDeployTargets.length === 0 ? `
-                                <div class="list-group-item text-center text-secondary py-4">
-                                    No deploy targets yet
-                                </div>
-                            ` : activeDeployTargets.map(target => `
-                                <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                    <div class="d-flex align-items-center justify-content-between">
-                                        <div class="fw-semibold">${target.name}</div>
-                                        ${(() => {
-                                            const active = (target.envs || []).some(env => env.is_active !== false);
-                                            return `
-                                                <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                                    ${active ? 'active' : 'inactive'}
-                                                </span>
-                                            `;
-                                        })()}
-                                    </div>
-                                    <div class="table-responsive mt-2">
-                                        <table class="table table-sm table-vcenter card-table mb-0">
-                                            <thead>
-                                                <tr>
-                                                    <th>Env</th>
-                                                    <th>Env Repo</th>
-                                                    <th>Deploy Repo</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody>
-                                                ${(target.envs || []).map(env => {
-                                                    const envRepo = gitRepoById.get(env.env_repo_id);
-                                                    const envUrl = envRepo?.repo_url || '-';
-                                                    const envPath = env.env_repo_path || '-';
-                                                    const envBranch = env.env_repo_branch || '';
-                                                    const deployRepo = gitRepoById.get(env.deploy_repo_id);
-                                                    const deployUrl = deployRepo?.repo_url || '-';
-                                                    const deployPath = env.deploy_repo_path || '-';
-                                                    const deployBranch = env.deploy_repo_branch || '';
-                                                    return `
-                                                        <tr>
-                                                            <td>
-                                                                <span class="badge" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">${env.env_name}</span>
-                                                            </td>
-                                                            <td>
-                                                                <code class="small">${envUrl}</code>
-                                                                <div class="text-secondary small">
-                                                                    ${envBranch ? `branch: ${envBranch}` : `path: ${envPath}`}
-                                                                </div>
-                                                            </td>
-                                                            <td>
-                                                                <code class="small">${deployUrl}</code>
-                                                                <div class="text-secondary small">
-                                                                    ${deployBranch ? `branch: ${deployBranch}` : `path: ${deployPath}`}
-                                                                </div>
-                                                            </td>
-                                                        </tr>
-                                                    `;
-                                                }).join('')}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </a>
-                            `).join('')}
-                        </div>
-                        ${archivedDeployTargets.length > 0 ? `
-                            <div class="list-group list-group-flush d-none" id="archived-deploy-targets">
-                                ${archivedDeployTargets.map(target => `
-                                    <a href="#/deploy-targets/${target.id}/edit" class="list-group-item list-group-item-action">
-                                        <div class="d-flex align-items-center justify-content-between">
-                                            <div class="fw-semibold">${target.name}</div>
-                                            <span class="badge bg-secondary text-secondary-fg">archived</span>
-                                        </div>
-                                        <div class="table-responsive mt-2">
-                                            <table class="table table-sm table-vcenter card-table mb-0">
-                                                <thead>
-                                                    <tr>
-                                                        <th>Env</th>
-                                                        <th>Env Repo</th>
-                                                        <th>Deploy Repo</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    ${(target.envs || []).map(env => {
-                                                        const envRepo = gitRepoById.get(env.env_repo_id);
-                                                        const envUrl = envRepo?.repo_url || '-';
-                                                        const envPath = env.env_repo_path || '-';
-                                                        const envBranch = env.env_repo_branch || '';
-                                                        const deployRepo = gitRepoById.get(env.deploy_repo_id);
-                                                        const deployUrl = deployRepo?.repo_url || '-';
-                                                        const deployPath = env.deploy_repo_path || '-';
-                                                        const deployBranch = env.deploy_repo_branch || '';
-                                                        return `
-                                                            <tr>
-                                                                <td>
-                                                                    <span class="badge" style="${env.env_color ? `background:${env.env_color};color:#fff;` : ''}">${env.env_name}</span>
-                                                                </td>
-                                                                <td>
-                                                                    <code class="small">${envUrl}</code>
-                                                                    <div class="text-secondary small">
-                                                                        ${envBranch ? `branch: ${envBranch}` : `path: ${envPath}`}
-                                                                    </div>
-                                                                </td>
-                                                                <td>
-                                                                    <code class="small">${deployUrl}</code>
-                                                                    <div class="text-secondary small">
-                                                                        ${deployBranch ? `branch: ${deployBranch}` : `path: ${deployPath}`}
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        `;
-                                                    }).join('')}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </a>
-                                `).join('')}
-                            </div>
-                        ` : ''}
-                    </div>
                 </div>
             </div>
         `;
-
-        const archivedToggle = document.getElementById('toggle-archived-deploy-targets');
-        if (archivedToggle) {
-            archivedToggle.addEventListener('click', () => {
-                const container = document.getElementById('archived-deploy-targets');
-                if (!container) return;
-                const isHidden = container.classList.contains('d-none');
-                container.classList.toggle('d-none');
-                archivedToggle.textContent = isHidden
-                    ? 'Hide archived'
-                    : `Show archived (${archivedDeployTargets.length})`;
-            });
-        }
 
         // Delete handler
         document.getElementById('delete-tenant-btn').addEventListener('click', async () => {
@@ -1839,11 +1833,7 @@ router.on('/registries/new', async (params, query) => {
 
     try {
         const tenants = await api.getTenants();
-        let environments = [];
-        if (query.tenant_id) {
-            environments = await api.getEnvironments(query.tenant_id).catch(() => []);
-        }
-        content.innerHTML = createRegistryForm(null, tenants, environments, [], [], []);
+        content.innerHTML = createRegistryForm(null, tenants);
 
         // Pre-select tenant if provided in query
         if (query.tenant_id) {
@@ -1855,9 +1845,6 @@ router.on('/registries/new', async (params, query) => {
             await handleFormSubmit(e, async (data) => {
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
-                data.environment_paths = collectRegistryEnvironmentPaths();
-                data.environment_credentials = collectRegistryEnvironmentCredentials();
-                data.environment_access = collectRegistryEnvironmentAccess();
                 await api.createRegistry(tenantId, data);
                 getApp().showSuccess('Registry created successfully');
                 router.navigate('/registries');
@@ -1877,14 +1864,11 @@ router.on('/registries/:id/edit', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [registry, tenants, envPaths, envCreds, envAccess] = await Promise.all([
+        const [registry, tenants] = await Promise.all([
             api.getRegistry(params.id),
             api.getTenants(),
-            api.getRegistryEnvironmentPaths(params.id).catch(() => []),
-            api.getRegistryEnvironmentCredentials(params.id).catch(() => []),
-            api.getRegistryEnvironmentAccess(params.id).catch(() => []),
         ]);
-        const environments = await api.getEnvironments(registry.tenant_id).catch(() => []);
+        const environments = [];
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -1894,14 +1878,11 @@ router.on('/registries/:id/edit', async (params) => {
                     </a>
                 </div>
             </div>
-            ${createRegistryForm(registry, tenants, environments, envPaths, envCreds, envAccess)}
+            ${createRegistryForm(registry, tenants, environments, [], [], [])}
         `;
 
         document.getElementById('registry-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
-                data.environment_paths = collectRegistryEnvironmentPaths();
-                data.environment_credentials = collectRegistryEnvironmentCredentials();
-                data.environment_access = collectRegistryEnvironmentAccess();
                 await api.updateRegistry(params.id, data);
                 getApp().showSuccess('Registry updated successfully');
                 router.navigate(`/tenants/${registry.tenant_id}`);
@@ -1923,7 +1904,9 @@ router.on('/environments/new', async (params, query) => {
 
     try {
         const tenants = await api.getTenants();
-        content.innerHTML = createEnvironmentForm(null, tenants);
+        const registries = query.tenant_id ? await api.getRegistries(query.tenant_id).catch(() => []) : await api.getRegistries().catch(() => []);
+        const gitRepos = query.tenant_id ? await api.getGitRepos(query.tenant_id).catch(() => []) : await api.getGitRepos().catch(() => []);
+        content.innerHTML = createEnvironmentForm(null, tenants, registries, gitRepos);
 
         if (query.tenant_id) {
             const select = document.querySelector('select[name="tenant_id"]');
@@ -1931,11 +1914,14 @@ router.on('/environments/new', async (params, query) => {
         }
         attachEnvironmentColorPreview();
         attachEnvironmentSlugPreview();
+        attachEnvironmentVarHandlers();
 
         document.getElementById('environment-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 const tenantId = data.tenant_id;
                 delete data.tenant_id;
+                data.release_env_var_mappings = collectEnvironmentVarMappings();
+                data.extra_env_vars = collectEnvironmentExtraVars();
                 await api.createEnvironment(tenantId, data);
                 getApp().showSuccess('Environment created successfully');
                 router.navigate(`/tenants/${tenantId}`);
@@ -1959,13 +1945,18 @@ router.on('/environments/:id/edit', async (params) => {
             api.getEnvironment(params.id),
             api.getTenants(),
         ]);
-        content.innerHTML = createEnvironmentForm(environment, tenants);
+        const registries = environment?.tenant_id ? await api.getRegistries(environment.tenant_id).catch(() => []) : [];
+        const gitRepos = environment?.tenant_id ? await api.getGitRepos(environment.tenant_id).catch(() => []) : [];
+        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos);
         attachEnvironmentColorPreview();
         attachEnvironmentSlugPreview();
+        attachEnvironmentVarHandlers();
 
         document.getElementById('environment-form').addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 delete data.tenant_id;
+                data.release_env_var_mappings = collectEnvironmentVarMappings();
+                data.extra_env_vars = collectEnvironmentExtraVars();
                 await api.updateEnvironment(params.id, data);
                 getApp().showSuccess('Environment updated successfully');
                 router.navigate(`/tenants/${environment.tenant_id}`);
@@ -1979,776 +1970,6 @@ router.on('/environments/:id/edit', async (params) => {
         `;
     }
 });
-
-// ==================== DEPLOY TARGETS ROUTES ====================
-
-// Deploy Targets List
-router.on('/deploy-targets', async () => {
-    const content = document.getElementById('app-content');
-    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
-
-    try {
-        const tenants = await api.getTenants();
-        const targetsByTenant = await Promise.all(
-            tenants.map(async (tenant) => {
-                const targets = await api.getDeployTargets(tenant.id);
-                return targets.map(target => ({
-                    ...target,
-                    tenant_id: tenant.id,
-                    tenant_name: tenant.name,
-                }));
-            })
-        );
-        const targets = targetsByTenant.flat();
-
-        const renderTargets = (rows, searchQuery = '', selectedTenant = '') => {
-            const q = (searchQuery || '').toLowerCase().trim();
-            const filtered = rows.filter(row => {
-                if (row.is_archived) return false;
-                if (selectedTenant && row.tenant_id !== selectedTenant) return false;
-                if (q && !row.name.toLowerCase().includes(q)) return false;
-                return true;
-            });
-
-            return `
-                <div class="card">
-                    <div class="card-header">
-                        <h3 class="card-title">Deploy Targets</h3>
-                        <div class="card-actions">
-                            <a href="#/deploy-targets/new" class="btn btn-primary">
-                                <i class="ti ti-plus"></i>
-                                New Deploy Target
-                            </a>
-                        </div>
-                    </div>
-
-                    <div class="card-body border-bottom py-3">
-                        <div class="row g-2">
-                            <div class="col-md-4">
-                                <div class="input-group">
-                                    <span class="input-group-text">
-                                        <i class="ti ti-search"></i>
-                                    </span>
-                                    <input type="text" class="form-control" placeholder="Search by name..."
-                                           id="deploy-targets-search" value="${searchQuery}">
-                                </div>
-                            </div>
-                            <div class="col-md-3">
-                                <select class="form-select" id="deploy-targets-tenant">
-                                    <option value="">All Tenants</option>
-                                    ${tenants.map(t => `
-                                        <option value="${t.id}" ${selectedTenant === t.id ? 'selected' : ''}>${t.name}</option>
-                                    `).join('')}
-                                </select>
-                            </div>
-                            <div class="col-md-auto ms-auto">
-                                <span class="text-secondary">${filtered.length} deploy targets</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="table-responsive">
-                        <table class="table table-vcenter card-table">
-                            <thead>
-                                <tr>
-                                    <th>Name</th>
-                                    <th>Tenant</th>
-                                    <th>Environments</th>
-                                    <th>Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                ${filtered.length === 0 ? `
-                                    <tr>
-                                        <td colspan="4" class="text-center text-secondary py-4">
-                                            No deploy targets found
-                                        </td>
-                                    </tr>
-                                ` : filtered.map(target => {
-                                    const envs = target.envs || [];
-                                    const active = envs.some(env => env.is_active !== false);
-                                    return `
-                                        <tr>
-                                            <td><a href="#/deploy-targets/${target.id}/edit"><strong>${target.name}</strong></a></td>
-                                            <td><a href="#/tenants/${target.tenant_id}">${target.tenant_name}</a></td>
-                                            <td>${envs.length}</td>
-                                            <td>
-                                                <span class="badge ${active ? 'bg-success-lt text-success-fg' : 'bg-secondary text-secondary-fg'}">
-                                                    ${active ? 'active' : 'inactive'}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    `;
-                                }).join('')}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            `;
-        };
-
-        content.innerHTML = renderTargets(targets);
-
-        const searchInput = document.getElementById('deploy-targets-search');
-        const tenantSelect = document.getElementById('deploy-targets-tenant');
-        const rerender = () => {
-            const q = searchInput?.value || '';
-            const tenantId = tenantSelect?.value || '';
-            content.innerHTML = renderTargets(targets, q, tenantId);
-            attachHandlers();
-        };
-
-        const attachHandlers = () => {
-            const s = document.getElementById('deploy-targets-search');
-            const t = document.getElementById('deploy-targets-tenant');
-            s?.addEventListener('input', rerender);
-            t?.addEventListener('change', rerender);
-        };
-
-        attachHandlers();
-    } catch (error) {
-        content.innerHTML = `
-            <div class="alert alert-danger">
-                Failed to load deploy targets: ${error.message}
-            </div>
-        `;
-    }
-});
-
-router.on('/deploy-targets/new', async (params, query) => {
-    const content = document.getElementById('app-content');
-    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
-
-    try {
-        const [tenants, gitRepos] = await Promise.all([
-            api.getTenants(),
-            api.getGitRepos(),
-        ]);
-        let prefillTarget = null;
-        let encjsonKeys = [];
-        let envVars = [];
-        let extraEnvVars = [];
-        let tenantId = query.tenant_id || null;
-        let formOptions = {};
-        let copyFromId = null;
-        let environments = [];
-
-        if (query.copy_from) {
-            const response = await api.getDeployTarget(query.copy_from);
-            const source = response.target || response;
-            encjsonKeys = response.encjson_keys || [];
-            envVars = response.env_vars || [];
-            extraEnvVars = response.extra_env_vars || [];
-            prefillTarget = {
-                ...source,
-                name: `Copy of ${source.name}`,
-            };
-            tenantId = source.tenant_id;
-            copyFromId = source.id;
-            formOptions = {
-                isEdit: false,
-                title: 'Copy Deploy Target',
-                submitLabel: 'Create Copy',
-            };
-        }
-
-        if (tenantId) {
-            environments = await api.getEnvironments(tenantId);
-        }
-        const scopedRepos = tenantId ? gitRepos.filter(r => r.tenant_id === tenantId) : gitRepos;
-        content.innerHTML = createDeployTargetForm(prefillTarget, tenants, scopedRepos, environments, encjsonKeys, envVars, extraEnvVars, formOptions);
-
-        if (tenantId) {
-            const select = document.querySelector('select[name=\"tenant_id\"]');
-            if (select) {
-                select.value = tenantId;
-                select.disabled = true;
-                const hidden = document.createElement('input');
-                hidden.type = 'hidden';
-                hidden.name = 'tenant_id';
-                hidden.value = tenantId;
-                select.parentElement.appendChild(hidden);
-            }
-        }
-
-        if (copyFromId) {
-            const form = document.getElementById('deploy-target-form');
-            if (form) {
-                const hidden = document.createElement('input');
-                hidden.type = 'hidden';
-                hidden.name = 'copy_from_target_id';
-                hidden.value = copyFromId;
-                form.appendChild(hidden);
-            }
-        }
-
-        attachEncjsonKeyHandlers();
-        attachDeployEnvVarHandlers();
-        attachDeployExtraEnvVarHandlers();
-        attachDeployTargetEnvModeHandlers();
-        attachDeployTargetEnvTabs();
-
-        if (!tenantId) {
-            const select = document.querySelector('select[name=\"tenant_id\"]');
-            if (select) {
-                select.addEventListener('change', () => {
-                    const nextId = select.value;
-                    if (nextId) {
-                        router.navigate(`/deploy-targets/new?tenant_id=${nextId}`);
-                    }
-                });
-            }
-        }
-
-        document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
-            await handleFormSubmit(e, async (data) => {
-                const collectedKeys = collectEncjsonKeys();
-                const keysWithPrivate = collectedKeys.filter(k => k.private_key && k.private_key.trim() !== '');
-                data.env_vars = collectDeployEnvVars();
-                data.extra_env_vars = collectDeployExtraEnvVars();
-                data.envs = collectDeployTargetEnvs();
-                if (!data.envs.length) {
-                    throw new Error('Configure at least one environment');
-                }
-                const tenantId = data.tenant_id;
-                delete data.tenant_id;
-                if (data.copy_from_target_id) {
-                    if (keysWithPrivate.length > 0) {
-                        data.encjson_keys = keysWithPrivate;
-                    } else {
-                        delete data.encjson_keys;
-                    }
-                    if (!data.env_vars || data.env_vars.length === 0) {
-                        delete data.env_vars;
-                    }
-                    if (!data.extra_env_vars || data.extra_env_vars.length === 0) {
-                        delete data.extra_env_vars;
-                    }
-                } else {
-                    data.encjson_keys = collectedKeys;
-                }
-                await api.createDeployTarget(tenantId, data);
-                getApp().showSuccess('Deploy target created successfully');
-                router.navigate(`/tenants/${tenantId}`);
-            });
-        });
-    } catch (error) {
-        content.innerHTML = `
-            <div class="alert alert-danger">
-                Failed to load form: ${error.message}
-            </div>
-        `;
-    }
-});
-
-router.on('/deploy-targets/:id/edit', async (params) => {
-    const content = document.getElementById('app-content');
-    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
-
-    try {
-        const [response, tenants, gitRepos] = await Promise.all([
-            api.getDeployTarget(params.id),
-            api.getTenants(),
-            api.getGitRepos(),
-        ]);
-        const target = response.target || response;
-        const encjsonKeys = response.encjson_keys || [];
-        const envVars = response.env_vars || [];
-        const extraEnvVars = response.extra_env_vars || [];
-        const scopedRepos = gitRepos.filter(r => r.tenant_id === target.tenant_id);
-        const environments = await api.getEnvironments(target.tenant_id);
-        content.innerHTML = `
-            <div class="row mb-3">
-                <div class="col">
-                    <a href="#/tenants/${target.tenant_id}" class="btn btn-ghost-secondary">
-                        <i class="ti ti-arrow-left"></i>
-                        Back to Tenant
-                    </a>
-                </div>
-            </div>
-            ${createDeployTargetForm(target, tenants, scopedRepos, environments, encjsonKeys, envVars, extraEnvVars, {
-                isEdit: true,
-                copyLink: `#/deploy-targets/new?tenant_id=${target.tenant_id}&amp;copy_from=${target.id}`,
-        })}
-        `;
-
-        attachEncjsonKeyHandlers();
-        attachDeployEnvVarHandlers();
-        attachDeployExtraEnvVarHandlers();
-        attachDeployTargetEnvModeHandlers();
-        attachDeployTargetEnvTabs();
-
-        const deleteBtn = document.getElementById('delete-deploy-target-btn');
-        if (deleteBtn) {
-            deleteBtn.addEventListener('click', async () => {
-                const confirmed = await showConfirmDialog(
-                    target.has_jobs ? 'Archive Deploy Target?' : 'Delete Deploy Target?',
-                    target.has_jobs
-                        ? `Archive "${target.name}"? It has deploy jobs and cannot be deleted.`
-                        : `Are you sure you want to delete "${target.name}"? This is only allowed if it has no deploy jobs.`,
-                    target.has_jobs ? 'Archive' : 'Delete',
-                    'Cancel'
-                );
-                if (!confirmed) return;
-                try {
-                    const result = await api.deleteDeployTarget(params.id);
-                    if (result?.archived) {
-                        getApp().showSuccess('Deploy target archived');
-                    } else {
-                        getApp().showSuccess('Deploy target deleted successfully');
-                    }
-                    router.navigate(`/tenants/${target.tenant_id}`);
-                } catch (error) {
-                    getApp().showError(error.message);
-                }
-            });
-        }
-
-        const unarchiveBtn = document.getElementById('unarchive-deploy-target-btn');
-        if (unarchiveBtn) {
-            unarchiveBtn.addEventListener('click', async () => {
-                const confirmed = await showConfirmDialog(
-                    'Unarchive Deploy Target?',
-                    `Unarchive "${target.name}"? It will be visible in lists again.`,
-                    'Unarchive',
-                    'Cancel'
-                );
-                if (!confirmed) return;
-                try {
-                    await api.unarchiveDeployTarget(params.id);
-                    getApp().showSuccess('Deploy target unarchived');
-                    router.navigate(`/tenants/${target.tenant_id}`);
-                } catch (error) {
-                    getApp().showError(error.message);
-                }
-            });
-        }
-
-        document.getElementById('deploy-target-form').addEventListener('submit', async (e) => {
-            await handleFormSubmit(e, async (data) => {
-                data.encjson_keys = collectEncjsonKeys();
-                data.env_vars = collectDeployEnvVars();
-                data.extra_env_vars = collectDeployExtraEnvVars();
-                data.envs = collectDeployTargetEnvs();
-                if (!data.envs.length) {
-                    throw new Error('Configure at least one environment');
-                }
-                await api.updateDeployTarget(params.id, data);
-                getApp().showSuccess('Deploy target updated successfully');
-                router.navigate(`/tenants/${target.tenant_id}`);
-            });
-        });
-    } catch (error) {
-        content.innerHTML = `
-            <div class="alert alert-danger">
-                Failed to load deploy target: ${error.message}
-            </div>
-        `;
-    }
-});
-
-function collectEncjsonKeys() {
-    const rows = document.querySelectorAll('[data-encjson-index]');
-    const keys = [];
-    rows.forEach(row => {
-        const publicKey = row.querySelector('.encjson-public-key')?.value?.trim() || '';
-        const privateKey = row.querySelector('.encjson-private-key')?.value?.trim() || '';
-        if (publicKey) {
-            keys.push({
-                public_key: publicKey,
-                private_key: privateKey || null,
-            });
-        }
-    });
-    return keys;
-}
-
-function attachEncjsonKeyHandlers() {
-    const list = document.getElementById('encjson-keys-list');
-    const addBtn = document.getElementById('encjson-add-btn');
-    if (!list || !addBtn) return;
-
-    const attachRemove = () => {
-        list.querySelectorAll('.encjson-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const card = btn.closest('[data-encjson-index]');
-                if (card) card.remove();
-            });
-        });
-    };
-
-    addBtn.addEventListener('click', () => {
-        const index = list.querySelectorAll('[data-encjson-index]').length;
-        const card = document.createElement('div');
-        card.className = 'card mb-2';
-        card.setAttribute('data-encjson-index', index.toString());
-        card.innerHTML = `
-            <div class="card-body p-3">
-                <div class="row g-2">
-                    <div class="col-md-5">
-                        <input type="text" class="form-control form-control-sm encjson-public-key"
-                               placeholder="public key (hex)">
-                    </div>
-                    <div class="col-md-6">
-                        <input type="password" class="form-control form-control-sm encjson-private-key"
-                               placeholder="private key (hex)">
-                    </div>
-                    <div class="col-md-1 d-flex align-items-center">
-                        <button type="button" class="btn btn-sm btn-ghost-danger encjson-remove">
-                            <i class="ti ti-trash"></i>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-        list.appendChild(card);
-        attachRemove();
-    });
-
-    attachRemove();
-}
-
-function collectDeployEnvVars() {
-    const rows = document.querySelectorAll('[data-env-var-index]');
-    const vars = [];
-    rows.forEach(row => {
-        const source = row.querySelector('.env-var-source')?.value?.trim() || '';
-        const target = row.querySelector('.env-var-target')?.value?.trim() || '';
-        if (source && target) {
-            vars.push({
-                source_key: source,
-                target_key: target,
-            });
-        }
-    });
-    return vars;
-}
-
-function collectDeployExtraEnvVars() {
-    const rows = document.querySelectorAll('[data-extra-env-var-index]');
-    const vars = [];
-    rows.forEach(row => {
-        const key = row.querySelector('.extra-env-var-key')?.value?.trim() || '';
-        const value = row.querySelector('.extra-env-var-value')?.value?.trim() || '';
-        if (key) {
-            vars.push({ key, value });
-        }
-    });
-    return vars;
-}
-
-function collectDeployTargetEnvs() {
-    const blocks = document.querySelectorAll('[data-deploy-env]');
-    const envs = [];
-    blocks.forEach(block => {
-        const environmentId = block.getAttribute('data-env-id');
-        const envRepoId = block.querySelector('.env-repo-id')?.value?.trim() || '';
-        const deployRepoId = block.querySelector('.deploy-repo-id')?.value?.trim() || '';
-        const envRepoMode = block.querySelector('.env-repo-mode')?.value || 'path';
-        const deployRepoMode = block.querySelector('.deploy-repo-mode')?.value || 'path';
-        const envRepoPath = block.querySelector('.env-repo-path')?.value?.trim() || '';
-        const envRepoBranch = block.querySelector('.env-repo-branch')?.value?.trim() || '';
-        const deployRepoPath = block.querySelector('.deploy-repo-path')?.value?.trim() || '';
-        const deployRepoBranch = block.querySelector('.deploy-repo-branch')?.value?.trim() || '';
-        const allowAutoRelease = block.querySelector('.allow-auto-release')?.checked || false;
-        const appendEnvSuffix = block.querySelector('.append-env-suffix')?.checked || false;
-        const isActive = block.querySelector('.is-active')?.checked ?? true;
-        const releaseManifestMode = block.querySelector('.release-manifest-mode')?.value || 'match_digest';
-        const encjsonKeyDir = block.querySelector('.encjson-key-dir')?.value?.trim() || '';
-
-        if (!environmentId || !envRepoId || !deployRepoId) {
-            return;
-        }
-
-        envs.push({
-            environment_id: environmentId,
-            env_repo_id: envRepoId,
-            env_repo_path: envRepoMode === 'path' ? envRepoPath : null,
-            env_repo_branch: envRepoMode === 'branch' ? envRepoBranch : null,
-            deploy_repo_id: deployRepoId,
-            deploy_repo_path: deployRepoMode === 'path' ? deployRepoPath : null,
-            deploy_repo_branch: deployRepoMode === 'branch' ? deployRepoBranch : null,
-            allow_auto_release: allowAutoRelease,
-            append_env_suffix: appendEnvSuffix,
-            release_manifest_mode: releaseManifestMode,
-            is_active: isActive,
-            encjson_key_dir: encjsonKeyDir || null,
-        });
-    });
-    return envs;
-}
-
-function attachDeployTargetEnvModeHandlers() {
-    const blocks = document.querySelectorAll('[data-deploy-env]');
-    blocks.forEach(block => {
-        const envModeSelect = block.querySelector('.env-repo-mode');
-        const deployModeSelect = block.querySelector('.deploy-repo-mode');
-        const envPathInput = block.querySelector('.env-repo-path');
-        const envBranchInput = block.querySelector('.env-repo-branch');
-        const deployPathInput = block.querySelector('.deploy-repo-path');
-        const deployBranchInput = block.querySelector('.deploy-repo-branch');
-
-        const syncEnvMode = () => {
-            const mode = envModeSelect?.value || 'path';
-            if (envPathInput && envBranchInput) {
-                envPathInput.classList.toggle('d-none', mode === 'branch');
-                envBranchInput.classList.toggle('d-none', mode === 'path');
-            }
-        };
-
-        const syncDeployMode = () => {
-            const mode = deployModeSelect?.value || 'path';
-            if (deployPathInput && deployBranchInput) {
-                deployPathInput.classList.toggle('d-none', mode === 'branch');
-                deployBranchInput.classList.toggle('d-none', mode === 'path');
-            }
-        };
-
-        envModeSelect?.addEventListener('change', syncEnvMode);
-        deployModeSelect?.addEventListener('change', syncDeployMode);
-        syncEnvMode();
-        syncDeployMode();
-    });
-}
-
-function attachDeployTargetEnvTabs() {
-    const form = document.querySelector('#deploy-target-form');
-    if (!form) return;
-    const nav = form.querySelector('.nav-tabs');
-    if (!nav) return;
-
-    const tabs = Array.from(nav.querySelectorAll('[data-bs-target]'));
-    const panes = Array.from(form.querySelectorAll('.tab-pane'));
-    if (tabs.length === 0 || panes.length === 0) return;
-
-    const activate = (targetId) => {
-        tabs.forEach(tab => {
-            tab.classList.toggle('active', tab.getAttribute('data-bs-target') === targetId);
-        });
-        panes.forEach(pane => {
-            const isActive = `#${pane.id}` === targetId;
-            pane.classList.toggle('active', isActive);
-            pane.classList.toggle('show', isActive);
-        });
-    };
-
-    tabs.forEach(tab => {
-        tab.addEventListener('click', (e) => {
-            e.preventDefault();
-            const target = tab.getAttribute('data-bs-target');
-            if (target) activate(target);
-        });
-    });
-}
-
-function attachEnvironmentColorPreview() {
-    const colorInput = document.querySelector('.env-color-input');
-    const textInput = document.querySelector('.env-color-text');
-    const preview = document.querySelector('#env-color-preview');
-
-    if (!colorInput || !textInput || !preview) {
-        return;
-    }
-
-    const updatePreview = (value) => {
-        const color = (value || '').trim();
-        if (color) {
-            preview.style.background = color;
-            preview.style.color = '#fff';
-            preview.textContent = color;
-        } else {
-            preview.style.background = '';
-            preview.style.color = '';
-            preview.textContent = 'Preview';
-        }
-    };
-
-    updatePreview(textInput.value || colorInput.value);
-
-    colorInput.addEventListener('input', () => {
-        textInput.value = colorInput.value;
-        updatePreview(colorInput.value);
-    });
-
-    textInput.addEventListener('input', () => {
-        updatePreview(textInput.value);
-    });
-}
-
-function attachEnvironmentSlugPreview() {
-    const nameInput = document.querySelector('input[name="name"]');
-    const slugInput = document.querySelector('#env-slug-preview');
-    const form = document.querySelector('#environment-form');
-    if (!nameInput || !slugInput) return;
-
-    const mode = form?.dataset?.envMode || 'new';
-    let slugTouched = false;
-
-    const toSlug = (value) => {
-        return value
-            .toString()
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '');
-    };
-
-    const updateSlug = () => {
-        if (mode === 'edit' || slugTouched) {
-            return;
-        }
-        const slug = toSlug(nameInput.value || '');
-        slugInput.value = slug;
-    };
-
-    updateSlug();
-    nameInput.addEventListener('input', updateSlug);
-    slugInput.addEventListener('input', () => {
-        slugTouched = slugInput.value.trim().length > 0;
-    });
-}
-
-function collectRegistryEnvironmentPaths() {
-    const inputs = document.querySelectorAll('.env-project-path');
-    const map = new Map();
-    inputs.forEach(input => {
-        const environmentId = input.dataset.envId;
-        const role = input.dataset.role || 'target';
-        if (!environmentId) return;
-        if (!map.has(environmentId)) {
-            map.set(environmentId, {
-                environment_id: environmentId,
-                source_project_path_override: '',
-                target_project_path_override: '',
-            });
-        }
-        const entry = map.get(environmentId);
-        if (role === 'source') {
-            entry.source_project_path_override = input.value || '';
-        } else {
-            entry.target_project_path_override = input.value || '';
-        }
-    });
-    return Array.from(map.values());
-}
-
-function collectRegistryEnvironmentCredentials() {
-    const authSelects = document.querySelectorAll('.env-cred-auth');
-    const map = new Map();
-    authSelects.forEach(select => {
-        const environmentId = select.dataset.envId;
-        if (!environmentId) return;
-        const authType = (select.value || '').trim();
-        if (!authType) return;
-        if (!map.has(environmentId)) {
-            map.set(environmentId, {
-                environment_id: environmentId,
-                auth_type: authType,
-                username: '',
-                password: '',
-                token: '',
-            });
-        }
-        const entry = map.get(environmentId);
-        entry.auth_type = authType;
-        entry.username = document.querySelector(`.env-cred-username[data-env-id="${environmentId}"]`)?.value || '';
-        entry.password = document.querySelector(`.env-cred-password[data-env-id="${environmentId}"]`)?.value || '';
-        entry.token = document.querySelector(`.env-cred-token[data-env-id="${environmentId}"]`)?.value || '';
-    });
-    return Array.from(map.values());
-}
-
-function collectRegistryEnvironmentAccess() {
-    const inputs = document.querySelectorAll('.env-access-toggle');
-    const list = [];
-    inputs.forEach(input => {
-        const environmentId = input.dataset.envId;
-        if (!environmentId) return;
-        list.push({
-            environment_id: environmentId,
-            is_enabled: input.checked,
-        });
-    });
-    return list;
-}
-
-function attachDeployEnvVarHandlers() {
-    const list = document.getElementById('deploy-env-vars-list');
-    const addBtn = document.getElementById('deploy-env-var-add-btn');
-    if (!list || !addBtn) return;
-
-    const attachRemove = () => {
-        list.querySelectorAll('.env-var-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const row = btn.closest('[data-env-var-index]');
-                if (row) row.remove();
-            });
-        });
-    };
-
-    addBtn.addEventListener('click', () => {
-        const index = list.querySelectorAll('[data-env-var-index]').length;
-        const row = document.createElement('div');
-        row.className = 'row g-2 align-items-end mb-2';
-        row.setAttribute('data-env-var-index', index.toString());
-        row.innerHTML = `
-            <div class="col-md-5">
-                <input type="text" class="form-control form-control-sm env-var-source" placeholder="SIMPLE_RELEASE_ID">
-            </div>
-            <div class="col-md-5">
-                <input type="text" class="form-control form-control-sm env-var-target" placeholder="TSM_RELEASE_ID">
-            </div>
-            <div class="col-md-2">
-                <button type="button" class="btn btn-sm btn-outline-danger w-100 env-var-remove">
-                    <i class="ti ti-trash"></i>
-                </button>
-            </div>
-        `;
-        list.appendChild(row);
-        attachRemove();
-    });
-
-    attachRemove();
-}
-
-function attachDeployExtraEnvVarHandlers() {
-    const list = document.getElementById('deploy-extra-env-vars-list');
-    const addBtn = document.getElementById('deploy-extra-env-var-add-btn');
-    if (!list || !addBtn) return;
-
-    const attachRemove = () => {
-        list.querySelectorAll('.extra-env-var-remove').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const row = btn.closest('[data-extra-env-var-index]');
-                if (row) row.remove();
-            });
-        });
-    };
-
-    addBtn.addEventListener('click', () => {
-        const index = list.querySelectorAll('[data-extra-env-var-index]').length;
-        const row = document.createElement('div');
-        row.className = 'row g-2 align-items-end mb-2';
-        row.setAttribute('data-extra-env-var-index', index.toString());
-        row.innerHTML = `
-            <div class="col-md-5">
-                <input type="text" class="form-control form-control-sm extra-env-var-key" placeholder="REGISTRY_URL">
-            </div>
-            <div class="col-md-5">
-                <input type="text" class="form-control form-control-sm extra-env-var-value" placeholder="https://registry.example.com/project">
-            </div>
-            <div class="col-md-2">
-                <button type="button" class="btn btn-sm btn-outline-danger w-100 extra-env-var-remove">
-                    <i class="ti ti-trash"></i>
-                </button>
-            </div>
-        `;
-        list.appendChild(row);
-        attachRemove();
-    });
-
-    attachRemove();
-}
 
 // ==================== BUNDLES ROUTES ====================
 
@@ -4518,16 +3739,16 @@ router.on('/releases/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [release, manifest, deployTargets, deployJobs] = await Promise.all([
+        const [release, manifest, deployJobs] = await Promise.all([
             api.getRelease(params.id),
             api.getReleaseManifest(params.id),
-            api.getReleaseDeployTargets(params.id),
             api.getReleaseDeployJobs(params.id),
         ]);
         const copyJob = release.copy_job_id ? await api.getCopyJobStatus(release.copy_job_id).catch(() => null) : null;
         const bundle = copyJob?.bundle_id ? await api.getBundle(copyJob.bundle_id).catch(() => null) : null;
         const tenant = bundle?.tenant_id ? await api.getTenant(bundle.tenant_id).catch(() => null) : null;
         const environment = copyJob?.environment_id ? await api.getEnvironment(copyJob.environment_id).catch(() => null) : null;
+        const environments = tenant?.id ? await api.getEnvironments(tenant.id).catch(() => []) : [];
         if (copyJob?.environment_id) {
             release.environment_id = copyJob.environment_id;
         }
@@ -4610,13 +3831,13 @@ router.on('/releases/:id', async (params) => {
                     </button>
                     ${release.tenant_id ? `
                         <div class="text-secondary small mt-2">
-                            Manage deploy targets in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
+                            Manage environments in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
                         </div>
                     ` : ''}
-                    ${deployTargets.length === 0 ? `
+                    ${environments.length === 0 ? `
                         <div class="alert alert-info mt-3">
                             <i class="ti ti-info-circle"></i>
-                            No deploy targets configured for this tenant.
+                            No environments configured for this tenant.
                         </div>
                     ` : ''}
                 </div>
@@ -4688,7 +3909,7 @@ router.on('/releases/:id', async (params) => {
         const buildDeployBtn = document.getElementById('build-deploy-btn');
         if (buildDeployBtn) {
             buildDeployBtn.addEventListener('click', async () => {
-                await runDeployFromRelease(release, deployTargets);
+                await runDeployFromRelease(release, environments);
             });
         }
 
@@ -4932,18 +4153,6 @@ router.on('/releases/new', async (params, query) => {
         const environments = bundle?.tenant_id
             ? await api.getEnvironments(bundle.tenant_id).catch(() => [])
             : [];
-        const envPathsByRegistry = new Map();
-        const envAccessByRegistry = new Map();
-        if (environments.length > 0) {
-            await Promise.all(registries.map(async (reg) => {
-                const [paths, access] = await Promise.all([
-                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
-                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
-                ]);
-                envPathsByRegistry.set(reg.id, paths);
-                envAccessByRegistry.set(reg.id, access);
-            }));
-        }
 
         const sourceRegistry = registries.find(r => r.id === job.target_registry_id);
         const sourceBase = sourceRegistry?.base_url || '';
@@ -4954,19 +4163,15 @@ router.on('/releases/new', async (params, query) => {
             targetRegistryId: '',
             environmentId: job.environment_id || '',
             sourceRefMode: 'tag',
+            sourceTagOverride: '',
             validateOnly: false,
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
         if (state.environmentId) {
-            const eligible = registries.filter(reg => {
-                if (reg.role !== 'target' && reg.role !== 'both') return false;
-                const accessList = envAccessByRegistry.get(reg.id) || [];
-                const access = accessList.find(a => a.environment_id === state.environmentId);
-                return access?.is_enabled !== false;
-            });
-            if (eligible.length === 0) {
-                getApp().showError('Selected environment has no available target registry');
+            const selectedEnv = environments.find(env => env.id === state.environmentId);
+            if (!selectedEnv?.target_registry_id) {
+                getApp().showError('Selected environment has no target registry');
             }
         }
 
@@ -4980,13 +4185,9 @@ router.on('/releases/new', async (params, query) => {
             return out;
         };
 
-        const applyProjectPath = (path, registry, envId, role = 'target') => {
-            const envPaths = registry?.id ? envPathsByRegistry.get(registry.id) : [];
-            const envOverride = envId
-                ? (envPaths || []).find(p => p.environment_id === envId)?.[`${role}_project_path_override`]
-                : null;
-            const rawDefault = (envOverride || registry?.default_project_path || '');
-            const defaultPath = rawDefault.trim().replace(/^\/+|\/+$/g, '');
+        const applyProjectPath = (path, env, role = 'target') => {
+            const rawDefault = role === 'source' ? env?.source_project_path : env?.target_project_path;
+            const defaultPath = (rawDefault || '').trim().replace(/^\/+|\/+$/g, '');
             if (!defaultPath) return path;
             const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
             if (!trimmed) return defaultPath;
@@ -5004,17 +4205,13 @@ router.on('/releases/new', async (params, query) => {
 
         const render = () => {
             const sourceRegistry = registries.find(r => r.id === job.target_registry_id);
+            const selectedEnv = environments.find(env => env.id === state.environmentId);
+            if (selectedEnv?.target_registry_id) {
+                state.targetRegistryId = selectedEnv.target_registry_id;
+            }
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
             const environmentId = state.environmentId;
-            const eligibleRegistries = environments.length > 0
-                ? registries.filter(reg => {
-                    if (reg.role !== 'target' && reg.role !== 'both') return false;
-                    const accessList = envAccessByRegistry.get(reg.id) || [];
-                    const access = accessList.find(a => a.environment_id === environmentId);
-                    return access?.is_enabled !== false;
-                })
-                : registries.filter(reg => reg.role === 'target' || reg.role === 'both');
 
             content.innerHTML = `
                 <div class="card">
@@ -5061,22 +4258,38 @@ router.on('/releases/new', async (params, query) => {
                                                 Some images are missing digests. Digest mode cannot be used.
                                             </div>
                                         ` : ''}
+                                        <div class="accordion mt-3" id="source-tag-override-accordion">
+                                            <div class="accordion-item">
+                                                <h2 class="accordion-header" id="source-tag-override-heading">
+                                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#source-tag-override-body">
+                                                        <i class="ti ti-alert-triangle me-2 text-warning"></i>
+                                                        Advanced: Source Tag Override (Tag mode only)
+                                                    </button>
+                                                </h2>
+                                                <div id="source-tag-override-body" class="accordion-collapse collapse" data-bs-parent="#source-tag-override-accordion">
+                                                    <div class="accordion-body">
+                                                        <label class="form-label">Source Tag Override</label>
+                                                        <input type="text" class="form-control" id="release-source-tag-override"
+                                                               value="${state.sourceTagOverride}"
+                                                               placeholder="2026.01.29.01">
+                                                        <div class="form-hint">
+                                                            Overrides the source tag for all images. Only available in Tag mode.
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label class="form-label required">Target Registry</label>
-                                    <select class="form-select" id="release-target-registry">
-                                        <option value="">Select target...</option>
-                                        ${eligibleRegistries.map(r => `
-                                            <option value="${r.id}" ${state.targetRegistryId === r.id ? 'selected' : ''}>
-                                                ${r.name} (${r.base_url})
-                                            </option>
-                                        `).join('')}
-                                    </select>
+                                    <label class="form-label">Target Registry</label>
+                                    <div class="form-control-plaintext">
+                                        ${targetRegistry ? `${targetRegistry.name} (${targetRegistry.base_url})` : '-'}
+                                    </div>
                                     <div class="form-hint">
-                                        ${targetRegistry ? `Project path: ${applyProjectPath('', targetRegistry, state.environmentId) || '-'}` : 'Project path: -'}
+                                        ${targetRegistry ? `Project path: ${applyProjectPath('', selectedEnv, 'target') || '-'}` : 'Project path: -'}
                                     </div>
                                 </div>
                                 ${environments.length > 0 ? `
@@ -5155,15 +4368,16 @@ router.on('/releases/new', async (params, query) => {
                                 </thead>
                                 <tbody>
                                     ${images.map((img, idx) => {
-                                        const basePath = applyProjectPath(img.target_image, targetRegistry, state.environmentId);
+                                        const basePath = applyProjectPath(img.target_image, selectedEnv, 'target');
                                         const renamed = applyRules(basePath);
                                         const override = state.overrides[idx]?.override_name || '';
                                         const finalPath = applyOverride(renamed, override);
+                                        const sourceTag = state.sourceTagOverride.trim() || img.target_tag;
                                         const sourceFull = state.sourceRefMode === 'digest'
                                             ? (img.target_sha256
                                                 ? `${sourceBase}/${img.target_image}@${img.target_sha256}`
                                                 : `${sourceBase}/${img.target_image}@<missing-digest>`)
-                                            : `${sourceBase}/${img.target_image}:${img.target_tag}`;
+                                            : `${sourceBase}/${img.target_image}:${sourceTag}`;
                                         const targetFull = targetBase ? `${targetBase}/${finalPath}:${state.releaseId || '<release_id>'}` : '-';
                                         return `
                                             <tr>
@@ -5200,28 +4414,10 @@ router.on('/releases/new', async (params, query) => {
                 </div>
             `;
 
-            document.getElementById('release-target-registry').addEventListener('change', (e) => {
-                state.targetRegistryId = e.target.value;
-                updatePreview();
-            });
             const envSelect = document.getElementById('release-environment');
             if (envSelect) {
                 envSelect.addEventListener('change', (e) => {
                     state.environmentId = e.target.value;
-                    const eligible = environments.length > 0
-                        ? registries.filter(reg => {
-                            if (reg.role !== 'target' && reg.role !== 'both') return false;
-                            const accessList = envAccessByRegistry.get(reg.id) || [];
-                            const access = accessList.find(a => a.environment_id === state.environmentId);
-                            return access?.is_enabled !== false;
-                        })
-                        : registries.filter(reg => reg.role === 'target' || reg.role === 'both');
-                    if (!eligible.find(r => r.id === state.targetRegistryId)) {
-                        state.targetRegistryId = '';
-                    }
-                    if (eligible.length === 0) {
-                        getApp().showError('Selected environment has no available target registry');
-                    }
                     render();
                 });
             }
@@ -5231,6 +4427,13 @@ router.on('/releases/new', async (params, query) => {
                     render();
                 });
             });
+            const sourceOverrideInput = document.getElementById('release-source-tag-override');
+            if (sourceOverrideInput) {
+                sourceOverrideInput.addEventListener('input', (e) => {
+                    state.sourceTagOverride = e.target.value;
+                    updatePreview();
+                });
+            }
             document.getElementById('release-id').addEventListener('input', (e) => {
                 state.releaseId = e.target.value;
                 updatePreview();
@@ -5277,7 +4480,7 @@ router.on('/releases/new', async (params, query) => {
 
             document.getElementById('release-create').addEventListener('click', async () => {
                 if (!state.targetRegistryId) {
-                    getApp().showError('Please select target registry');
+                    getApp().showError('Selected environment has no target registry');
                     return;
                 }
                 if (environments.length > 0 && !state.environmentId) {
@@ -5293,6 +4496,10 @@ router.on('/releases/new', async (params, query) => {
                     getApp().showError('Digest mode is not available because some images are missing digests');
                     return;
                 }
+                if (state.sourceRefMode === 'digest' && state.sourceTagOverride.trim()) {
+                    getApp().showError('Source tag override is only available in Tag mode');
+                    return;
+                }
 
                 const payload = {
                     source_copy_job_id: job.job_id,
@@ -5301,6 +4508,7 @@ router.on('/releases/new', async (params, query) => {
                     release_id: releaseId,
                     notes: state.notes || null,
                     source_ref_mode: state.sourceRefMode,
+                    source_tag_override: state.sourceTagOverride.trim() || null,
                     validate_only: state.validateOnly,
                     rename_rules: state.renameRules.filter(r => r.find),
                     overrides: state.overrides.filter(o => o.override_name),
@@ -5317,12 +4525,13 @@ router.on('/releases/new', async (params, query) => {
         };
 
         const updatePreview = () => {
+            const selectedEnv = environments.find(env => env.id === state.environmentId);
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
             document.querySelectorAll('[data-preview]').forEach(el => {
                 const idx = parseInt(el.getAttribute('data-index'), 10);
                 const sourcePath = el.getAttribute('data-source-path') || '';
-                const basePath = applyProjectPath(sourcePath, targetRegistry, state.environmentId);
+                const basePath = applyProjectPath(sourcePath, selectedEnv, 'target');
                 const renamed = applyRules(basePath);
                 const override = state.overrides[idx]?.override_name || '';
                 const finalPath = applyOverride(renamed, override);
@@ -5354,26 +4563,12 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [mappings, environments, sourceRegistry, targetRegistry, registries] = await Promise.all([
+        const [mappings, environments, registries] = await Promise.all([
             api.getImageMappings(params.id, params.version),
             bundle.tenant_id ? api.getEnvironments(bundle.tenant_id) : Promise.resolve([]),
-            bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : Promise.resolve(null),
-            bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : Promise.resolve(null),
             api.getRegistries(bundle.tenant_id).catch(() => []),
         ]);
         const registryMap = new Map((registries || []).map(r => [r.id, r]));
-        const envPathsByRegistry = new Map();
-        const envAccessByRegistry = new Map();
-        if ((registries || []).length > 0) {
-            await Promise.all((registries || []).map(async (reg) => {
-                const [paths, access] = await Promise.all([
-                    api.getRegistryEnvironmentPaths(reg.id).catch(() => []),
-                    api.getRegistryEnvironmentAccess(reg.id).catch(() => []),
-                ]);
-                envPathsByRegistry.set(reg.id, paths);
-                envAccessByRegistry.set(reg.id, access);
-            }));
-        }
 
         const autoTagEnabled = !!bundle.auto_tag_enabled;
 
@@ -5422,24 +4617,6 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                         <small class="form-hint">Required for environment-specific registry paths.</small>
                     </div>
 
-                    <div class="mb-3 d-none" id="registry-selection">
-                        <div class="row g-2">
-                            <div class="col-md-6">
-                                <label class="form-label required">Source Registry</label>
-                                <select class="form-select" id="copy-source-registry">
-                                    <option value="">Select...</option>
-                                </select>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label required">Target Registry</label>
-                                <select class="form-select" id="copy-target-registry">
-                                    <option value="">Select...</option>
-                                </select>
-                            </div>
-                        </div>
-                        <small class="form-hint">Shown only when multiple registries are enabled for the selected environment.</small>
-                    </div>
-
                     <div class="list-group mb-3" id="copy-preview-list">
                         <div class="list-group-item">
                             <strong>Images to copy:</strong>
@@ -5474,13 +4651,8 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             </div>
         `;
 
-        const applyProjectPath = (path, registry, envId, role = 'target') => {
-            const envPaths = registry?.id ? envPathsByRegistry.get(registry.id) : [];
-            const envOverride = envId
-                ? (envPaths || []).find(p => p.environment_id === envId)?.[`${role}_project_path_override`]
-                : null;
-            const rawDefault = (envOverride || registry?.default_project_path || '');
-            const defaultPath = rawDefault.trim().replace(/^\/+|\/+$/g, '');
+        const applyProjectPath = (path, projectPath) => {
+            const defaultPath = (projectPath || '').trim().replace(/^\/+|\/+$/g, '');
             if (!defaultPath) return path;
             const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
             if (!trimmed) return defaultPath;
@@ -5489,74 +4661,20 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             return `${defaultPath}/${rest}`;
         };
 
-        const getEnabledRegistryIds = (envId) => {
-            const enabled = [];
-            for (const reg of registries || []) {
-                const accessList = envAccessByRegistry.get(reg.id) || [];
-                const access = accessList.find(a => a.environment_id === envId);
-                if (access?.is_enabled === false) {
-                    continue;
-                }
-                enabled.push(reg.id);
-            }
-            return enabled;
-        };
-
-        const updateRegistrySelects = () => {
-            const envId = document.getElementById('environment-select')?.value || '';
-            const container = document.getElementById('registry-selection');
-            const sourceSelect = document.getElementById('copy-source-registry');
-            const targetSelect = document.getElementById('copy-target-registry');
-            if (!envId || !container || !sourceSelect || !targetSelect) return;
-
-            const enabledIds = getEnabledRegistryIds(envId);
-            if (enabledIds.length <= 1) {
-                container.classList.add('d-none');
-                if (enabledIds.length === 1) {
-                    container.dataset.sourceRegistryId = enabledIds[0];
-                    container.dataset.targetRegistryId = enabledIds[0];
-                    sourceSelect.value = enabledIds[0];
-                    targetSelect.value = enabledIds[0];
-                } else {
-                    container.dataset.sourceRegistryId = '';
-                    container.dataset.targetRegistryId = '';
-                    sourceSelect.value = '';
-                    targetSelect.value = '';
-                }
-                return;
-            }
-
-            container.classList.remove('d-none');
-            const options = enabledIds.map(id => {
-                const reg = registryMap.get(id);
-                return `<option value="${id}">${reg?.name || id}</option>`;
-            }).join('');
-            sourceSelect.innerHTML = `<option value=\"\">Select...</option>${options}`;
-            targetSelect.innerHTML = `<option value=\"\">Select...</option>${options}`;
-            container.dataset.sourceRegistryId = '';
-            container.dataset.targetRegistryId = '';
-        };
-
         const updatePreview = () => {
             const envId = document.getElementById('environment-select')?.value || '';
-            const sourceSelect = document.getElementById('copy-source-registry');
-            const targetSelect = document.getElementById('copy-target-registry');
-            const selectionBox = document.getElementById('registry-selection');
-            const fallbackSourceId = selectionBox?.dataset?.sourceRegistryId || sourceRegistry?.id;
-            const fallbackTargetId = selectionBox?.dataset?.targetRegistryId || targetRegistry?.id;
-            const sourceId = sourceSelect?.value || fallbackSourceId;
-            const targetId = targetSelect?.value || fallbackTargetId;
-            const sourceReg = sourceId ? registryMap.get(sourceId) : sourceRegistry;
-            const targetReg = targetId ? registryMap.get(targetId) : targetRegistry;
+            const env = environments.find(e => e.id === envId);
+            const sourceReg = env?.source_registry_id ? registryMap.get(env.source_registry_id) : null;
+            const targetReg = env?.target_registry_id ? registryMap.get(env.target_registry_id) : null;
             content.querySelectorAll('[data-preview-source]').forEach(el => {
                 const raw = el.getAttribute('data-preview-source') || '';
                 const tag = el.getAttribute('data-preview-source-tag') || '';
-                const path = applyProjectPath(raw, sourceReg, envId, 'source');
+                const path = applyProjectPath(raw, env?.source_project_path);
                 el.textContent = `${path}:${tag}`;
             });
             content.querySelectorAll('[data-preview-target]').forEach(el => {
                 const raw = el.getAttribute('data-preview-target') || '';
-                const path = applyProjectPath(raw, targetReg, envId, 'target');
+                const path = applyProjectPath(raw, env?.target_project_path);
                 const suffix = el.querySelector('span')?.outerHTML || '<span class="text-primary">[tag]</span>';
                 el.innerHTML = `${path}:${suffix}`;
             });
@@ -5605,16 +4723,13 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 getApp().showError('Please select an environment');
                 return null;
             }
-            const sourceSelect = document.getElementById('copy-source-registry');
-            const selectionBox = document.getElementById('registry-selection');
-            const sourceRegistryId = sourceSelect?.value || selectionBox?.dataset?.sourceRegistryId || null;
             const btn = document.getElementById('precheck-btn');
             if (btn) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
             }
             try {
-                const result = await api.precheckCopyImages(params.id, params.version, envId, sourceRegistryId);
+                const result = await api.precheckCopyImages(params.id, params.version, envId, null);
                 renderPrecheck(result);
                 return result;
             } catch (error) {
@@ -5636,10 +4751,8 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
         const envSelect = document.getElementById('environment-select');
         if (envSelect) {
             envSelect.addEventListener('change', () => {
-                updateRegistrySelects();
                 updatePreview();
             });
-            updateRegistrySelects();
             updatePreview();
         }
 
@@ -5665,17 +4778,6 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 getApp().showError('Please select an environment');
                 return;
             }
-            const sourceSelect = document.getElementById('copy-source-registry');
-            const targetSelect = document.getElementById('copy-target-registry');
-            const selectionBox = document.getElementById('registry-selection');
-            const sourceRegistryId = sourceSelect?.value || selectionBox?.dataset?.sourceRegistryId || null;
-            const targetRegistryId = targetSelect?.value || selectionBox?.dataset?.targetRegistryId || null;
-            if (selectionBox && !selectionBox.classList.contains('d-none')) {
-                if (!sourceRegistryId || !targetRegistryId) {
-                    getApp().showError('Please select source and target registries');
-                    return;
-                }
-            }
 
             const precheck = await runPrecheck();
             if (precheck && precheck.failed && precheck.failed.length > 0) {
@@ -5695,8 +4797,8 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                     targetTag,
                     tzOffset,
                     envId,
-                    sourceRegistryId,
-                    targetRegistryId,
+                    null,
+                    null,
                 );
                 getApp().showSuccess('Copy job created. Click Start to run.');
                 router.navigate(`/copy-jobs/${response.job_id}`);
@@ -6159,16 +5261,18 @@ router.on('/copy-jobs', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [jobs, registries, bundles] = await Promise.all([
+        const [jobs, registries, bundles, tenants] = await Promise.all([
             api.getCopyJobs(),
             api.getRegistries(),
             api.getBundles(),
+            api.getTenants(),
         ]);
         const registryMap = {};
         registries.forEach(r => {
             registryMap[r.id] = r;
         });
         const bundleMap = new Map(bundles.map(b => [b.id, b]));
+        const tenantMap = new Map(tenants.map(t => [t.id, t]));
         const tenantIds = [...new Set(bundles.map(b => b.tenant_id).filter(Boolean))];
         const environmentLists = await Promise.all(
             tenantIds.map(id => api.getEnvironments(id).catch(() => []))
@@ -6178,7 +5282,7 @@ router.on('/copy-jobs', async () => {
             environmentMap.set(env.id, env);
         });
 
-        const renderJobs = (rows) => `
+        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '') => `
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Copy Jobs</h3>
@@ -6191,19 +5295,28 @@ router.on('/copy-jobs', async () => {
                 </div>
                 <div class="card-body">
                     <div class="row g-2 align-items-end">
-                        <div class="col-sm-4">
+                        <div class="col-sm-3">
+                            <label class="form-label">Tenant</label>
+                            <select class="form-select" id="copy-jobs-tenant">
+                                <option value="">All Tenants</option>
+                                ${tenants.map(t => `
+                                    <option value="${t.id}" ${t.id === selectedTenant ? 'selected' : ''}>${t.name}</option>
+                                `).join('')}
+                            </select>
+                        </div>
+                        <div class="col-sm-3">
                             <label class="form-label">Status</label>
                             <select class="form-select" id="copy-jobs-status">
                                 <option value="">All</option>
-                                <option value="in_progress">in_progress</option>
-                                <option value="pending">pending</option>
-                                <option value="success">success</option>
-                                <option value="failed">failed</option>
+                                <option value="in_progress" ${selectedStatus === 'in_progress' ? 'selected' : ''}>in_progress</option>
+                                <option value="pending" ${selectedStatus === 'pending' ? 'selected' : ''}>pending</option>
+                                <option value="success" ${selectedStatus === 'success' ? 'selected' : ''}>success</option>
+                                <option value="failed" ${selectedStatus === 'failed' ? 'selected' : ''}>failed</option>
                             </select>
                         </div>
-                        <div class="col-sm-8">
+                        <div class="col-sm-6">
                             <label class="form-label">Search</label>
-                            <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id">
+                            <input class="form-control" id="copy-jobs-search" placeholder="Bundle name or job id" value="${searchQuery}">
                         </div>
                     </div>
                 </div>
@@ -6212,6 +5325,7 @@ router.on('/copy-jobs', async () => {
                         <thead>
                             <tr>
                                 <th>Job ID</th>
+                                <th>Tenant</th>
                                 <th>Bundle</th>
                                 <th>Version</th>
                                 <th>Target Tag</th>
@@ -6222,13 +5336,14 @@ router.on('/copy-jobs', async () => {
                         <tbody>
                             ${rows.length === 0 ? `
                                 <tr>
-                                    <td colspan="6" class="text-center text-secondary py-5">
+                                    <td colspan="7" class="text-center text-secondary py-5">
                                         No copy jobs yet. Start one from a bundle version.
                                     </td>
                                 </tr>
                             ` : rows.map(job => `
                                 <tr>
                                     <td><a href="#/copy-jobs/${job.job_id}"><code class="small">${job.job_id}</code></a></td>
+                                    <td>${job.tenant_name ? `<a href="#/tenants/${job.tenant_id}">${job.tenant_name}</a>` : '-'}</td>
                                     <td>
                                         <div><a href="#/bundles/${job.bundle_id}">${job.bundle_name}</a></div>
                                         <div class="text-secondary small"><code class="small">${job.bundle_id}</code></div>
@@ -6275,23 +5390,39 @@ router.on('/copy-jobs', async () => {
             </div>
         `;
 
-        content.innerHTML = renderJobs(jobs);
+        const hydratedJobs = jobs.map(job => {
+            const bundle = bundleMap.get(job.bundle_id);
+            const tenantId = bundle?.tenant_id || null;
+            const tenantName = tenantId ? tenantMap.get(tenantId)?.name || '' : '';
+            return {
+                ...job,
+                tenant_id: tenantId,
+                tenant_name: tenantName,
+            };
+        });
+
+        content.innerHTML = renderJobs(hydratedJobs);
+        const tenantEl = document.getElementById('copy-jobs-tenant');
         const statusEl = document.getElementById('copy-jobs-status');
         const searchEl = document.getElementById('copy-jobs-search');
 
         const applyFilters = () => {
+            const tenantId = tenantEl.value;
             const status = statusEl.value;
             const q = searchEl.value.trim().toLowerCase();
-            const filtered = jobs.filter(job => {
+            const filtered = hydratedJobs.filter(job => {
+                const tenantOk = !tenantId || job.tenant_id === tenantId;
                 const statusOk = !status || job.status === status;
                 const searchOk = !q || job.bundle_name.toLowerCase().includes(q) || job.job_id.toLowerCase().includes(q);
-                return statusOk && searchOk;
+                return tenantOk && statusOk && searchOk;
             });
-            content.innerHTML = renderJobs(filtered);
+            content.innerHTML = renderJobs(filtered, q, status, tenantId);
+            document.getElementById('copy-jobs-tenant').value = tenantId;
             document.getElementById('copy-jobs-status').value = status;
             document.getElementById('copy-jobs-search').value = q;
         };
 
+        tenantEl.addEventListener('change', applyFilters);
         statusEl.addEventListener('change', applyFilters);
         searchEl.addEventListener('input', applyFilters);
     } catch (error) {
@@ -6539,28 +5670,17 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         return;
     }
 
-    let targets = [];
+    let environments = [];
     try {
-        targets = await api.getDeployTargets(tenantId);
+        environments = await api.getEnvironments(tenantId);
     } catch (error) {
-        getApp().showError(`Failed to load deploy targets: ${error.message}`);
+        getApp().showError(`Failed to load environments: ${error.message}`);
         return;
     }
 
-    const envOptions = targets.flatMap(t => (t.envs || []).map(env => ({
-        deploy_target_env_id: env.id,
-        deploy_target_id: t.id,
-        environment_id: env.environment_id,
-        name: t.name,
-        env_name: env.env_name || env.env_slug,
-        env_slug: env.env_slug || env.env_name,
-        append_env_suffix: env.append_env_suffix,
-        allow_auto_release: env.allow_auto_release,
-        is_active: env.is_active,
-    })));
-    const eligible = envOptions.filter(t => t.allow_auto_release && t.is_active !== false);
+    const eligible = environments.filter(env => env.allow_auto_release);
     if (eligible.length === 0) {
-        getApp().showError('No deploy targets allow auto release');
+        getApp().showError('No environments allow auto release');
         return;
     }
 
@@ -6569,13 +5689,13 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
             <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
                 <div class="modal-content">
                     <div class="modal-body">
-                        <div class="modal-title" id="auto-deploy-title">Deploy Target</div>
+                        <div class="modal-title" id="auto-deploy-title">Environment</div>
                         <div class="mt-2">
-                            <label class="form-label">Deploy Target</label>
+                            <label class="form-label">Environment</label>
                             <select class="form-select" id="auto-deploy-select">
                                 <option value="">Select...</option>
-                                ${eligible.map(t => `
-                                    <option value="${t.deploy_target_env_id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
+                                ${eligible.map(env => `
+                                    <option value="${env.id}">${env.name} (${env.slug})</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -6622,33 +5742,33 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
 
     const updateTitle = (target) => {
         if (!target) {
-            titleEl.textContent = 'Deploy Target';
+            titleEl.textContent = 'Environment';
             if (labelEl) {
-                labelEl.textContent = 'Deploy Target';
+                labelEl.textContent = 'Environment';
             }
             return;
         }
-        const tagSuffix = target.env_slug || target.env_name;
+        const tagSuffix = target.slug || target.name;
         const tagPreview = targetTag
             ? (target.append_env_suffix ? `${targetTag}-${tagSuffix}` : targetTag)
             : null;
-        titleEl.textContent = 'Deploy Target';
+        titleEl.textContent = 'Environment';
         if (labelEl) {
-            labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
+            labelEl.textContent = tagPreview ? `Environment (tag: ${tagPreview})` : 'Environment';
         }
     };
 
     if (copyJobEnvId) {
-        const match = eligible.find(t => t.environment_id === copyJobEnvId);
+        const match = eligible.find(t => t.id === copyJobEnvId);
         if (match) {
-            select.value = match.deploy_target_env_id;
+            select.value = match.id;
             confirmBtn.disabled = false;
             updateTitle(match);
         }
     }
 
     select.addEventListener('change', () => {
-        const target = eligible.find(t => t.deploy_target_env_id === select.value);
+        const target = eligible.find(t => t.id === select.value);
         confirmBtn.disabled = !target;
         updateTitle(target);
     });
@@ -6813,10 +5933,10 @@ async function runSelectiveCopyFromJob(copyJobId, bundle) {
     });
 }
 
-async function runDeployFromRelease(release, deployTargets) {
-    const eligible = deployTargets.filter(t => t.is_active !== false);
+async function runDeployFromRelease(release, environments) {
+    const eligible = environments || [];
     if (eligible.length === 0) {
-        getApp().showError('No active deploy targets for this release');
+        getApp().showError('No environments available for this release');
         return;
     }
 
@@ -6825,13 +5945,13 @@ async function runDeployFromRelease(release, deployTargets) {
             <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
                 <div class="modal-content">
                     <div class="modal-body">
-                        <div class="modal-title" id="release-deploy-title">Deploy Target</div>
+                        <div class="modal-title" id="release-deploy-title">Environment</div>
                         <div class="mt-2">
-                            <label class="form-label">Deploy Target</label>
+                            <label class="form-label">Environment</label>
                             <select class="form-select" id="release-deploy-select">
                                 <option value="">Select...</option>
-                                ${eligible.map(t => `
-                                    <option value="${t.deploy_target_env_id}">${formatTargetWithEnv(t.name, t.env_name)}</option>
+                                ${eligible.map(env => `
+                                    <option value="${env.id}">${env.name} (${env.slug})</option>
                                 `).join('')}
                             </select>
                         </div>
@@ -6878,33 +5998,33 @@ async function runDeployFromRelease(release, deployTargets) {
 
     const updateTitle = (target) => {
         if (!target) {
-            titleEl.textContent = 'Deploy Target';
+            titleEl.textContent = 'Environment';
             if (labelEl) {
-                labelEl.textContent = 'Deploy Target';
+                labelEl.textContent = 'Environment';
             }
             return;
         }
-        const tagSuffix = target.env_slug || target.env_name;
+        const tagSuffix = target.slug || target.name;
         const tagPreview = release?.release_id
             ? (target.append_env_suffix ? `${release.release_id}-${tagSuffix}` : release.release_id)
             : null;
-        titleEl.textContent = 'Deploy Target';
+        titleEl.textContent = 'Environment';
         if (labelEl) {
-            labelEl.textContent = tagPreview ? `Deploy Target (tag: ${tagPreview})` : 'Deploy Target';
+            labelEl.textContent = tagPreview ? `Environment (tag: ${tagPreview})` : 'Environment';
         }
     };
 
     if (release?.environment_id) {
-        const match = eligible.find(t => t.environment_id === release.environment_id);
+        const match = eligible.find(t => t.id === release.environment_id);
         if (match) {
-            select.value = match.deploy_target_env_id;
+            select.value = match.id;
             confirmBtn.disabled = false;
             updateTitle(match);
         }
     }
 
     select.addEventListener('change', () => {
-        const target = eligible.find(t => t.deploy_target_env_id === select.value);
+        const target = eligible.find(t => t.id === select.value);
         confirmBtn.disabled = !target;
         updateTitle(target);
     });
@@ -6929,7 +6049,7 @@ async function runDeployFromRelease(release, deployTargets) {
         try {
             const response = await api.createDeployJob({
                 release_id: release.id,
-                deploy_target_env_id: targetEnvId,
+                environment_id: targetEnvId,
                 dry_run: dryRun,
             });
             getApp().showSuccess('Deploy job started');

@@ -16,7 +16,7 @@ use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
 use crate::crypto;
-use crate::db::models::{Bundle, CopyJobImage, ImageMapping, Registry};
+use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registry};
 use crate::services::skopeo::SkopeoCredentials;
 use crate::services::SkopeoService;
 
@@ -122,6 +122,7 @@ pub struct ReleaseCopyRequest {
     pub release_id: String,
     pub notes: Option<String>,
     pub source_ref_mode: Option<String>,
+    pub source_tag_override: Option<String>,
     pub validate_only: Option<bool>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
@@ -165,6 +166,51 @@ impl CopyApiState {
         environment_id: Option<Uuid>,
     ) -> Result<(Option<String>, Option<String>), anyhow::Error> {
         if let Some(env_id) = environment_id {
+            let env_row = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>)>(
+                r#"
+                SELECT
+                    source_registry_id,
+                    target_registry_id,
+                    source_auth_type,
+                    source_username,
+                    source_password_encrypted,
+                    source_token_encrypted,
+                    target_auth_type,
+                    target_username,
+                    target_password_encrypted,
+                    target_token_encrypted
+                FROM environments WHERE id = $1
+                "#,
+            )
+            .bind(env_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some((source_registry_id, target_registry_id, source_auth_type, source_username, source_password_encrypted, source_token_encrypted, target_auth_type, target_username, target_password_encrypted, target_token_encrypted)) = env_row {
+                if source_registry_id == Some(registry_id) {
+                    if let Some(auth_type) = source_auth_type {
+                        return Ok(decrypt_registry_credentials(
+                            &auth_type,
+                            source_username,
+                            source_password_encrypted,
+                            source_token_encrypted,
+                            &self.encryption_secret,
+                        )?);
+                    }
+                }
+                if target_registry_id == Some(registry_id) {
+                    if let Some(auth_type) = target_auth_type {
+                        return Ok(decrypt_registry_credentials(
+                            &auth_type,
+                            target_username,
+                            target_password_encrypted,
+                            target_token_encrypted,
+                            &self.encryption_secret,
+                        )?);
+                    }
+                }
+            }
+
             let env_creds = sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
                 "SELECT auth_type, username, password_encrypted, token_encrypted FROM environment_registry_credentials WHERE registry_id = $1 AND environment_id = $2",
             )
@@ -502,12 +548,57 @@ async fn copy_bundle_version(
     }
 
     // Získat registries pro URL construction
-    let source_registry_id = payload
+    if payload.environment_id.is_none() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        ));
+    }
+    let environment_id = payload.environment_id;
+
+    let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+        .bind(environment_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Environment not found".to_string(),
+                }),
+            )
+        })?;
+
+    let source_registry_id = environment
         .source_registry_id
-        .unwrap_or(bundle.source_registry_id);
-    let target_registry_id = payload
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Environment is missing source registry".to_string(),
+                }),
+            )
+        })?;
+    let target_registry_id = environment
         .target_registry_id
-        .unwrap_or(bundle.target_registry_id);
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Environment is missing target registry".to_string(),
+                }),
+            )
+        })?;
 
     let source_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
@@ -538,44 +629,6 @@ async fn copy_bundle_version(
             }),
         )
     })?;
-
-    if !is_registry_enabled_for_env(&state.pool, source_registry_id, payload.environment_id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to verify source registry access: {}", e),
-                }),
-            )
-        })?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Selected source registry is disabled for this environment".to_string(),
-            }),
-        ));
-    }
-
-    if !is_registry_enabled_for_env(&state.pool, target_registry_id, payload.environment_id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to verify target registry access: {}", e),
-                }),
-            )
-        })?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Selected target registry is disabled for this environment".to_string(),
-            }),
-        ));
-    }
 
     let target_tag = if bundle.auto_tag_enabled {
         let date = local_date_from_offset(payload.timezone_offset_minutes);
@@ -647,37 +700,8 @@ async fn copy_bundle_version(
         )
     })?;
 
-    let source_project_path = resolve_registry_project_path(
-        &state.pool,
-        source_registry_id,
-        payload.environment_id,
-        "source",
-    )
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to resolve source registry path: {}", e),
-            }),
-        )
-    })?;
-
-    let target_project_path = resolve_registry_project_path(
-        &state.pool,
-        target_registry_id,
-        payload.environment_id,
-        "target",
-    )
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to resolve target registry path: {}", e),
-            }),
-        )
-    })?;
+    let source_project_path = environment.source_project_path.clone();
+    let target_project_path = environment.target_project_path.clone();
 
     // Vytvořit snapshot image mappings pro tento job
     for mapping in &mappings {
@@ -836,9 +860,46 @@ async fn precheck_copy_images(
         }));
     }
 
-    let source_registry_id = payload
+    let environment_id = payload.environment_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        )
+    })?;
+
+    let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+        .bind(environment_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Environment not found".to_string(),
+                }),
+            )
+        })?;
+
+    let source_registry_id = environment
         .source_registry_id
-        .unwrap_or(bundle.source_registry_id);
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "Environment is missing source registry".to_string(),
+                }),
+            )
+        })?;
 
     let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
         .bind(source_registry_id)
@@ -862,7 +923,7 @@ async fn precheck_copy_images(
         })?;
 
     let (source_username, source_password) = state
-        .get_registry_credentials(source_registry_id, payload.environment_id)
+        .get_registry_credentials(source_registry_id, Some(environment_id))
         .await
         .map_err(|e| {
             (
@@ -879,51 +940,7 @@ async fn precheck_copy_images(
         .trim_start_matches("http://")
         .to_string();
 
-    if payload.environment_id.is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Environment is required".to_string(),
-            }),
-        ));
-    }
-
-    let environment_id = payload.environment_id;
-
-    if !is_registry_enabled_for_env(&state.pool, source_registry_id, environment_id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to verify registry access: {}", e),
-                }),
-            )
-        })?
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Selected source registry is disabled for this environment".to_string(),
-            }),
-        ));
-    }
-
-    let source_project_path = resolve_registry_project_path(
-        &state.pool,
-        source_registry_id,
-        environment_id,
-        "source",
-    )
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to load source registry path: {}", e),
-            }),
-        )
-    })?;
+    let source_project_path = environment.source_project_path.clone();
 
     let total = mappings.len();
     let mut failed = Vec::new();
@@ -1004,6 +1021,29 @@ async fn start_release_copy_job(
         source_ref_mode: Some(source_ref_mode.clone()),
         ..payload
     };
+    let environment_id = payload.environment_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        )
+    })?;
+    let source_tag_override = payload
+        .source_tag_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    if source_ref_mode == "digest" && source_tag_override.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source tag override is only allowed in tag mode".to_string(),
+            }),
+        ));
+    }
 
     // Release ID musí být unikátní
     let release_exists = sqlx::query_scalar::<_, bool>(
@@ -1132,89 +1172,62 @@ async fn start_release_copy_job(
         }
     }
 
-    let target_project_path = if let Some(env_id) = payload.environment_id {
-        let override_path = sqlx::query_scalar::<_, Option<String>>(
-            r#"
-            SELECT project_path_override
-            FROM environment_registry_paths
-            WHERE registry_id = $1 AND environment_id = $2 AND role = 'target'
-            "#,
-        )
-        .bind(payload.target_registry_id)
-        .bind(env_id)
+    let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+        .bind(environment_id)
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
-                    error: format!("Failed to load target registry: {}", e),
+                    error: format!("Database error: {}", e),
                 }),
             )
         })?
-        .flatten();
-
-        if override_path.is_some() {
-            override_path
-        } else {
-            sqlx::query_scalar::<_, Option<String>>(
-                "SELECT default_project_path FROM registries WHERE id = $1",
-            )
-            .bind(payload.target_registry_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: format!("Failed to load target registry: {}", e),
-                    }),
-                )
-            })?
-            .flatten()
-        }
-    } else {
-        sqlx::query_scalar::<_, Option<String>>(
-            "SELECT default_project_path FROM registries WHERE id = $1",
-        )
-        .bind(payload.target_registry_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
+        .ok_or_else(|| {
             (
-                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::NOT_FOUND,
                 Json(ErrorResponse {
-                    error: format!("Failed to load target registry: {}", e),
-                }),
-            )
-        })?
-        .flatten()
-    };
-
-    if target_project_path.is_none() {
-        let registry_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM registries WHERE id = $1)",
-        )
-        .bind(payload.target_registry_id)
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to verify target registry: {}", e),
+                    error: "Environment not found".to_string(),
                 }),
             )
         })?;
 
-        if !registry_exists {
-            return Err((
-                StatusCode::NOT_FOUND,
+    let target_registry_id = environment
+        .target_registry_id
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
                 Json(ErrorResponse {
-                    error: "Target registry not found".to_string(),
+                    error: "Environment is missing target registry".to_string(),
                 }),
-            ));
-        }
+            )
+        })?;
+
+    let target_project_path = environment.target_project_path.clone();
+
+    let registry_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM registries WHERE id = $1)",
+    )
+    .bind(target_registry_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to verify target registry: {}", e),
+            }),
+        )
+    })?;
+
+    if !registry_exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Target registry not found".to_string(),
+            }),
+        ));
     }
 
     // Připravit override map
@@ -1238,12 +1251,12 @@ async fn start_release_copy_job(
     .bind(bundle_version_id)
     .bind(&release_id)
     .bind(source_registry_id)
-    .bind(payload.target_registry_id)
+    .bind(target_registry_id)
     .bind(&source_ref_mode)
     .bind(&release_id)
     .bind(&payload.notes)
     .bind(validate_only)
-    .bind(payload.environment_id)
+    .bind(Some(environment_id))
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1271,6 +1284,10 @@ async fn start_release_copy_job(
         } else {
             None
         };
+        let source_tag = source_tag_override
+            .as_deref()
+            .unwrap_or(&img.target_tag)
+            .to_string();
 
         let copy_job_image_id: Uuid = sqlx::query_scalar(
             "INSERT INTO copy_job_images
@@ -1281,7 +1298,7 @@ async fn start_release_copy_job(
         .bind(job_id)
         .bind(img.image_mapping_id)
         .bind(&img.target_image)
-        .bind(&img.target_tag)
+        .bind(&source_tag)
         .bind(&target_path)
         .bind(&release_id)
         .bind(&source_sha)
@@ -1299,7 +1316,7 @@ async fn start_release_copy_job(
         job_images.push((
             copy_job_image_id,
             img.target_image.clone(),
-            img.target_tag.clone(),
+            source_tag,
             target_path,
         ));
     }

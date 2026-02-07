@@ -344,131 +344,6 @@ function createRegistryForm(registry = null, tenants = [], environments = [], en
                     </div>
                 </div>
 
-                ${environments.length > 0 ? `
-                <hr class="my-4">
-                <h4>Environment settings</h4>
-                <div class="text-secondary small mb-2">
-                    Configure availability, project paths, and credentials per environment.
-                    Leave paths empty to use defaults. For credentials, leave password/token blank to keep existing.
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-vcenter table-sm">
-                        <thead>
-                            <tr>
-                                <td class="w-1"></td>
-                                ${environments.map(env => `
-                                    <td>
-                                        <div class="d-flex flex-column gap-1">
-                                            <span class="badge env-badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                                            <span class="text-secondary small">${env.slug}</span>
-                                        </div>
-                                    </td>
-                                `).join('')}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr>
-                                <td class="text-secondary small">Available</td>
-                                ${environments.map(env => {
-                                    const enabled = envAccessMap.has(env.id) ? envAccessMap.get(env.id) : true;
-                                    return `
-                                    <td>
-                                        <label class="form-check m-0">
-                                            <input class="form-check-input env-access-toggle" type="checkbox" data-env-id="${env.id}" ${enabled ? 'checked' : ''}>
-                                        </label>
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Source path</td>
-                                ${environments.map(env => {
-                                    const envPaths = envPathMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <input type="text" class="form-control form-control-sm env-project-path"
-                                               data-env-id="${env.id}" data-role="source"
-                                               value="${envPaths.source || ''}"
-                                               placeholder="source path">
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Target path</td>
-                                ${environments.map(env => {
-                                    const envPaths = envPathMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <input type="text" class="form-control form-control-sm env-project-path"
-                                               data-env-id="${env.id}" data-role="target"
-                                               value="${envPaths.target || ''}"
-                                               placeholder="target path">
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Auth type</td>
-                                ${environments.map(env => {
-                                    const envCred = envCredMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <select class="form-select form-select-sm env-cred-auth" data-env-id="${env.id}">
-                                            <option value="">Use default</option>
-                                            ${authTypes.map(type => `
-                                                <option value="${type.value}" ${envCred.auth_type === type.value ? 'selected' : ''}>${type.label}</option>
-                                            `).join('')}
-                                        </select>
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Username</td>
-                                ${environments.map(env => {
-                                    const envCred = envCredMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <input type="text" class="form-control form-control-sm env-cred-username"
-                                               data-env-id="${env.id}"
-                                               placeholder="username"
-                                               value="${envCred.username || ''}">
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Password</td>
-                                ${environments.map(env => {
-                                    const envCred = envCredMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <input type="password" class="form-control form-control-sm env-cred-password"
-                                               data-env-id="${env.id}"
-                                               placeholder="${envCred.has_password ? 'Leave blank to keep' : 'password'}">
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                            <tr>
-                                <td class="text-secondary small">Token</td>
-                                ${environments.map(env => {
-                                    const envCred = envCredMap.get(env.id) || {};
-                                    return `
-                                    <td>
-                                        <input type="password" class="form-control form-control-sm env-cred-token"
-                                               data-env-id="${env.id}"
-                                               placeholder="${envCred.has_token ? 'Leave blank to keep' : 'token'}">
-                                    </td>
-                                    `;
-                                }).join('')}
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-                ` : ''}
-
                 <hr class="my-4">
                 <h4>Authentication</h4>
 
@@ -644,8 +519,30 @@ function createGitRepoForm(repo = null, tenants = []) {
 /**
  * Vytvoří environment form
  */
-function createEnvironmentForm(environment = null, tenants = []) {
+function createEnvironmentForm(environment = null, tenants = [], registries = [], gitRepos = []) {
     const isEdit = !!environment;
+    const sourceRegistries = registries.filter(r => r.role === 'source' || r.role === 'both');
+    const targetRegistries = registries.filter(r => r.role === 'target' || r.role === 'both');
+    const authTypes = [
+        { value: '', label: 'Use registry default' },
+        { value: 'basic', label: 'Basic (user:pass)' },
+        { value: 'token', label: 'Token (user:token)' },
+        { value: 'bearer', label: 'Bearer (token)' },
+    ];
+    const releaseModes = [
+        { value: 'match_digest', label: 'Match digest (recommended)' },
+        { value: 'match_tag', label: 'Match tag' },
+        { value: 'strict_digest', label: 'Strict digest only' },
+        { value: 'strict_tag', label: 'Strict tag only' },
+    ];
+    const envVarRows = environment?.release_env_var_mappings
+        ? Object.entries(environment.release_env_var_mappings).map(([source_key, target_key]) => ({ source_key, target_key }))
+        : [];
+    const extraVarRows = environment?.extra_env_vars
+        ? Object.entries(environment.extra_env_vars).map(([key, value]) => ({ key, value }))
+        : [];
+    const envVarList = envVarRows.length > 0 ? envVarRows : [{ source_key: '', target_key: '' }];
+    const extraVarList = extraVarRows.length > 0 ? extraVarRows : [{ key: '', value: '' }];
     return `
         <form id="environment-form" class="card" data-env-mode="${isEdit ? 'edit' : 'new'}">
             <div class="card-header">
@@ -701,6 +598,213 @@ function createEnvironmentForm(environment = null, tenants = []) {
                         </div>
                     </div>
                     <small class="form-hint">Optional label color (hex). Used for environment badges.</small>
+                </div>
+
+                <hr class="my-4">
+                <h4>Registries</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label required">Source Registry</label>
+                        <select class="form-select" name="source_registry_id" required>
+                            <option value="">Select source...</option>
+                            ${sourceRegistries.map(r => `
+                                <option value="${r.id}" ${environment?.source_registry_id === r.id ? 'selected' : ''}>
+                                    ${r.name} (${r.base_url})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div class="form-hint">Registry used as source for copy jobs.</div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label required">Target Registry</label>
+                        <select class="form-select" name="target_registry_id" required>
+                            <option value="">Select target...</option>
+                            ${targetRegistries.map(r => `
+                                <option value="${r.id}" ${environment?.target_registry_id === r.id ? 'selected' : ''}>
+                                    ${r.name} (${r.base_url})
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div class="form-hint">Registry used as target for copy jobs and releases.</div>
+                    </div>
+                </div>
+
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6">
+                        <label class="form-label">Source Project Path</label>
+                        <input type="text" class="form-control" name="source_project_path"
+                               value="${environment?.source_project_path || ''}"
+                               placeholder="project/path">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Target Project Path</label>
+                        <input type="text" class="form-control" name="target_project_path"
+                               value="${environment?.target_project_path || ''}"
+                               placeholder="project/path">
+                    </div>
+                </div>
+
+                <hr class="my-4">
+                <h4>Registry Credentials (override)</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="mb-2 fw-semibold">Source credentials</div>
+                        <select class="form-select mb-2" name="source_auth_type">
+                            ${authTypes.map(t => `
+                                <option value="${t.value}" ${environment?.source_auth_type === t.value ? 'selected' : ''}>${t.label}</option>
+                            `).join('')}
+                        </select>
+                        <input type="text" class="form-control mb-2" name="source_username" placeholder="username"
+                               value="${environment?.source_username || ''}">
+                        <input type="password" class="form-control mb-2" name="source_password" placeholder="password (leave blank to keep)">
+                        <input type="password" class="form-control" name="source_token" placeholder="token (leave blank to keep)">
+                    </div>
+                    <div class="col-md-6">
+                        <div class="mb-2 fw-semibold">Target credentials</div>
+                        <select class="form-select mb-2" name="target_auth_type">
+                            ${authTypes.map(t => `
+                                <option value="${t.value}" ${environment?.target_auth_type === t.value ? 'selected' : ''}>${t.label}</option>
+                            `).join('')}
+                        </select>
+                        <input type="text" class="form-control mb-2" name="target_username" placeholder="username"
+                               value="${environment?.target_username || ''}">
+                        <input type="password" class="form-control mb-2" name="target_password" placeholder="password (leave blank to keep)">
+                        <input type="password" class="form-control" name="target_token" placeholder="token (leave blank to keep)">
+                    </div>
+                </div>
+
+                <hr class="my-4">
+                <h4>Git Repositories</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label required">Environment Repo</label>
+                        <select class="form-select" name="env_repo_id" required>
+                            <option value="">Select repository...</option>
+                            ${gitRepos.map(repo => `
+                                <option value="${repo.id}" ${environment?.env_repo_id === repo.id ? 'selected' : ''}>
+                                    ${repo.name}
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div class="row g-2 mt-2">
+                            <div class="col-md-6">
+                                <label class="form-label">Repo path</label>
+                                <input type="text" class="form-control" name="env_repo_path"
+                                       value="${environment?.env_repo_path || ''}"
+                                       placeholder="dev / test / prod">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Repo branch</label>
+                                <input type="text" class="form-control" name="env_repo_branch"
+                                       value="${environment?.env_repo_branch || ''}"
+                                       placeholder="main">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label required">Deploy Repo</label>
+                        <select class="form-select" name="deploy_repo_id" required>
+                            <option value="">Select repository...</option>
+                            ${gitRepos.map(repo => `
+                                <option value="${repo.id}" ${environment?.deploy_repo_id === repo.id ? 'selected' : ''}>
+                                    ${repo.name}
+                                </option>
+                            `).join('')}
+                        </select>
+                        <div class="row g-2 mt-2">
+                            <div class="col-md-6">
+                                <label class="form-label">Repo path</label>
+                                <input type="text" class="form-control" name="deploy_repo_path"
+                                       value="${environment?.deploy_repo_path || ''}"
+                                       placeholder="deploy/dev">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Repo branch</label>
+                                <input type="text" class="form-control" name="deploy_repo_branch"
+                                       value="${environment?.deploy_repo_branch || ''}"
+                                       placeholder="main">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="my-4">
+                <h4>Deploy Options</h4>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-check">
+                            <input class="form-check-input" type="checkbox" name="allow_auto_release" ${environment?.allow_auto_release ? 'checked' : ''}>
+                            <span class="form-check-label">Allow auto release</span>
+                        </label>
+                        <label class="form-check mt-2">
+                            <input class="form-check-input" type="checkbox" name="append_env_suffix" ${environment?.append_env_suffix ? 'checked' : ''}>
+                            <span class="form-check-label">Append env suffix to release tag</span>
+                        </label>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Release manifest mode</label>
+                        <select class="form-select" name="release_manifest_mode">
+                            ${releaseModes.map(m => `
+                                <option value="${m.value}" ${environment?.release_manifest_mode === m.value ? 'selected' : ''}>${m.label}</option>
+                            `).join('')}
+                        </select>
+                        <label class="form-label mt-2">Encjson key dir</label>
+                        <input type="text" class="form-control" name="encjson_key_dir"
+                               value="${environment?.encjson_key_dir || ''}"
+                               placeholder="~/.config/encjson">
+                    </div>
+                </div>
+
+                <hr class="my-4">
+                <h4>Release Env Var Mappings</h4>
+                <div id="env-var-mappings">
+                    ${envVarList.map((row, idx) => `
+                        <div class="row g-2 mb-2" data-env-var-index="${idx}">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control env-var-source" placeholder="SIMPLE_RELEASE_ID"
+                                       value="${row.source_key}">
+                            </div>
+                            <div class="col-md-5">
+                                <input type="text" class="form-control env-var-target" placeholder="TSM_RELEASE_ID"
+                                       value="${row.target_key}">
+                            </div>
+                            <div class="col-md-2">
+                                <button type="button" class="btn btn-outline-danger w-100 env-var-remove">
+                                    <i class="ti ti-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="env-var-add">
+                        <i class="ti ti-plus"></i>
+                        Add mapping
+                    </button>
+                </div>
+
+                <hr class="my-4">
+                <h4>Extra Env Vars</h4>
+                <div id="extra-env-vars">
+                    ${extraVarList.map((row, idx) => `
+                        <div class="row g-2 mb-2" data-extra-var-index="${idx}">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control extra-var-key" placeholder="KEY"
+                                       value="${row.key}">
+                            </div>
+                            <div class="col-md-5">
+                                <input type="text" class="form-control extra-var-value" placeholder="VALUE"
+                                       value="${row.value}">
+                            </div>
+                            <div class="col-md-2">
+                                <button type="button" class="btn btn-outline-danger w-100 extra-var-remove">
+                                    <i class="ti ti-trash"></i>
+                                </button>
+                            </div>
+                        </div>
+                    `).join('')}
+                    <button type="button" class="btn btn-outline-primary btn-sm" id="extra-var-add">
+                        <i class="ti ti-plus"></i>
+                        Add env var
+                    </button>
                 </div>
             </div>
             <div class="card-footer text-end">
@@ -1059,7 +1163,7 @@ async function handleFormSubmit(event, submitHandler) {
     Object.keys(data).forEach(key => {
         if (typeof data[key] === 'string' && data[key].trim() === '') {
             // For optional fields like password, token, description - set to null
-            if (['password', 'token', 'description', 'git_token', 'git_ssh_key', 'encjson_private_key', 'encjson_key_dir'].includes(key)) {
+            if (['password', 'token', 'description', 'git_token', 'git_ssh_key', 'encjson_private_key', 'encjson_key_dir', 'source_password', 'source_token', 'target_password', 'target_token'].includes(key)) {
                 data[key] = null;
             }
         }
