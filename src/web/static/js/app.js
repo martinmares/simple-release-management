@@ -4404,9 +4404,13 @@ router.on('/releases/new', async (params, query) => {
     try {
         if (!query.copy_job_id) {
             content.innerHTML = `
+                <a href="#/copy-jobs/${job.job_id}" class="btn btn-ghost-secondary mb-3">
+                    <i class="ti ti-arrow-left"></i>
+                    Back to Copy Job
+                </a>
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Release Images</h3>
+                        <h3 class="card-title">Start Release Images</h3>
                     </div>
                     <div class="card-body">
                         <div class="alert alert-info">
@@ -4439,13 +4443,13 @@ router.on('/releases/new', async (params, query) => {
         const sourceBase = sourceRegistry?.base_url || '';
 
         const state = {
-            releaseId: '',
+            releaseId: job.target_tag ? `RE_${job.target_tag}` : '',
             notes: '',
             targetRegistryId: '',
             environmentId: job.environment_id || '',
             sourceRefMode: 'tag',
             sourceTagOverride: '',
-            validateOnly: false,
+            validateOnly: true,
             renameRules: [{ find: '', replace: '' }],
             overrides: images.map(img => ({ copy_job_image_id: img.id, override_name: '' })),
         };
@@ -4494,10 +4498,11 @@ router.on('/releases/new', async (params, query) => {
             const targetBase = targetRegistry?.base_url || '';
             const environmentId = state.environmentId;
 
+            const sourceTag = state.sourceTagOverride.trim() || job.target_tag;
             content.innerHTML = `
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Release Images</h3>
+                        <h3 class="card-title">Start Release Images</h3>
                     </div>
                     <div class="card-body">
                         <div class="mb-3">
@@ -4539,26 +4544,25 @@ router.on('/releases/new', async (params, query) => {
                                                 Some images are missing digests. Digest mode cannot be used.
                                             </div>
                                         ` : ''}
-                                        <div class="accordion mt-3" id="source-tag-override-accordion">
-                                            <div class="accordion-item">
-                                                <h2 class="accordion-header" id="source-tag-override-heading">
-                                                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#source-tag-override-body">
-                                                        <i class="ti ti-alert-triangle me-2 text-warning"></i>
-                                                        Advanced: Source Tag Override (Tag mode only)
-                                                    </button>
-                                                </h2>
-                                                <div id="source-tag-override-body" class="accordion-collapse collapse" data-bs-parent="#source-tag-override-accordion">
-                                                    <div class="accordion-body">
-                                                        <label class="form-label">Source Tag Override</label>
+                                        <div class="mt-3 p-3 border rounded">
+                                            <div class="d-flex align-items-center gap-2 mb-2">
+                                                <i class="ti ti-alert-triangle text-warning"></i>
+                                                <strong>Advanced: Source Tag Override</strong>
+                                                <span class="text-secondary small">(Tag mode only)</span>
+                                            </div>
+                                            <label class="form-label">Source Tag Override</label>
                                                         <input type="text" class="form-control" id="release-source-tag-override"
                                                                value="${state.sourceTagOverride}"
-                                                               placeholder="2026.01.29.01">
-                                                        <div class="form-hint">
-                                                            Overrides the source tag for all images. Only available in Tag mode.
-                                                        </div>
-                                                    </div>
-                                                </div>
+                                                               placeholder="2026.01.29.01"
+                                                               ${state.sourceRefMode === 'tag' ? '' : 'disabled'}>
+                                            <div class="form-hint">
+                                                Overrides the source tag for all images. Available only in Tag mode.
                                             </div>
+                                            ${state.sourceRefMode !== 'tag' ? `
+                                                <div class="text-warning small mt-2">
+                                                    Switch Source Reference to <strong>Tag</strong> to enable this field.
+                                                </div>
+                                            ` : ''}
                                         </div>
                                     </div>
                                 </div>
@@ -4609,6 +4613,8 @@ router.on('/releases/new', async (params, query) => {
                             <small class="form-hint">Runs source validation and digest checks without copying to target.</small>
                         </div>
 
+                        <div class="mb-3" id="release-precheck-result"></div>
+
                         <hr class="my-4">
 
                         <div class="mb-3">
@@ -4653,7 +4659,6 @@ router.on('/releases/new', async (params, query) => {
                                         const renamed = applyRules(basePath);
                                         const override = state.overrides[idx]?.override_name || '';
                                         const finalPath = applyOverride(renamed, override);
-                                        const sourceTag = state.sourceTagOverride.trim() || img.target_tag;
                                         const sourceFull = state.sourceRefMode === 'digest'
                                             ? (img.target_sha256
                                                 ? `${sourceBase}/${img.target_image}@${img.target_sha256}`
@@ -4662,7 +4667,14 @@ router.on('/releases/new', async (params, query) => {
                                         const targetFull = targetBase ? `${targetBase}/${finalPath}:${state.releaseId || '<release_id>'}` : '-';
                                         return `
                                             <tr>
-                                                <td><code class="small">${sourceFull}</code></td>
+                                                <td>
+                                                    <code class="small"
+                                                          data-source-preview
+                                                          data-source-path="${img.target_image}"
+                                                          data-source-sha="${img.target_sha256 || ''}">
+                                                        ${sourceFull}
+                                                    </code>
+                                                </td>
                                                 <td>
                                                     <code class="small"
                                                           data-preview
@@ -4683,10 +4695,13 @@ router.on('/releases/new', async (params, query) => {
                             </table>
                         </div>
                     </div>
-                    <div class="card-footer text-end">
-                        <div class="d-flex">
-                            <a href="#/copy-jobs/${job.job_id}" class="btn btn-link">Cancel</a>
-                            <button type="button" class="btn btn-success ms-auto" id="release-create">
+                    <div class="card-footer">
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-outline-primary w-100" id="release-precheck-btn">
+                                <i class="ti ti-search"></i>
+                                Pre-check Images
+                            </button>
+                            <button type="button" class="btn btn-success w-100" id="release-create">
                                 <i class="ti ti-rocket"></i>
                                 Release Images
                             </button>
@@ -4759,6 +4774,101 @@ router.on('/releases/new', async (params, query) => {
                 });
             });
 
+            const renderPrecheck = (result) => {
+                const box = document.getElementById('release-precheck-result');
+                if (!box) return;
+                if (result.failed && result.failed.length > 0) {
+                    box.innerHTML = `
+                        <div class="alert alert-danger">
+                            <div class="d-flex align-items-center mb-2">
+                                <i class="ti ti-alert-triangle me-2"></i>
+                                <strong>Pre-check failed (${result.failed.length}/${result.total})</strong>
+                            </div>
+                            <div class="list-group">
+                                ${result.failed.map(f => `
+                                    <div class="list-group-item">
+                                        <div><code class="small">${f.source_image}:${f.source_tag}</code></div>
+                                        <div class="text-secondary small">${f.error}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    box.innerHTML = `
+                        <div class="alert alert-success">
+                            <i class="ti ti-check me-2"></i>
+                            All ${result.total} images found.
+                        </div>
+                    `;
+                }
+            };
+
+            const runReleasePrecheck = async () => {
+                if (!state.targetRegistryId) {
+                    getApp().showError('Selected environment has no target registry');
+                    return null;
+                }
+                if (environments.length > 0 && !state.environmentId) {
+                    getApp().showError('Please select environment');
+                    return null;
+                }
+                if (state.sourceRefMode === 'digest' && images.some(img => !img.target_sha256)) {
+                    getApp().showError('Digest mode is not available because some images are missing digests');
+                    return null;
+                }
+                if (state.sourceRefMode === 'digest' && state.sourceTagOverride.trim()) {
+                    getApp().showError('Source tag override is only available in Tag mode');
+                    return null;
+                }
+
+                const payload = {
+                    source_copy_job_id: job.job_id,
+                    target_registry_id: state.targetRegistryId,
+                    environment_id: state.environmentId || null,
+                    release_id: state.releaseId.trim() || '',
+                    notes: state.notes || null,
+                    source_ref_mode: state.sourceRefMode,
+                    source_tag_override: state.sourceTagOverride.trim() || null,
+                    validate_only: state.validateOnly,
+                    rename_rules: state.renameRules.filter(r => r.find),
+                    overrides: state.overrides.filter(o => o.override_name),
+                };
+
+                const btn = document.getElementById('release-precheck-btn');
+                const box = document.getElementById('release-precheck-result');
+                if (box) {
+                    box.innerHTML = `
+                        <div class="alert alert-info">
+                            <i class="ti ti-search me-2"></i>
+                            Running pre-check...
+                        </div>
+                    `;
+                }
+                if (btn) {
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Checking...';
+                }
+                try {
+                    const result = await api.precheckReleaseCopy(payload);
+                    renderPrecheck(result);
+                    return result;
+                } catch (error) {
+                    getApp().showError(error.message);
+                    return null;
+                } finally {
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="ti ti-search"></i> Pre-check Images';
+                    }
+                }
+            };
+
+            const precheckBtn = document.getElementById('release-precheck-btn');
+            if (precheckBtn) {
+                precheckBtn.addEventListener('click', runReleasePrecheck);
+            }
+
             document.getElementById('release-create').addEventListener('click', async () => {
                 if (!state.targetRegistryId) {
                     getApp().showError('Selected environment has no target registry');
@@ -4779,6 +4889,12 @@ router.on('/releases/new', async (params, query) => {
                 }
                 if (state.sourceRefMode === 'digest' && state.sourceTagOverride.trim()) {
                     getApp().showError('Source tag override is only available in Tag mode');
+                    return;
+                }
+
+                const precheck = await runReleasePrecheck();
+                if (precheck && precheck.failed && precheck.failed.length > 0) {
+                    getApp().showError('Pre-check failed. Fix missing images before releasing.');
                     return;
                 }
 
@@ -4809,6 +4925,7 @@ router.on('/releases/new', async (params, query) => {
             const selectedEnv = environments.find(env => env.id === state.environmentId);
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
+            const sourceTag = state.sourceTagOverride.trim() || job.target_tag;
             document.querySelectorAll('[data-preview]').forEach(el => {
                 const idx = parseInt(el.getAttribute('data-index'), 10);
                 const sourcePath = el.getAttribute('data-source-path') || '';
@@ -4821,6 +4938,16 @@ router.on('/releases/new', async (params, query) => {
                     ? `${targetBase}/${finalPath}:${releaseId || '<release_id>'}`
                     : '-';
                 el.textContent = targetFull;
+            });
+            document.querySelectorAll('[data-source-preview]').forEach(el => {
+                const sourcePath = el.getAttribute('data-source-path') || '';
+                const sourceSha = el.getAttribute('data-source-sha') || '';
+                const sourceFull = state.sourceRefMode === 'digest'
+                    ? (sourceSha
+                        ? `${sourceBase}/${sourcePath}@${sourceSha}`
+                        : `${sourceBase}/${sourcePath}@<missing-digest>`)
+                    : `${sourceBase}/${sourcePath}:${sourceTag}`;
+                el.textContent = sourceFull;
             });
         };
 

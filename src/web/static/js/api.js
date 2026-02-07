@@ -301,6 +301,10 @@ class ApiClient {
         return this.get(`/copy/jobs/${jobId}/images`);
     }
 
+    async precheckReleaseCopy(payload) {
+        return this.post(`/copy/jobs/release/precheck`, payload);
+    }
+
     async compareCopyJobs(jobA, jobB) {
         const params = new URLSearchParams({
             job_a: jobA,

@@ -348,6 +348,7 @@ pub fn router(state: CopyApiState) -> Router {
         )
         .route("/copy/jobs", get(list_copy_jobs))
         .route("/copy/jobs/compare", get(compare_copy_jobs))
+        .route("/copy/jobs/release/precheck", post(precheck_release_copy_images))
         .route("/copy/jobs/release", post(start_release_copy_job))
         .route("/copy/jobs/selective", post(start_selective_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
@@ -1014,6 +1015,205 @@ async fn get_copy_job_images(
     })?;
 
     Ok(Json(images))
+}
+
+/// POST /api/v1/copy/jobs/release/precheck - ověří zdrojové images pro release
+async fn precheck_release_copy_images(
+    State(state): State<CopyApiState>,
+    Json(payload): Json<ReleaseCopyRequest>,
+) -> Result<Json<PrecheckResult>, (StatusCode, Json<ErrorResponse>)> {
+    let source_ref_mode = payload
+        .source_ref_mode
+        .unwrap_or_else(|| "tag".to_string())
+        .to_lowercase();
+    let source_ref_mode = match source_ref_mode.as_str() {
+        "digest" => "digest".to_string(),
+        _ => "tag".to_string(),
+    };
+
+    let environment_id = payload.environment_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        )
+    })?;
+
+    let source_tag_override = payload
+        .source_tag_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    if source_ref_mode == "digest" && source_tag_override.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source tag override is only allowed in tag mode".to_string(),
+            }),
+        ));
+    }
+
+    let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+        .bind(environment_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Environment not found".to_string(),
+                }),
+            )
+        })?;
+
+    let source_job = sqlx::query_as::<_, (Option<Uuid>,)>(
+        "SELECT target_registry_id FROM copy_jobs WHERE id = $1",
+    )
+    .bind(payload.source_copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Source copy job not found".to_string(),
+            }),
+        )
+    })?;
+
+    let source_registry_id = source_job.0.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source copy job has no target registry".to_string(),
+            }),
+        )
+    })?;
+
+    let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
+        .bind(source_registry_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Source registry not found".to_string(),
+                }),
+            )
+        })?;
+
+    let images = sqlx::query_as::<_, CopyJobImage>(
+        "SELECT * FROM copy_job_images WHERE copy_job_id = $1 ORDER BY created_at",
+    )
+    .bind(payload.source_copy_job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if images.is_empty() {
+        return Ok(Json(PrecheckResult {
+            total: 0,
+            ok: 0,
+            failed: vec![],
+        }));
+    }
+
+    let (source_username, source_password) = state
+        .get_registry_credentials(source_registry_id, Some(environment_id))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to get registry credentials: {}", e),
+                }),
+            )
+        })?;
+
+    let source_base_url = source_registry
+        .base_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .to_string();
+
+    let total = images.len();
+    let mut failed = Vec::new();
+
+    for img in images {
+        if source_ref_mode == "digest" && img.target_sha256.as_deref().unwrap_or("").is_empty() {
+            failed.push(PrecheckFailure {
+                source_image: img.target_image.clone(),
+                source_tag: img.target_tag.clone(),
+                error: "Missing digest".to_string(),
+            });
+            continue;
+        }
+
+        let source_url = if source_ref_mode == "digest" {
+            format!(
+                "{}/{}@{}",
+                source_base_url,
+                img.target_image,
+                img.target_sha256.as_deref().unwrap_or("")
+            )
+        } else {
+            let tag = source_tag_override
+                .as_deref()
+                .unwrap_or(&img.target_tag)
+                .to_string();
+            format!("{}/{}:{}", source_base_url, img.target_image, tag)
+        };
+
+        let result = state
+            .skopeo
+            .inspect_image(&source_url, source_username.as_deref(), source_password.as_deref())
+            .await;
+        if let Err(err) = result {
+            failed.push(PrecheckFailure {
+                source_image: img.target_image.clone(),
+                source_tag: img.target_tag.clone(),
+                error: err.to_string(),
+            });
+        }
+    }
+
+    let ok = total - failed.len();
+    Ok(Json(PrecheckResult { total, ok, failed }))
 }
 
 /// POST /api/v1/copy/jobs/release - Spustí release copy job ze zdrojového jobu
