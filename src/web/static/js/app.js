@@ -1909,6 +1909,12 @@ router.on('/argocd-apps/new', async (params, query) => {
             await handleFormSubmit(e, async (data) => {
                 const envId = data.environment_id;
                 delete data.environment_id;
+                if (typeof data.ignore_resources === 'string') {
+                    data.ignore_resources = data.ignore_resources
+                        .split('\n')
+                        .map(v => v.trim())
+                        .filter(v => v.length > 0);
+                }
                 await api.createArgocdApp(envId, data);
                 router.navigate(`/environments/${envId}/edit`);
             });
@@ -2024,6 +2030,18 @@ router.on('/argocd-apps/:id', async (params) => {
                 statusEl.innerHTML = '<div class="text-secondary small">Status</div><div class="text-secondary">-</div>';
                 return;
             }
+            const conditions = Array.isArray(status.conditions) ? status.conditions : [];
+            const issues = Array.isArray(status.resource_issues) ? status.resource_issues : [];
+            const issueItems = issues.slice(0, 50).map(i => {
+                const label = `${i.kind || ''}/${i.name || ''}`.replace(/^\/|\/$/g, '');
+                const msg = i.message ? ` — ${i.message}` : '';
+                return `<li><strong>${label}</strong>${msg}</li>`;
+            }).join('');
+            const conditionItems = conditions.map(c => {
+                const label = c.type || 'Condition';
+                const msg = c.message ? ` — ${c.message}` : '';
+                return `<li><strong>${label}</strong>${msg}</li>`;
+            }).join('');
             statusEl.innerHTML = `
                 <div class="text-secondary small">Status</div>
                 <div class="d-flex align-items-center gap-2">
@@ -2031,14 +2049,27 @@ router.on('/argocd-apps/:id', async (params) => {
                     <span class="badge ${status?.health_status === 'Healthy' ? 'bg-green-lt text-green-fg' : 'bg-red-lt text-red-fg'}">${status?.health_status || 'unknown'}</span>
                     <span class="text-secondary small">${status?.operation_phase || ''}</span>
                 </div>
-                <div class="text-secondary small mt-1">${status?.message || ''}</div>
+                <div class="text-secondary small mt-1">${status?.operation_message || ''}</div>
+                ${conditions.length > 0 || issues.length > 0 ? `
+                    <div class="alert alert-warning mt-2 mb-0 p-2">
+                        <div class="small mb-1"><strong>Issues:</strong> ${issues.length} ${issues.length > 50 ? '(showing first 50)' : ''}</div>
+                        <ul class="mb-0 ps-3 small" style="max-height:140px; overflow:auto;">
+                            ${issueItems}
+                            ${conditionItems}
+                        </ul>
+                    </div>
+                ` : ''}
             `;
         };
 
+        let issueMap = new Map();
         const loadStatus = async () => {
             try {
                 const status = await api.getArgocdAppStatus(app.id);
                 renderStatus(status);
+                issueMap = new Map((status?.resource_issues || []).map(i => [`${i.kind}|${i.namespace || ''}|${i.name}`, i]));
+                const activeKind = document.querySelector('#argocd-resource-tabs .nav-link.active')?.getAttribute('data-kind') || 'Deployment';
+                renderResources(activeKind);
             } catch (err) {
                 console.error('Failed to load ArgoCD status:', err);
                 statusEl.innerHTML = `
@@ -2061,7 +2092,10 @@ router.on('/argocd-apps/:id', async (params) => {
             resourceBody.innerHTML = rows.map(r => `
                 <tr>
                     <td>${r.kind}</td>
-                    <td><code class="small">${r.name}</code></td>
+                    <td>
+                        <code class="small">${r.name}</code>
+                        ${issueMap.has(`${r.kind}|${r.namespace || ''}|${r.name}`) ? '<span class="badge bg-yellow-lt text-yellow-fg ms-2" title="Resource issue">issue</span>' : ''}
+                    </td>
                     <td>${r.namespace || '-'}</td>
                     <td><span class="badge ${r.health === 'Healthy' ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">${r.health || '-'}</span></td>
                     <td><span class="badge ${r.sync === 'Synced' ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">${r.sync || '-'}</span></td>
@@ -2175,6 +2209,12 @@ router.on('/argocd-apps/:id/edit', async (params) => {
         formEl.addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
                 delete data.environment_id;
+                if (typeof data.ignore_resources === 'string') {
+                    data.ignore_resources = data.ignore_resources
+                        .split('\n')
+                        .map(v => v.trim())
+                        .filter(v => v.length > 0);
+                }
                 await api.updateArgocdApp(params.id, data);
                 router.navigate(`/environments/${environment.id}/edit`);
             });

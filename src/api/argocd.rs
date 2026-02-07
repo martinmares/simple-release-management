@@ -41,6 +41,7 @@ pub struct ArgocdAppRequest {
     pub argocd_instance_id: Uuid,
     pub application_name: String,
     pub is_active: Option<bool>,
+    pub ignore_resources: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -67,6 +68,53 @@ pub struct ArgocdStatus {
     pub operation_phase: Option<String>,
     pub operation_message: Option<String>,
     pub revision: Option<String>,
+    pub operation_resources: Option<Vec<ArgocdOperationResource>>,
+    pub conditions: Option<Vec<ArgocdCondition>>,
+    pub resource_issues: Option<Vec<ArgocdResourceIssue>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArgocdCondition {
+    #[serde(rename = "type")]
+    pub type_name: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArgocdResourceIssue {
+    pub kind: Option<String>,
+    pub name: Option<String>,
+    pub namespace: Option<String>,
+    pub sync_status: Option<String>,
+    pub health_status: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug)]
+struct IgnoreMatcher {
+    group: Option<String>,
+    kind: String,
+    namespace: Option<String>,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ArgocdSyncResource {
+    group: String,
+    kind: String,
+    name: String,
+    namespace: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ArgocdOperationResource {
+    pub kind: Option<String>,
+    pub name: Option<String>,
+    pub namespace: Option<String>,
+    pub status: Option<String>,
+    pub message: Option<String>,
+    pub hook_type: Option<String>,
+    pub sync_phase: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -442,8 +490,8 @@ async fn create_env_app(
     let app = sqlx::query_as::<_, EnvironmentArgocdApp>(
         r#"
         INSERT INTO environment_argocd_apps
-        (id, environment_id, argocd_instance_id, application_name, is_active)
-        VALUES ($1, $2, $3, $4, $5)
+        (id, environment_id, argocd_instance_id, application_name, is_active, ignore_resources)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *
         "#
     )
@@ -452,6 +500,7 @@ async fn create_env_app(
     .bind(payload.argocd_instance_id)
     .bind(payload.application_name.trim())
     .bind(payload.is_active.unwrap_or(true))
+    .bind(serde_json::to_value(payload.ignore_resources.unwrap_or_default()).unwrap_or(serde_json::Value::Array(vec![])))
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -506,14 +555,16 @@ async fn update_env_app(
         UPDATE environment_argocd_apps
         SET argocd_instance_id = $1,
             application_name = $2,
-            is_active = $3
-        WHERE id = $4
+            is_active = $3,
+            ignore_resources = $4
+        WHERE id = $5
         RETURNING *
         "#
     )
     .bind(payload.argocd_instance_id)
     .bind(payload.application_name.trim())
     .bind(payload.is_active.unwrap_or(true))
+    .bind(serde_json::to_value(payload.ignore_resources.unwrap_or_default()).unwrap_or(serde_json::Value::Array(vec![])))
     .bind(id)
     .fetch_one(&state.pool)
     .await
@@ -619,7 +670,24 @@ async fn sync_app(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let (instance, app) = load_instance_and_app(&state.pool, id).await?;
-    call_argocd_action(&state, &instance, &app, "sync").await?;
+    let ignore_list = extract_ignore_list(&app);
+    if ignore_list.is_empty() {
+        call_argocd_action(&state, &instance, &app, "sync").await?;
+        return Ok(StatusCode::ACCEPTED);
+    }
+    let matchers = parse_ignore_matchers(&ignore_list);
+    let resources = fetch_argocd_resources(&state, &instance, &app).await?;
+    let filtered: Vec<ArgocdSyncResource> = resources
+        .into_iter()
+        .filter(|r| !matches_ignore(&matchers, r))
+        .map(|r| ArgocdSyncResource {
+            group: r.group.unwrap_or_default(),
+            kind: r.kind,
+            name: r.name,
+            namespace: r.namespace.unwrap_or_default(),
+        })
+        .collect();
+    call_argocd_sync(&state, &instance, &app, filtered).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -837,6 +905,46 @@ async fn call_argocd_action(
     Ok(())
 }
 
+async fn call_argocd_sync(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+    resources: Vec<ArgocdSyncResource>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let client = build_client(instance.verify_tls).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to create HTTP client: {}", e),
+            }),
+        )
+    })?;
+    let url = format!("{}/api/v1/applications/{}/sync", instance.base_url, app.application_name);
+    let mut req = client.post(url).json(&serde_json::json!({
+        "resources": resources
+    }));
+    req = apply_auth(state, &client, req, instance).await?;
+    let resp = req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD request failed: {}", e),
+            }),
+        )
+    })?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD sync failed: {} {}", status, body),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 async fn fetch_argocd_status(
     state: &ArgocdApiState,
     instance: &ArgocdInstance,
@@ -880,12 +988,68 @@ async fn fetch_argocd_status(
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
+    let operation_resources = value.pointer("/status/operationState/syncResult/resources")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().map(|item| ArgocdOperationResource {
+                kind: item.get("kind").and_then(|v| v.as_str()).map(str::to_string),
+                name: item.get("name").and_then(|v| v.as_str()).map(str::to_string),
+                namespace: item.get("namespace").and_then(|v| v.as_str()).map(str::to_string),
+                status: item.get("status").and_then(|v| v.as_str()).map(str::to_string),
+                message: item.get("message").and_then(|v| v.as_str()).map(str::to_string),
+                hook_type: item.get("hookType").and_then(|v| v.as_str()).map(str::to_string),
+                sync_phase: item.get("syncPhase").and_then(|v| v.as_str()).map(str::to_string),
+            }).collect::<Vec<_>>()
+        });
+
+    let conditions = value.pointer("/status/conditions")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().map(|item| ArgocdCondition {
+                type_name: item.get("type").and_then(|v| v.as_str()).map(str::to_string),
+                message: item.get("message").and_then(|v| v.as_str()).map(str::to_string),
+            }).collect::<Vec<_>>()
+        });
+
+    let resource_issues = value.pointer("/status/resources")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items.iter().filter_map(|item| {
+                let kind = item.get("kind").and_then(|v| v.as_str()).map(str::to_string);
+                let name = item.get("name").and_then(|v| v.as_str()).map(str::to_string);
+                let namespace = item.get("namespace").and_then(|v| v.as_str()).map(str::to_string);
+                let sync_status = item.pointer("/sync/status").and_then(|v| v.as_str()).map(str::to_string);
+                let health_status = item.pointer("/health/status").and_then(|v| v.as_str()).map(str::to_string);
+                let message = item.pointer("/health/message").and_then(|v| v.as_str()).map(str::to_string);
+                let is_issue = match (sync_status.as_deref(), health_status.as_deref()) {
+                    (Some("Synced"), Some("Healthy")) => false,
+                    (None, Some("Healthy")) => false,
+                    (Some("Synced"), None) => false,
+                    _ => true,
+                };
+                if !is_issue {
+                    return None;
+                }
+                Some(ArgocdResourceIssue {
+                    kind,
+                    name,
+                    namespace,
+                    sync_status,
+                    health_status,
+                    message,
+                })
+            }).collect::<Vec<_>>()
+        });
+
     Ok(ArgocdStatus {
         sync_status,
         health_status,
         operation_phase,
         operation_message,
         revision,
+        operation_resources,
+        conditions,
+        resource_issues,
     })
 }
 
@@ -1004,6 +1168,114 @@ async fn fetch_argocd_events(
         });
     }
     Ok(events)
+}
+
+fn extract_ignore_list(app: &EnvironmentArgocdApp) -> Vec<String> {
+    app.ignore_resources
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_ignore_matchers(items: &[String]) -> Vec<IgnoreMatcher> {
+    items
+        .iter()
+        .filter_map(|raw| {
+            let line = raw.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let mut parts = line.split_whitespace().collect::<Vec<_>>();
+            if parts.is_empty() {
+                return None;
+            }
+            if parts.len() == 1 {
+                // kind/ns/name or kind/name or group/kind/ns/name
+                let segs: Vec<&str> = parts[0].split('/').collect();
+                if segs.len() == 2 {
+                    return Some(IgnoreMatcher {
+                        group: None,
+                        kind: segs[0].to_string(),
+                        namespace: None,
+                        name: segs[1].to_string(),
+                    });
+                }
+                if segs.len() == 3 {
+                    return Some(IgnoreMatcher {
+                        group: None,
+                        kind: segs[0].to_string(),
+                        namespace: Some(segs[1].to_string()),
+                        name: segs[2].to_string(),
+                    });
+                }
+                if segs.len() == 4 {
+                    return Some(IgnoreMatcher {
+                        group: Some(segs[0].to_string()),
+                        kind: segs[1].to_string(),
+                        namespace: Some(segs[2].to_string()),
+                        name: segs[3].to_string(),
+                    });
+                }
+            }
+            // kind or group/kind + namespace/name
+            let kind_part = parts.remove(0);
+            let name_part = parts.get(0).copied().unwrap_or("");
+            let (group, kind) = if kind_part.contains('/') {
+                let segs: Vec<&str> = kind_part.split('/').collect();
+                if segs.len() == 2 {
+                    (Some(segs[0].to_string()), segs[1].to_string())
+                } else {
+                    (None, kind_part.to_string())
+                }
+            } else {
+                (None, kind_part.to_string())
+            };
+            let (namespace, name) = if name_part.contains('/') {
+                let segs: Vec<&str> = name_part.split('/').collect();
+                if segs.len() == 2 {
+                    (Some(segs[0].to_string()), segs[1].to_string())
+                } else {
+                    (None, name_part.to_string())
+                }
+            } else {
+                (None, name_part.to_string())
+            };
+            if kind.is_empty() || name.is_empty() {
+                return None;
+            }
+            Some(IgnoreMatcher {
+                group,
+                kind,
+                namespace,
+                name,
+            })
+        })
+        .collect()
+}
+
+fn matches_ignore(matchers: &[IgnoreMatcher], res: &ArgocdResource) -> bool {
+    matchers.iter().any(|m| {
+        if m.kind != res.kind {
+            return false;
+        }
+        if let Some(group) = &m.group {
+            if res.group.as_deref().unwrap_or("") != group {
+                return false;
+            }
+        }
+        if let Some(ns) = &m.namespace {
+            if res.namespace.as_deref().unwrap_or("") != ns {
+                return false;
+            }
+        }
+        m.name == res.name
+    })
 }
 
 async fn cache_status(

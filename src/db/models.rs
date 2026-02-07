@@ -311,6 +311,7 @@ pub struct EnvironmentArgocdApp {
     pub argocd_instance_id: Uuid,
     pub application_name: String,
     pub is_active: bool,
+    pub ignore_resources: Option<serde_json::Value>,
     pub last_sync_status: Option<String>,
     pub last_health_status: Option<String>,
     pub last_operation_phase: Option<String>,

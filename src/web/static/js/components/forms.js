@@ -927,6 +927,7 @@ function createArgocdInstanceForm(instance = null, tenants = []) {
  */
 function createArgocdAppForm(app = null, instances = [], environment = null) {
     const isEdit = !!app;
+    const ignoreLines = Array.isArray(app?.ignore_resources) ? app.ignore_resources.join('\n') : '';
     return `
         <form id="argocd-app-form" class="card" data-argocd-app-mode="${isEdit ? 'edit' : 'new'}">
             <div class="card-header">
@@ -961,6 +962,13 @@ function createArgocdAppForm(app = null, instances = [], environment = null) {
                     <input type="text" class="form-control" name="application_name"
                            value="${app?.application_name || ''}"
                            placeholder="nac-prod" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label">Ignore resources on Sync</label>
+                    <textarea class="form-control" name="ignore_resources" rows="3"
+                              placeholder="Ingress nac-test/tsm-ui-secure">${ignoreLines}</textarea>
+                    <small class="form-hint">One per line. Formats: <code>Kind name</code>, <code>Kind namespace/name</code>, or <code>group/kind namespace/name</code>.</small>
                 </div>
 
                 <div class="mb-3">
