@@ -4328,6 +4328,14 @@ router.on('/bundles/:id/edit', async (params) => {
                         </div>
 
                         <div class="mb-3">
+                            <label class="form-label">Source Registry</label>
+                            <div class="form-control-plaintext">
+                                <code class="small">${sourceRegistry?.base_url || '-'}</code>
+                                ${sourceRegistry?.default_project_path ? `<span class="text-secondary small ms-1">(path: ${sourceRegistry.default_project_path})</span>` : ''}
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
                             <label class="form-label">Description</label>
                             <textarea class="form-control" name="description" rows="3">${bundle.description || ''}</textarea>
                         </div>
@@ -6620,7 +6628,7 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                             ${autoTagEnabled ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                         </label>
                         <input type="text" class="form-control" id="target-tag"
-                               placeholder="2026.02.02.01" required ${autoTagEnabled ? 'disabled' : ''}>
+                               placeholder="YYYY.MM.DD.COUNTER" required ${autoTagEnabled ? 'disabled' : ''}>
                         <small class="form-hint">
                             ${autoTagEnabled ? 'Tag is auto-generated (YYYY.MM.DD.COUNTER)' : 'Tag to use for all target images'}
                         </small>
@@ -6681,6 +6689,23 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
             return `${defaultPath}/${rest}`;
         };
 
+        const targetTagInput = document.getElementById('target-tag');
+        const updateAutoTagPreview = async () => {
+            if (!autoTagEnabled || !targetTagInput) return;
+            const envId = document.getElementById('environment-select')?.value || '';
+            if (!envId) {
+                targetTagInput.value = '';
+                return;
+            }
+            try {
+                const tzOffset = new Date().getTimezoneOffset();
+                const preview = await api.getNextCopyTag(params.id, params.version, tzOffset, envId);
+                targetTagInput.value = preview.tag;
+            } catch (error) {
+                getApp().showError(`Failed to generate tag preview: ${error.message}`);
+            }
+        };
+
         const updatePreview = () => {
             const envId = document.getElementById('environment-select')?.value || '';
             const env = environments.find(e => e.id === envId);
@@ -6698,6 +6723,7 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                 const suffix = el.querySelector('span')?.outerHTML || '<span class="text-primary">[tag]</span>';
                 el.innerHTML = `${path}:${suffix}`;
             });
+            updateAutoTagPreview();
         };
 
         const renderPrecheck = (result) => {
@@ -6772,19 +6798,10 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
         if (envSelect) {
             envSelect.addEventListener('change', () => {
                 updatePreview();
+                updateAutoTagPreview();
             });
             updatePreview();
-        }
-
-        const targetTagInput = document.getElementById('target-tag');
-        if (autoTagEnabled && targetTagInput) {
-            try {
-                const tzOffset = new Date().getTimezoneOffset();
-                const preview = await api.getNextCopyTag(params.id, params.version, tzOffset);
-                targetTagInput.value = preview.tag;
-            } catch (error) {
-                getApp().showError(`Failed to generate tag preview: ${error.message}`);
-            }
+            updateAutoTagPreview();
         }
 
         document.getElementById('start-copy-btn').addEventListener('click', async () => {
