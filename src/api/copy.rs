@@ -1187,13 +1187,15 @@ async fn precheck_release_copy_images(
         }
 
         let (source_url, effective_tag) = if source_ref_mode == "digest" {
-            format!(
-                "{}/{}@{}",
-                source_base_url,
-                img.target_image,
-                img.target_sha256.as_deref().unwrap_or("")
-            ),
-            img.target_tag.clone(),
+            (
+                format!(
+                    "{}/{}@{}",
+                    source_base_url,
+                    img.target_image,
+                    img.target_sha256.as_deref().unwrap_or("")
+                ),
+                img.target_tag.clone(),
+            )
         } else {
             let tag = source_tag_override
                 .as_deref()
