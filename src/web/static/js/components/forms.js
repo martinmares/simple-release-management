@@ -1510,8 +1510,9 @@ async function handleFormSubmit(event, submitHandler) {
     const data = Object.fromEntries(formData.entries());
 
     // Convert checkbox values
-    if (data.is_active !== undefined) {
-        data.is_active = formData.get('is_active') === 'on';
+    const isActiveInput = form.querySelector('input[name="is_active"]');
+    if (isActiveInput) {
+        data.is_active = isActiveInput.checked === true;
     }
     if (data.allow_auto_release !== undefined) {
         data.allow_auto_release = formData.get('allow_auto_release') === 'on';
