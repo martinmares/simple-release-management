@@ -1486,8 +1486,8 @@ async fn start_release_copy_job(
 
     sqlx::query(
         "INSERT INTO copy_jobs
-         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags)
-         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9, $10, $11)"
+         (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags, base_copy_job_id)
+         VALUES ($1, $2, $3, 'pending', $4, $5, $6, TRUE, $7, $8, $9, $10, $11, $12)"
     )
     .bind(job_id)
     .bind(bundle_version_id)
@@ -1500,6 +1500,7 @@ async fn start_release_copy_job(
     .bind(validate_only)
     .bind(Some(environment_id))
     .bind(&extra_tags)
+    .bind(payload.source_copy_job_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -1973,8 +1974,8 @@ async fn start_copy_job(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool, Option<Uuid>, Option<Vec<String>>)>(
-        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags
+    let job = sqlx::query_as::<_, (String, Option<Uuid>, Option<Uuid>, String, String, bool, Option<String>, Option<String>, bool, Option<Uuid>, Option<Vec<String>>, Option<Uuid>)>(
+        "SELECT status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags, base_copy_job_id
          FROM copy_jobs WHERE id = $1"
     )
     .bind(job_id)
@@ -1989,7 +1990,7 @@ async fn start_copy_job(
         )
     })?;
 
-    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags)) = job else {
+    let Some((status, source_registry_id, target_registry_id, target_tag, source_ref_mode, is_release_job, release_id, release_notes, validate_only, environment_id, extra_tags, base_copy_job_id)) = job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2014,6 +2015,31 @@ async fn start_copy_job(
                 error: "Copy job does not have source/target registries".to_string(),
             }),
         ));
+    };
+
+    let source_env_id = if is_release_job {
+        if let Some(base_id) = base_copy_job_id {
+            sqlx::query_scalar::<_, Option<Uuid>>(
+                "SELECT environment_id FROM copy_jobs WHERE id = $1",
+            )
+            .bind(base_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?
+            .flatten()
+            .or(environment_id)
+        } else {
+            environment_id
+        }
+    } else {
+        environment_id
     };
 
     let images = sqlx::query_as::<_, CopyJobImage>(
@@ -2104,7 +2130,7 @@ async fn start_copy_job(
             )
         })?;
         let (username, password) = state
-            .get_registry_credentials(registry_id, environment_id)
+            .get_registry_credentials(registry_id, source_env_id)
             .await
             .map_err(|e| {
             (

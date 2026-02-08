@@ -6902,11 +6902,16 @@ router.on('/copy-jobs/:jobId', async (params) => {
         ]);
         const linkedRelease = releaseList.find(r => r.copy_job_id === initialStatus.job_id);
         const bundle = initialStatus.bundle_id ? await api.getBundle(initialStatus.bundle_id).catch(() => null) : null;
-        const [tenant, sourceRegistry, targetRegistry, environment] = await Promise.all([
+        const baseJob = initialStatus.base_copy_job_id
+            ? await api.getCopyJobStatus(initialStatus.base_copy_job_id).catch(() => null)
+            : null;
+
+        const [tenant, sourceRegistry, targetRegistry, environment, sourceEnvironment] = await Promise.all([
             bundle?.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             initialStatus.source_registry_id ? api.getRegistry(initialStatus.source_registry_id).catch(() => null) : null,
             initialStatus.target_registry_id ? api.getRegistry(initialStatus.target_registry_id).catch(() => null) : null,
             initialStatus.environment_id ? api.getEnvironment(initialStatus.environment_id).catch(() => null) : null,
+            baseJob?.environment_id ? api.getEnvironment(baseJob.environment_id).catch(() => null) : null,
         ]);
 
         const renderLogs = () => {
@@ -6965,9 +6970,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         <div class="text-secondary small">
                             <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
                             <div>${bundle?.name ? `Bundle: <strong>${bundle.name}</strong>` : 'Bundle: -'}</div>
-                            <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
-                            <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
-                            <div>Environment: ${environment ? `<span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>` : '-'}</div>
+                            <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceEnvironment?.source_project_path ? ` (path: ${sourceEnvironment.source_project_path})` : ''}</code>` : 'Source: -'}</div>
+                            <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${environment?.target_project_path ? ` (path: ${environment.target_project_path})` : ''}</code>` : 'Target: -'}</div>
+                            <div>Env Src: ${sourceEnvironment ? `<span class="badge" style="${sourceEnvironment.color ? `background:${sourceEnvironment.color};color:#fff;` : ''}">${sourceEnvironment.name}</span>` : '-'}</div>
+                            <div>Env Trg: ${environment ? `<span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>` : '-'}</div>
                             ${linkedRelease ? `<div>Image Release: <a href="#/releases/${linkedRelease.id}"><code>${linkedRelease.release_id}</code></a></div>` : ''}
                             ${status.base_copy_job_id ? `<div>Base Job: <a href="#/copy-jobs/${status.base_copy_job_id}"><code>${status.base_copy_job_id}</code></a></div>` : ''}
                         </div>
