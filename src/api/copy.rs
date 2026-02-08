@@ -1186,19 +1186,20 @@ async fn precheck_release_copy_images(
             continue;
         }
 
-        let source_url = if source_ref_mode == "digest" {
+        let (source_url, effective_tag) = if source_ref_mode == "digest" {
             format!(
                 "{}/{}@{}",
                 source_base_url,
                 img.target_image,
                 img.target_sha256.as_deref().unwrap_or("")
-            )
+            ),
+            img.target_tag.clone(),
         } else {
             let tag = source_tag_override
                 .as_deref()
                 .unwrap_or(&img.target_tag)
                 .to_string();
-            format!("{}/{}:{}", source_base_url, img.target_image, tag)
+            (format!("{}/{}:{}", source_base_url, img.target_image, tag), tag)
         };
 
         let result = state
@@ -1208,7 +1209,7 @@ async fn precheck_release_copy_images(
         if let Err(err) = result {
             failed.push(PrecheckFailure {
                 source_image: img.target_image.clone(),
-                source_tag: img.target_tag.clone(),
+                source_tag: effective_tag,
                 error: err.to_string(),
             });
         }

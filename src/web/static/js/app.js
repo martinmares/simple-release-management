@@ -6389,9 +6389,13 @@ router.on('/releases/new', async (params, query) => {
             const renderPrecheck = (result) => {
                 const box = document.getElementById('release-precheck-result-footer');
                 if (!box) return;
+                const overrideInfo = state.sourceRefMode === 'tag' && state.sourceTagOverride.trim()
+                    ? `<div class="text-secondary small mb-2">Using source tag override: <code class="small">${state.sourceTagOverride.trim()}</code></div>`
+                    : '';
                 if (result.failed && result.failed.length > 0) {
                     box.innerHTML = `
                         <div class="alert alert-danger">
+                            ${overrideInfo}
                             <div class="d-flex align-items-center mb-2">
                                 <i class="ti ti-alert-triangle me-2"></i>
                                 <strong>Pre-check failed (${result.failed.length}/${result.total})</strong>
@@ -6409,6 +6413,7 @@ router.on('/releases/new', async (params, query) => {
                 } else {
                     box.innerHTML = `
                         <div class="alert alert-success">
+                            ${overrideInfo}
                             <i class="ti ti-check me-2"></i>
                             All ${result.total} images found.
                         </div>
