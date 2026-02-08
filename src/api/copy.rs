@@ -950,8 +950,10 @@ async fn precheck_copy_images(
             )
         })?;
 
+    // Precheck for release must always use source registry credentials.
+    // Environment overrides are only valid when they match the same registry.
     let (source_username, source_password) = state
-        .get_registry_credentials(source_registry_id, Some(environment_id))
+        .get_registry_credentials(source_registry_id, None)
         .await
         .map_err(|e| {
             (

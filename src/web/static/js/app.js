@@ -6099,6 +6099,14 @@ router.on('/releases/new', async (params, query) => {
             const targetRegistry = registries.find(r => r.id === state.targetRegistryId);
             const targetBase = targetRegistry?.base_url || '';
             const environmentId = state.environmentId;
+            const sourceEnv = environments.find(env => env.id === job.environment_id);
+            const envMismatch = sourceEnv && selectedEnv && sourceEnv.id !== selectedEnv.id;
+            const sourceEnvBadge = sourceEnv
+                ? `<span class="badge" style="${sourceEnv.color ? `background:${sourceEnv.color};color:#fff;` : ''}">${sourceEnv.name}</span>`
+                : '<span class="badge bg-secondary-lt text-secondary-fg">unknown</span>';
+            const targetEnvBadge = selectedEnv
+                ? `<span class="badge" style="${selectedEnv.color ? `background:${selectedEnv.color};color:#fff;` : ''}">${selectedEnv.name}</span>`
+                : '<span class="badge bg-secondary-lt text-secondary-fg">not selected</span>';
 
             const sourceTag = state.sourceTagOverride.trim() || job.target_tag;
             content.innerHTML = `
@@ -6125,6 +6133,10 @@ router.on('/releases/new', async (params, query) => {
                                     </select>
                                     <div class="form-hint">
                                         ${sourceRegistry?.default_project_path ? `Project path: ${sourceRegistry.default_project_path}` : 'Project path: -'}
+                                    </div>
+                                    <div class="mt-2">
+                                        <span class="text-secondary small me-2">Source env:</span>
+                                        ${sourceEnvBadge}
                                     </div>
                                     <div class="mt-2">
                                         <label class="form-label">Source Reference</label>
@@ -6178,6 +6190,16 @@ router.on('/releases/new', async (params, query) => {
                                     <div class="form-hint">
                                         ${targetRegistry ? `Project path: ${applyProjectPath('', selectedEnv, 'target') || '-'}` : 'Project path: -'}
                                     </div>
+                                    <div class="mt-2">
+                                        <span class="text-secondary small me-2">Target env:</span>
+                                        ${targetEnvBadge}
+                                    </div>
+                                    ${envMismatch ? `
+                                        <div class="alert alert-warning mt-3 mb-0">
+                                            <i class="ti ti-alert-triangle me-2"></i>
+                                            Source and target environments differ. Ensure source credentials are valid for the source registry.
+                                        </div>
+                                    ` : ''}
                                 </div>
                                 ${environments.length > 0 ? `
                                     <div class="mb-3">
