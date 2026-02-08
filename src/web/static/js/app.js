@@ -241,13 +241,6 @@ document.addEventListener('alpine:init', () => {
         loadingMessage: '',
         toasts: [],
 
-        // Page header state
-        pageHeader: {
-            show: true,
-            pretitle: '',
-            title: '',
-            actions: '',
-        },
 
         // Inicializace
         init() {
@@ -320,19 +313,6 @@ document.addEventListener('alpine:init', () => {
 
         showInfo(message, title = 'Info') {
             this.showToast('info', title, message);
-        },
-
-        // ==================== PAGE HEADER ====================
-
-        setPageHeader(title, pretitle = '', actions = '') {
-            this.pageHeader.show = true;
-            this.pageHeader.title = title;
-            this.pageHeader.pretitle = pretitle;
-            this.pageHeader.actions = actions;
-        },
-
-        hidePageHeader() {
-            this.pageHeader.show = false;
         },
 
         // ==================== HELPER METHODS ====================
