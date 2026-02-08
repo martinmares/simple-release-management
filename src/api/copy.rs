@@ -1081,8 +1081,8 @@ async fn precheck_release_copy_images(
             )
         })?;
 
-    let source_job = sqlx::query_as::<_, (Option<Uuid>,)>(
-        "SELECT target_registry_id FROM copy_jobs WHERE id = $1",
+    let source_job = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
+        "SELECT target_registry_id, environment_id FROM copy_jobs WHERE id = $1",
     )
     .bind(payload.source_copy_job_id)
     .fetch_optional(&state.pool)
@@ -1112,6 +1112,7 @@ async fn precheck_release_copy_images(
             }),
         )
     })?;
+    let source_env_id = source_job.1;
 
     let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
         .bind(source_registry_id)
@@ -1158,7 +1159,7 @@ async fn precheck_release_copy_images(
     }
 
     let (source_username, source_password) = state
-        .get_registry_credentials(source_registry_id, Some(environment_id))
+        .get_registry_credentials(source_registry_id, source_env_id)
         .await
         .map_err(|e| {
             (
