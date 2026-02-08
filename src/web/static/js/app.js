@@ -1225,10 +1225,30 @@ router.on('/tenants/:id', async (params) => {
                                                         <span class="text-secondary small">${env.slug}</span>
                                                     </div>
                                                     <div class="text-secondary small mt-2">
-                                                        <div>↳ Source Reg: <code class="small">${sourceRegistry?.base_url || '-'}</code> (path: <code class="small">${env.source_project_path || '-'}</code>)</div>
-                                                        <div>↳ Target Reg: <code class="small">${targetRegistry?.base_url || '-'}</code> (path: <code class="small">${env.target_project_path || '-'}</code>)</div>
-                                                        <div>↳ Env Git: <code class="small">${envRepo?.repo_url || '-'}</code> (path: <code class="small">${env.env_repo_path || '-'}</code>)</div>
-                                                        <div>↳ Deploy Git: <code class="small">${deployRepo?.repo_url || '-'}</code> (path: <code class="small">${env.deploy_repo_path || '-'}</code>)</div>
+                                                        <div class="d-flex flex-wrap gap-2">
+                                                            <span class="text-secondary small">Source Reg</span>
+                                                            <code class="small text-wrap">${sourceRegistry?.base_url || '-'}</code>
+                                                            <span class="text-secondary small">path:</span>
+                                                            <code class="small text-wrap">${env.source_project_path || '-'}</code>
+                                                        </div>
+                                                        <div class="d-flex flex-wrap gap-2 mt-1">
+                                                            <span class="text-secondary small">Target Reg</span>
+                                                            <code class="small text-wrap">${targetRegistry?.base_url || '-'}</code>
+                                                            <span class="text-secondary small">path:</span>
+                                                            <code class="small text-wrap">${env.target_project_path || '-'}</code>
+                                                        </div>
+                                                        <div class="d-flex flex-wrap gap-2 mt-1">
+                                                            <span class="text-secondary small">Env Git</span>
+                                                            <code class="small text-wrap">${envRepo?.repo_url || '-'}</code>
+                                                            <span class="text-secondary small">path:</span>
+                                                            <code class="small text-wrap">${env.env_repo_path || '-'}</code>
+                                                        </div>
+                                                        <div class="d-flex flex-wrap gap-2 mt-1">
+                                                            <span class="text-secondary small">Deploy Git</span>
+                                                            <code class="small text-wrap">${deployRepo?.repo_url || '-'}</code>
+                                                            <span class="text-secondary small">path:</span>
+                                                            <code class="small text-wrap">${env.deploy_repo_path || '-'}</code>
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
