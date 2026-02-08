@@ -912,6 +912,12 @@ function createArgocdInstanceForm(instance = null, tenants = []) {
             <div class="card-footer text-end">
                 <div class="d-flex">
                     <a href="#/tenants${instance?.tenant_id ? `/${instance.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
+                    ${isEdit ? `
+                        <button type="button" class="btn btn-outline-danger ms-2" id="delete-argocd-instance-btn">
+                            <i class="ti ti-trash"></i>
+                            Delete
+                        </button>
+                    ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update Instance' : 'Create Instance'}
@@ -988,6 +994,12 @@ function createArgocdAppForm(app = null, instances = [], environment = null) {
             <div class="card-footer text-end">
                 <div class="d-flex">
                     <a href="#/environments/${environment?.id || app?.environment_id}" class="btn btn-link">Cancel</a>
+                    ${isEdit ? `
+                        <button type="button" class="btn btn-outline-danger ms-2" id="delete-argocd-app-btn">
+                            <i class="ti ti-trash"></i>
+                            Delete
+                        </button>
+                    ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update App' : 'Create App'}
@@ -1086,6 +1098,12 @@ function createKubernetesInstanceForm(instance = null, tenants = []) {
             <div class="card-footer text-end">
                 <div class="d-flex">
                     <a href="#/tenants${instance?.tenant_id ? `/${instance.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
+                    ${isEdit ? `
+                        <button type="button" class="btn btn-outline-danger ms-2" id="delete-kubernetes-instance-btn">
+                            <i class="ti ti-trash"></i>
+                            Delete
+                        </button>
+                    ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update Instance' : 'Create Instance'}
@@ -1147,6 +1165,12 @@ function createKubernetesNamespaceForm(entry = null, instances = [], environment
             <div class="card-footer text-end">
                 <div class="d-flex">
                     <a href="#/environments${environment?.id ? `/${environment.id}/edit` : ''}" class="btn btn-link">Cancel</a>
+                    ${isEdit ? `
+                        <button type="button" class="btn btn-outline-danger ms-2" id="delete-kubernetes-namespace-btn">
+                            <i class="ti ti-trash"></i>
+                            Delete
+                        </button>
+                    ` : ''}
                     <button type="submit" class="btn btn-primary ms-auto">
                         <i class="ti ti-check me-2"></i>
                         ${isEdit ? 'Update Namespace' : 'Create Namespace'}

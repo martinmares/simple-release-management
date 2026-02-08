@@ -2026,6 +2026,22 @@ router.on('/argocd/:id/edit', async (params) => {
                 router.navigate(`/tenants/${instance.tenant_id}`);
             });
         });
+        document.getElementById('delete-argocd-instance-btn')?.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Delete ArgoCD Instance?',
+                `Are you sure you want to delete \"${instance.name}\"?`,
+                'Delete',
+                'Cancel'
+            );
+            if (!confirmed) return;
+            try {
+                await api.deleteArgocdInstance(instance.id);
+                getApp().showSuccess('ArgoCD instance deleted');
+                router.navigate(`/tenants/${instance.tenant_id}`);
+            } catch (error) {
+                getApp().showError(error.message);
+            }
+        });
     } catch (error) {
         console.error(error);
         content.innerHTML = `<div class="alert alert-danger">Failed to load instance</div>`;
@@ -2511,6 +2527,22 @@ router.on('/argocd-apps/:id/edit', async (params) => {
                 router.navigate(`/environments/${environment.id}/edit`);
             });
         });
+        document.getElementById('delete-argocd-app-btn')?.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Delete ArgoCD App?',
+                `Are you sure you want to delete "${app.application_name}"?`,
+                'Delete',
+                'Cancel'
+            );
+            if (!confirmed) return;
+            try {
+                await api.deleteArgocdApp(app.id);
+                getApp().showSuccess('ArgoCD app deleted');
+                router.navigate(`/tenants/${environment.tenant_id}`);
+            } catch (error) {
+                getApp().showError(error.message);
+            }
+        });
     } catch (error) {
         console.error(error);
         content.innerHTML = `<div class="alert alert-danger">Failed to load app</div>`;
@@ -2565,6 +2597,22 @@ router.on('/kubernetes/:id/edit', async (params) => {
                 await api.updateKubernetesInstance(params.id, data);
                 router.navigate(`/tenants/${instance.tenant_id}`);
             });
+        });
+        document.getElementById('delete-kubernetes-instance-btn')?.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Delete Kubernetes Instance?',
+                `Are you sure you want to delete \"${instance.name}\"?`,
+                'Delete',
+                'Cancel'
+            );
+            if (!confirmed) return;
+            try {
+                await api.deleteKubernetesInstance(instance.id);
+                getApp().showSuccess('Kubernetes instance deleted');
+                router.navigate(`/tenants/${instance.tenant_id}`);
+            } catch (error) {
+                getApp().showError(error.message);
+            }
         });
     } catch (error) {
         console.error(error);
@@ -3157,6 +3205,22 @@ router.on('/kubernetes-namespaces/:id/edit', async (params) => {
                 await api.updateKubernetesNamespace(params.id, data);
                 router.navigate(`/environments/${environment.id}/edit`);
             });
+        });
+        document.getElementById('delete-kubernetes-namespace-btn')?.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Delete Kubernetes Namespace?',
+                `Are you sure you want to delete "${entry.namespace}"?`,
+                'Delete',
+                'Cancel'
+            );
+            if (!confirmed) return;
+            try {
+                await api.deleteKubernetesNamespace(entry.id);
+                getApp().showSuccess('Kubernetes namespace deleted');
+                router.navigate(`/tenants/${environment.tenant_id}`);
+            } catch (error) {
+                getApp().showError(error.message);
+            }
         });
     } catch (error) {
         console.error(error);
