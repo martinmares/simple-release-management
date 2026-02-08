@@ -232,6 +232,32 @@ function attachEnvironmentVarHandlers() {
     attachRemoveHandlers();
 }
 
+function collectEnvironmentVarMappings() {
+    const mappings = [];
+    const rows = document.querySelectorAll('#env-var-mappings [data-env-var-index]');
+    rows.forEach(row => {
+        const source = row.querySelector('.env-var-source')?.value?.trim() || '';
+        const target = row.querySelector('.env-var-target')?.value?.trim() || '';
+        if (source && target) {
+            mappings.push({ source_key: source, target_key: target });
+        }
+    });
+    return mappings;
+}
+
+function collectEnvironmentExtraVars() {
+    const extra = [];
+    const rows = document.querySelectorAll('#extra-env-vars [data-extra-var-index]');
+    rows.forEach(row => {
+        const key = row.querySelector('.extra-var-key')?.value?.trim() || '';
+        const value = row.querySelector('.extra-var-value')?.value?.trim() || '';
+        if (key && value) {
+            extra.push({ key, value });
+        }
+    });
+    return extra;
+}
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('app', () => ({
         // State
@@ -2325,7 +2351,7 @@ router.on('/argocd-apps/:id', async (params) => {
                 pollTimer = setInterval(loadStatus, seconds * 1000);
             }
         };
-        const defaultPoll = Number.isFinite(poll) && poll > 0 ? poll : 10;
+        const defaultPoll = Number.isFinite(poll) && poll > 0 ? poll : 0;
         if (pollSelect) {
             pollSelect.value = String(defaultPoll);
             pollSelect.addEventListener('change', () => {
@@ -2699,6 +2725,15 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
                             </div>
                         </div>
                     </div>
+                    <div class="mt-2">
+                        <label class="form-label small text-secondary mb-1">Auto refresh</label>
+                        <select class="form-select form-select-sm w-auto" id="k8s-poll-select">
+                            <option value="0">Off</option>
+                            <option value="10">10s</option>
+                            <option value="30">30s</option>
+                            <option value="60">60s</option>
+                        </select>
+                    </div>
                     <div class="mt-3">
                         <button class="btn btn-outline-primary btn-sm" id="k8s-skopeo-open">
                             <i class="ti ti-wand"></i>
@@ -2945,9 +2980,9 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
             }
         };
 
-        const loadResources = async (kind) => {
+        const loadResources = async (kind, force = false) => {
             const fetchKind = kind === 'images' ? 'deployments' : kind;
-            if (!resourceCache.has(fetchKind)) {
+            if (force || !resourceCache.has(fetchKind)) {
                 resourceBody.innerHTML = `<tr><td class="text-secondary">Loading...</td></tr>`;
                 try {
                     const data = await api.getKubernetesNamespaceResources(entry.id, fetchKind);
@@ -3126,11 +3161,13 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
 
         document.getElementById('k8s-skopeo-open')?.addEventListener('click', openSkopeoModal);
 
+        let activeKind = 'namespaces';
         document.querySelectorAll('#kubernetes-resource-tabs .nav-link').forEach(btn => {
             btn.addEventListener('click', async () => {
                 document.querySelectorAll('#kubernetes-resource-tabs .nav-link').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                await loadResources(btn.getAttribute('data-kind'));
+                activeKind = btn.getAttribute('data-kind');
+                await loadResources(activeKind);
             });
         });
 
@@ -3173,8 +3210,36 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
         setTimeout(loadVersion, 0);
         loadResources('namespaces');
 
+        const poll = env.kubernetes_poll_interval_seconds || 0;
+        let pollTimer = null;
+        const pollSelect = document.getElementById('k8s-poll-select');
+        const setPoll = (seconds) => {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            if (seconds > 0) {
+                pollTimer = setInterval(async () => {
+                    await loadVersion();
+                    await loadResources(activeKind, true);
+                }, seconds * 1000);
+            }
+        };
+        const defaultPoll = Number.isFinite(poll) && poll > 0 ? poll : 0;
+        if (pollSelect) {
+            pollSelect.value = String(defaultPoll);
+            pollSelect.addEventListener('change', () => {
+                const seconds = parseInt(pollSelect.value, 10);
+                setPoll(Number.isFinite(seconds) ? seconds : 0);
+            });
+        }
+        setPoll(defaultPoll);
+
         if (eventSource) {
             window.addEventListener('hashchange', () => eventSource.close(), { once: true });
+        }
+        if (pollTimer) {
+            window.addEventListener('hashchange', () => clearInterval(pollTimer), { once: true });
         }
     } catch (error) {
         console.error(error);
@@ -3426,6 +3491,10 @@ router.on('/environments/new', async (params, query) => {
                     const parsed = parseInt(data.argocd_poll_interval_seconds, 10);
                     data.argocd_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
                 }
+                if (data.kubernetes_poll_interval_seconds !== undefined) {
+                    const parsed = parseInt(data.kubernetes_poll_interval_seconds, 10);
+                    data.kubernetes_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
+                }
                 data.release_env_var_mappings = collectEnvironmentVarMappings();
                 data.extra_env_vars = collectEnvironmentExtraVars();
                 await api.createEnvironment(tenantId, data);
@@ -3555,6 +3624,10 @@ router.on('/environments/:id/edit', async (params) => {
                 if (data.argocd_poll_interval_seconds !== undefined) {
                     const parsed = parseInt(data.argocd_poll_interval_seconds, 10);
                     data.argocd_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
+                }
+                if (data.kubernetes_poll_interval_seconds !== undefined) {
+                    const parsed = parseInt(data.kubernetes_poll_interval_seconds, 10);
+                    data.kubernetes_poll_interval_seconds = Number.isFinite(parsed) ? parsed : 0;
                 }
                 data.release_env_var_mappings = collectEnvironmentVarMappings();
                 data.extra_env_vars = collectEnvironmentExtraVars();
@@ -4301,6 +4374,9 @@ router.on('/bundles/:id/edit', async (params) => {
             api.getBundle(params.id),
             api.getBundleVersions(params.id),
         ]);
+        const sourceRegistry = bundle.source_registry_id
+            ? await api.getRegistry(bundle.source_registry_id).catch(() => null)
+            : null;
         const latestVersion = versions.length > 0
             ? Math.max(...versions.map(v => v.version))
             : null;

@@ -286,6 +286,7 @@ pub struct Environment {
     pub release_env_var_mappings: serde_json::Value,
     pub extra_env_vars: serde_json::Value,
     pub argocd_poll_interval_seconds: i32,
+    pub kubernetes_poll_interval_seconds: i32,
     pub created_at: DateTime<Utc>,
 }
 

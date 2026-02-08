@@ -357,6 +357,7 @@ pub struct EnvironmentRequest {
     pub release_env_var_mappings: Option<Vec<DeployTargetEnvVarInput>>,
     pub extra_env_vars: Option<Vec<DeployTargetExtraEnvVarInput>>,
     pub argocd_poll_interval_seconds: Option<i32>,
+    pub kubernetes_poll_interval_seconds: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -847,7 +848,7 @@ async fn create_environment(
             env_repo_id, env_repo_path, env_repo_branch,
             deploy_repo_id, deploy_repo_path, deploy_repo_branch,
             allow_auto_release, append_env_suffix, release_manifest_mode, encjson_key_dir,
-            release_env_var_mappings, extra_env_vars, argocd_poll_interval_seconds
+            release_env_var_mappings, extra_env_vars, argocd_poll_interval_seconds, kubernetes_poll_interval_seconds
         )
         VALUES (
             $1, $2, $3, $4,
@@ -858,7 +859,7 @@ async fn create_environment(
             $17, $18, $19,
             $20, $21, $22,
             $23, $24, $25, $26,
-            $27, $28, $29
+            $27, $28, $29, $30
         )
         RETURNING *
         "#
@@ -892,6 +893,7 @@ async fn create_environment(
     .bind(env_vars_to_json(payload.release_env_var_mappings.clone()))
     .bind(extra_env_vars_to_json(payload.extra_env_vars.clone()))
     .bind(payload.argocd_poll_interval_seconds.unwrap_or(0))
+    .bind(payload.kubernetes_poll_interval_seconds.unwrap_or(0))
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -1083,8 +1085,9 @@ async fn update_environment(
             encjson_key_dir = $25,
             release_env_var_mappings = $26,
             extra_env_vars = $27,
-            argocd_poll_interval_seconds = $28
-        WHERE id = $29
+            argocd_poll_interval_seconds = $28,
+            kubernetes_poll_interval_seconds = $29
+        WHERE id = $30
         RETURNING *
         "#
     )
@@ -1116,6 +1119,7 @@ async fn update_environment(
     .bind(if payload.release_env_var_mappings.is_some() { env_vars_to_json(payload.release_env_var_mappings.clone()) } else { current.release_env_var_mappings.clone() })
     .bind(if payload.extra_env_vars.is_some() { extra_env_vars_to_json(payload.extra_env_vars.clone()) } else { current.extra_env_vars.clone() })
     .bind(payload.argocd_poll_interval_seconds.unwrap_or(current.argocd_poll_interval_seconds))
+    .bind(payload.kubernetes_poll_interval_seconds.unwrap_or(current.kubernetes_poll_interval_seconds))
     .bind(id)
     .fetch_optional(&state.pool)
     .await

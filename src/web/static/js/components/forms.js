@@ -759,6 +759,17 @@ function createEnvironmentForm(environment = null, tenants = [], registries = []
                                 <option value="${o.value}" ${Number(environment?.argocd_poll_interval_seconds ?? 0) === o.value ? 'selected' : ''}>${o.label}</option>
                             `).join('')}
                         </select>
+                        <label class="form-label mt-3">Kubernetes poll interval</label>
+                        <select class="form-select" name="kubernetes_poll_interval_seconds">
+                            ${[
+                                { value: 0, label: 'Off' },
+                                { value: 10, label: '10s' },
+                                { value: 30, label: '30s' },
+                                { value: 60, label: '60s' },
+                            ].map(o => `
+                                <option value="${o.value}" ${Number(environment?.kubernetes_poll_interval_seconds ?? 0) === o.value ? 'selected' : ''}>${o.label}</option>
+                            `).join('')}
+                        </select>
                         <label class="form-label mt-2">Encjson key dir</label>
                         <input type="text" class="form-control" name="encjson_key_dir"
                                value="${environment?.encjson_key_dir || ''}"
