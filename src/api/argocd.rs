@@ -2,7 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
-    routing::{get, post, put, delete},
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};

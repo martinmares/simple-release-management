@@ -16,8 +16,8 @@ pub fn encrypt(plaintext: &str, secret_key: &str) -> Result<String> {
     let cipher = Aes256Gcm::new(&key.into());
 
     // Generate random 12-byte nonce
-    let mut rng = rand::thread_rng();
-    let nonce_bytes: [u8; 12] = rng.r#gen();
+    let mut rng = rand::rng();
+    let nonce_bytes: [u8; 12] = rng.random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt the plaintext

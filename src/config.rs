@@ -17,6 +17,7 @@ pub struct CliArgs {
     pub port: u16,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub database_url: String,

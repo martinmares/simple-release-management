@@ -1,7 +1,9 @@
+#![allow(dead_code)]
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    routing::{delete, get, post, put},
+    routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};

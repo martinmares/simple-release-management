@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use axum::{
     extract::{Path, State},
     http::{header, StatusCode},
     response::{IntoResponse, Sse},
-    routing::{delete, get, post, put},
+    routing::{get, post},
     Json, Router,
 };
 use anyhow::Context;
@@ -4383,7 +4385,7 @@ async fn deploy_job_logs_sse(
         logs.get(&job_id).map(|sender| sender.subscribe())
     };
 
-    let Some(mut rx) = receiver else {
+    let Some(rx) = receiver else {
         return (
             StatusCode::NOT_FOUND,
             [(header::CONTENT_TYPE, "text/plain")],

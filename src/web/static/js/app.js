@@ -2053,9 +2053,9 @@ router.on('/argocd-apps/:id', async (params) => {
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
-                    <a href="#/environments/${env.id}/edit" class="btn btn-ghost-secondary">
+                    <a href="#/tenants/${env.tenant_id}" class="btn btn-ghost-secondary">
                         <i class="ti ti-arrow-left"></i>
-                        Back to Environment
+                        Back to Tenant
                     </a>
                 </div>
                 <div class="col-auto">
@@ -2587,9 +2587,9 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
-                    <a href="#/environments/${env.id}/edit" class="btn btn-ghost-secondary">
+                    <a href="#/tenants/${env.tenant_id}" class="btn btn-ghost-secondary">
                         <i class="ti ti-arrow-left"></i>
-                        Back to Environment
+                        Back to Tenant
                     </a>
                 </div>
             </div>

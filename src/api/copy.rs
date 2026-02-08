@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use axum::{
     extract::{Path, State, Query},
     http::StatusCode,
@@ -626,7 +628,7 @@ async fn copy_bundle_version(
             )
         })?;
 
-    let source_registry: (String,) = sqlx::query_as(
+    let _source_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
     )
     .bind(source_registry_id)
@@ -641,7 +643,7 @@ async fn copy_bundle_version(
         )
     })?;
 
-    let target_registry: (String,) = sqlx::query_as(
+    let _target_registry: (String,) = sqlx::query_as(
         "SELECT base_url FROM registries WHERE id = $1",
     )
     .bind(target_registry_id)
@@ -735,7 +737,7 @@ async fn copy_bundle_version(
             apply_registry_project_path(&mapping.source_image, source_project_path.as_deref());
         let target_path =
             apply_registry_project_path(&mapping.target_image, target_project_path.as_deref());
-        let copy_job_image_id: Uuid = sqlx::query_scalar(
+        let _copy_job_image_id: Uuid = sqlx::query_scalar(
             "INSERT INTO copy_job_images
              (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag, copy_status)
              VALUES ($1, $2, $3, $4, $5, $6, 'pending')
@@ -835,7 +837,7 @@ async fn precheck_copy_images(
     Path((bundle_id, version)): Path<(Uuid, i32)>,
     Json(payload): Json<PrecheckRequest>,
 ) -> Result<Json<PrecheckResult>, (StatusCode, Json<ErrorResponse>)> {
-    let bundle = sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
+    let _bundle = sqlx::query_as::<_, Bundle>("SELECT * FROM bundles WHERE id = $1")
         .bind(bundle_id)
         .fetch_optional(&state.pool)
         .await
@@ -1056,7 +1058,7 @@ async fn precheck_release_copy_images(
         ));
     }
 
-    let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+    let _environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
         .bind(environment_id)
         .fetch_optional(&state.pool)
         .await
@@ -1610,7 +1612,7 @@ async fn start_selective_copy_job(
         )
     })?;
 
-    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, base_tag, bundle_id, auto_tag_enabled, environment_id)) = base_job else {
+    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, _base_tag, bundle_id, auto_tag_enabled, environment_id)) = base_job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {

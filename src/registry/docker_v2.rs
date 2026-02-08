@@ -2,7 +2,7 @@ use super::client::*;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 /// Docker Registry v2 API client
 pub struct DockerRegistryClient {

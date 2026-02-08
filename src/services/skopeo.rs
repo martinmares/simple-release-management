@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 /// Skopeo credentials pro autentizaci
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 use super::client::RegistryClient;
 use super::docker_v2::DockerRegistryClient;
 use super::harbor::HarborClient;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 /// Typ registry
