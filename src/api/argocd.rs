@@ -1023,7 +1023,9 @@ async fn patch_argocd_target_revision(
     );
     let patch_body = serde_json::json!({
         "patchType": "merge",
-        "patch": format!("{{\\\"spec\\\":{{\\\"source\\\":{{\\\"targetRevision\\\":\\\"{}\\\"}}}}}}", target_revision),
+        "patch": serde_json::json!({
+            "spec": { "source": { "targetRevision": target_revision } }
+        }).to_string(),
     });
     let resp = send_with_auth(state, instance, |client| {
         client
