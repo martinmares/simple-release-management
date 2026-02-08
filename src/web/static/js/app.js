@@ -1449,11 +1449,17 @@ router.on('/tenants/:id', async (params) => {
                                         </div>
                                     ` : argocdApps.map(app => {
                                         const env = app.environment;
+                                        const inactiveClass = app.is_active ? '' : 'opacity-75';
                                         return `
-                                            <div class="list-group-item">
+                                            <div class="list-group-item ${inactiveClass}">
                                                 <div class="d-flex align-items-center justify-content-between">
                                                     <div>
-                                                        <div><a href="#/argocd-apps/${app.id}" class="fw-semibold text-reset">${app.application_name}</a></div>
+                                                        <div>
+                                                            ${app.is_active
+                                                                ? `<a href="#/argocd-apps/${app.id}" class="fw-semibold text-reset">${app.application_name}</a>`
+                                                                : `<span class="fw-semibold text-secondary">${app.application_name}</span>`
+                                                            }
+                                                        </div>
                                                         <div class="text-secondary small">
                                                             Env:
                                                             <span class="badge ms-1" style="${env?.color ? `background:${env.color};color:#fff;` : ''}">
@@ -1531,11 +1537,17 @@ router.on('/tenants/:id', async (params) => {
                                         </div>
                                     ` : k8sNamespaces.map(ns => {
                                         const env = ns.environment;
+                                        const inactiveClass = ns.is_active ? '' : 'opacity-75';
                                         return `
-                                            <div class="list-group-item">
+                                            <div class="list-group-item ${inactiveClass}">
                                                 <div class="d-flex align-items-center justify-content-between">
                                                     <div>
-                                                        <div><a href="#/kubernetes-namespaces/${ns.id}" class="fw-semibold text-reset">${ns.namespace}</a></div>
+                                                        <div>
+                                                            ${ns.is_active
+                                                                ? `<a href="#/kubernetes-namespaces/${ns.id}" class="fw-semibold text-reset">${ns.namespace}</a>`
+                                                                : `<span class="fw-semibold text-secondary">${ns.namespace}</span>`
+                                                            }
+                                                        </div>
                                                         <div class="text-secondary small">
                                                             Env:
                                                             <span class="badge ms-1" style="${env?.color ? `background:${env.color};color:#fff;` : ''}">
