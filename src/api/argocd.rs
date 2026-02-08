@@ -7,8 +7,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::crypto;
@@ -18,6 +21,9 @@ use crate::db::models::{ArgocdInstance, EnvironmentArgocdApp};
 pub struct ArgocdApiState {
     pub pool: PgPool,
     pub encryption_secret: String,
+    pub client_tls: reqwest::Client,
+    pub client_insecure: reqwest::Client,
+    pub token_cache: Arc<RwLock<HashMap<Uuid, String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +45,7 @@ pub struct ArgocdInstanceRequest {
 #[derive(Debug, Deserialize)]
 pub struct ArgocdAppRequest {
     pub argocd_instance_id: Uuid,
+    pub project_name: Option<String>,
     pub application_name: String,
     pub is_active: Option<bool>,
     pub ignore_resources: Option<Vec<String>>,
@@ -49,6 +56,7 @@ pub struct ArgocdAppSummary {
     pub id: Uuid,
     pub environment_id: Uuid,
     pub argocd_instance_id: Uuid,
+    pub project_name: String,
     pub application_name: String,
     pub is_active: bool,
     pub last_sync_status: Option<String>,
@@ -68,6 +76,7 @@ pub struct ArgocdStatus {
     pub operation_phase: Option<String>,
     pub operation_message: Option<String>,
     pub revision: Option<String>,
+    pub target_revision: Option<String>,
     pub operation_resources: Option<Vec<ArgocdOperationResource>>,
     pub conditions: Option<Vec<ArgocdCondition>>,
     pub resource_issues: Option<Vec<ArgocdResourceIssue>>,
@@ -148,6 +157,11 @@ pub struct ArgocdEvent {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct TargetRevisionRequest {
+    pub target_revision: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct StreamQuery {
     pub interval: Option<i64>,
 }
@@ -162,10 +176,12 @@ pub fn router(state: ArgocdApiState) -> Router {
         .route("/argocd-apps/{id}/refresh", post(refresh_app))
         .route("/argocd-apps/{id}/sync", post(sync_app))
         .route("/argocd-apps/{id}/terminate", post(terminate_app))
+        .route("/argocd-apps/{id}/target-revision", post(update_target_revision))
         .route("/argocd-apps/{id}/stream", get(stream_app_status))
         .route("/argocd-apps/{id}/resources", get(get_app_resources))
         .route("/argocd-apps/{id}/events", get(get_app_events))
         .route("/argocd-apps/{id}/events/stream", get(stream_app_events))
+        .route("/argocd-apps/{id}/deploy-tags", get(list_env_deploy_tags))
         .with_state(state)
 }
 
@@ -457,6 +473,7 @@ async fn list_env_apps(
             a.id,
             a.environment_id,
             a.argocd_instance_id,
+            a.project_name,
             a.application_name,
             a.is_active,
             a.last_sync_status,
@@ -496,14 +513,15 @@ async fn create_env_app(
     let app = sqlx::query_as::<_, EnvironmentArgocdApp>(
         r#"
         INSERT INTO environment_argocd_apps
-        (id, environment_id, argocd_instance_id, application_name, is_active, ignore_resources)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        (id, environment_id, argocd_instance_id, project_name, application_name, is_active, ignore_resources)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         "#
     )
     .bind(Uuid::new_v4())
     .bind(env_id)
     .bind(payload.argocd_instance_id)
+    .bind(payload.project_name.as_deref().unwrap_or("default").trim())
     .bind(payload.application_name.trim())
     .bind(payload.is_active.unwrap_or(true))
     .bind(serde_json::to_value(payload.ignore_resources.unwrap_or_default()).unwrap_or(serde_json::Value::Array(vec![])))
@@ -560,14 +578,16 @@ async fn update_env_app(
         r#"
         UPDATE environment_argocd_apps
         SET argocd_instance_id = $1,
-            application_name = $2,
-            is_active = $3,
-            ignore_resources = $4
-        WHERE id = $5
+            project_name = $2,
+            application_name = $3,
+            is_active = $4,
+            ignore_resources = $5
+        WHERE id = $6
         RETURNING *
         "#
     )
     .bind(payload.argocd_instance_id)
+    .bind(payload.project_name.as_deref().unwrap_or("default").trim())
     .bind(payload.application_name.trim())
     .bind(payload.is_active.unwrap_or(true))
     .bind(serde_json::to_value(payload.ignore_resources.unwrap_or_default()).unwrap_or(serde_json::Value::Array(vec![])))
@@ -706,6 +726,25 @@ async fn terminate_app(
     Ok(StatusCode::ACCEPTED)
 }
 
+async fn update_target_revision(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<TargetRevisionRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let target_revision = payload.target_revision.trim();
+    if target_revision.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "target_revision is required".to_string(),
+            }),
+        ));
+    }
+    let (instance, app) = load_instance_and_app(&state.pool, id).await?;
+    patch_argocd_target_revision(&state, &instance, &app, target_revision).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
 async fn stream_app_status(
     State(state): State<ArgocdApiState>,
     Path(id): Path<Uuid>,
@@ -820,6 +859,58 @@ async fn stream_app_events(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
+async fn list_env_deploy_tags(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<String>>, (StatusCode, Json<ErrorResponse>)> {
+    let env_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT environment_id FROM environment_argocd_apps WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "ArgoCD app not found".to_string(),
+            }),
+        )
+    })?;
+
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT tag_name
+        FROM deploy_jobs
+        WHERE environment_id = $1
+          AND status = 'success'
+          AND tag_name IS NOT NULL
+        ORDER BY tag_name DESC
+        "#,
+    )
+    .bind(env_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    Ok(Json(rows))
+}
+
 async fn load_instance_and_app(
     pool: &PgPool,
     app_id: Uuid,
@@ -870,14 +961,6 @@ async fn call_argocd_action(
     app: &EnvironmentArgocdApp,
     action: &str,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.verify_tls).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
     let url = match action {
         "refresh" => format!("{}/api/v1/applications/{}?refresh=hard", instance.base_url, app.application_name),
         "sync" => format!("{}/api/v1/applications/{}/sync", instance.base_url, app.application_name),
@@ -885,20 +968,12 @@ async fn call_argocd_action(
         _ => return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: "Invalid action".to_string() }))),
     };
 
-    let mut req = match action {
-        "terminate" => client.delete(url).json(&serde_json::json!({})),
-        "refresh" => client.get(url),
-        _ => client.post(url).json(&serde_json::json!({})),
-    };
-    req = apply_auth(state, &client, req, instance).await?;
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("ArgoCD request failed: {}", e),
-            }),
-        )
-    })?;
+    let resp = send_with_auth(state, instance, |client| match action {
+        "terminate" => client.delete(url.clone()).json(&serde_json::json!({})),
+        "refresh" => client.get(url.clone()),
+        _ => client.post(url.clone()).json(&serde_json::json!({})),
+    })
+    .await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -918,27 +993,9 @@ async fn call_argocd_sync(
     app: &EnvironmentArgocdApp,
     resources: Vec<ArgocdSyncResource>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.verify_tls).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
     let url = format!("{}/api/v1/applications/{}/sync", instance.base_url, app.application_name);
-    let mut req = client.post(url).json(&serde_json::json!({
-        "resources": resources
-    }));
-    req = apply_auth(state, &client, req, instance).await?;
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("ArgoCD request failed: {}", e),
-            }),
-        )
-    })?;
+    let payload = serde_json::json!({ "resources": resources });
+    let resp = send_with_auth(state, instance, |client| client.post(url.clone()).json(&payload)).await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
@@ -952,31 +1009,49 @@ async fn call_argocd_sync(
     Ok(())
 }
 
+async fn patch_argocd_target_revision(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+    target_revision: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let url = format!(
+        "{}/api/v1/applications/{}?project={}",
+        instance.base_url,
+        app.application_name,
+        app.project_name
+    );
+    let patch_body = serde_json::json!({
+        "patchType": "merge",
+        "patch": format!("{{\\\"spec\\\":{{\\\"source\\\":{{\\\"targetRevision\\\":\\\"{}\\\"}}}}}}", target_revision),
+    });
+    let resp = send_with_auth(state, instance, |client| {
+        client
+            .patch(url.clone())
+            .header("Content-Type", "application/json")
+            .json(&patch_body)
+    })
+    .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD patch failed: {} {}", status, body),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 async fn fetch_argocd_status(
     state: &ArgocdApiState,
     instance: &ArgocdInstance,
     app: &EnvironmentArgocdApp,
 ) -> Result<ArgocdStatus, (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.verify_tls).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
-
     let url = format!("{}/api/v1/applications/{}", instance.base_url, app.application_name);
-    let mut req = client.get(url);
-    req = apply_auth(state, &client, req, instance).await?;
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("ArgoCD request failed: {}", e),
-            }),
-        )
-    })?;
+    let resp = send_with_auth(state, instance, |client| client.get(url.clone())).await?;
     let value: serde_json::Value = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
@@ -995,6 +1070,9 @@ async fn fetch_argocd_status(
     let operation_sync_message = value.pointer("/status/operationState/syncResult/message").and_then(|v| v.as_str()).map(str::to_string);
     let revision = value.pointer("/status/operationState/syncResult/revision")
         .or_else(|| value.pointer("/status/sync/revision"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let target_revision = value.pointer("/spec/source/targetRevision")
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
@@ -1068,6 +1146,7 @@ async fn fetch_argocd_status(
         operation_phase,
         operation_message,
         revision,
+        target_revision,
         operation_resources,
         conditions,
         resource_issues,
@@ -1085,25 +1164,8 @@ async fn fetch_argocd_resources(
     instance: &ArgocdInstance,
     app: &EnvironmentArgocdApp,
 ) -> Result<Vec<ArgocdResource>, (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.verify_tls).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
     let url = format!("{}/api/v1/applications/{}/resource-tree", instance.base_url, app.application_name);
-    let mut req = client.get(url);
-    req = apply_auth(state, &client, req, instance).await?;
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("ArgoCD request failed: {}", e),
-            }),
-        )
-    })?;
+    let resp = send_with_auth(state, instance, |client| client.get(url.clone())).await?;
     let value: serde_json::Value = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
@@ -1143,25 +1205,8 @@ async fn fetch_argocd_events(
     instance: &ArgocdInstance,
     app: &EnvironmentArgocdApp,
 ) -> Result<Vec<ArgocdEvent>, (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.verify_tls).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
     let url = format!("{}/api/v1/applications/{}/events", instance.base_url, app.application_name);
-    let mut req = client.get(url);
-    req = apply_auth(state, &client, req, instance).await?;
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("ArgoCD request failed: {}", e),
-            }),
-        )
-    })?;
+    let resp = send_with_auth(state, instance, |client| client.get(url.clone())).await?;
     let value: serde_json::Value = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
@@ -1341,10 +1386,47 @@ async fn cache_status(
     Ok(())
 }
 
-fn build_client(verify_tls: bool) -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(!verify_tls)
-        .build()
+fn get_client<'a>(state: &'a ArgocdApiState, verify_tls: bool) -> &'a reqwest::Client {
+    if verify_tls {
+        &state.client_tls
+    } else {
+        &state.client_insecure
+    }
+}
+
+async fn send_with_auth<F>(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    build_req: F,
+) -> Result<reqwest::Response, (StatusCode, Json<ErrorResponse>)>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    let client = get_client(state, instance.verify_tls);
+    let req = apply_auth(state, client, build_req(client), instance, false).await?;
+    let resp = req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD request failed: {}", e),
+            }),
+        )
+    })?;
+
+    if resp.status() == StatusCode::UNAUTHORIZED && instance.auth_type != "token" {
+        let req = apply_auth(state, client, build_req(client), instance, true).await?;
+        let retry = req.send().await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("ArgoCD request failed: {}", e),
+                }),
+            )
+        })?;
+        return Ok(retry);
+    }
+
+    Ok(resp)
 }
 
 async fn apply_auth(
@@ -1352,6 +1434,7 @@ async fn apply_auth(
     client: &reqwest::Client,
     req: reqwest::RequestBuilder,
     instance: &ArgocdInstance,
+    force_refresh: bool,
 ) -> Result<reqwest::RequestBuilder, (StatusCode, Json<ErrorResponse>)> {
     match instance.auth_type.as_str() {
         "token" => {
@@ -1371,49 +1454,74 @@ async fn apply_auth(
             }
         }
         _ => {
-            let username = instance.username.clone().unwrap_or_default();
-            let password = instance
-                .password_encrypted
-                .as_ref()
-                .and_then(|v| crypto::decrypt(v, &state.encryption_secret).ok())
-                .unwrap_or_default();
-
-            let session_url = format!("{}/api/v1/session", instance.base_url);
-            let resp = client
-                .post(session_url)
-                .json(&serde_json::json!({
-                    "username": username,
-                    "password": password,
-                }))
-                .send()
-                .await
-                .map_err(|e| {
-                    (
-                        StatusCode::BAD_GATEWAY,
-                        Json(ErrorResponse {
-                            error: format!("ArgoCD session request failed: {}", e),
-                        }),
-                    )
-                })?;
-
-            let value: serde_json::Value = resp.json().await.map_err(|e| {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(ErrorResponse {
-                        error: format!("ArgoCD session decode failed: {}", e),
-                    }),
-                )
-            })?;
-            let token = value.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            if token.is_empty() {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "ArgoCD session token missing".to_string(),
-                    }),
-                ));
-            }
+            let token = get_argocd_session_token(state, instance, client, force_refresh).await?;
             Ok(req.bearer_auth(token))
         }
     }
+}
+
+async fn get_argocd_session_token(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    client: &reqwest::Client,
+    force_refresh: bool,
+) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    if !force_refresh {
+        if let Some(token) = state.token_cache.read().await.get(&instance.id).cloned() {
+            return Ok(token);
+        }
+    }
+
+    let username = instance.username.clone().unwrap_or_default();
+    let password = instance
+        .password_encrypted
+        .as_ref()
+        .and_then(|v| crypto::decrypt(v, &state.encryption_secret).ok())
+        .unwrap_or_default();
+    if username.trim().is_empty() || password.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Username/password missing for ArgoCD instance".to_string(),
+            }),
+        ));
+    }
+
+    let session_url = format!("{}/api/v1/session", instance.base_url);
+    let resp = client
+        .post(session_url)
+        .json(&serde_json::json!({
+            "username": username,
+            "password": password,
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("ArgoCD session request failed: {}", e),
+                }),
+            )
+        })?;
+
+    let value: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD session decode failed: {}", e),
+            }),
+        )
+    })?;
+    let token = value.get("token").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if token.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "ArgoCD session token missing".to_string(),
+            }),
+        ));
+    }
+    state.token_cache.write().await.insert(instance.id, token.clone());
+    Ok(token)
 }

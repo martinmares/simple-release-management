@@ -7,9 +7,12 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use crate::crypto;
@@ -19,6 +22,11 @@ use crate::db::models::{EnvironmentKubernetesNamespace, KubernetesInstance};
 pub struct KubernetesApiState {
     pub pool: PgPool,
     pub encryption_secret: String,
+    pub client_tls: reqwest::Client,
+    pub client_insecure: reqwest::Client,
+    pub oauth_client_tls: reqwest::Client,
+    pub oauth_client_insecure: reqwest::Client,
+    pub token_cache: Arc<RwLock<HashMap<Uuid, String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,7 +43,7 @@ pub struct KubernetesInstanceRequest {
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
-    pub insecure: Option<bool>,
+    pub verify_tls: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,7 +208,7 @@ async fn create_instance(
     let instance = sqlx::query_as::<_, KubernetesInstance>(
         r#"
         INSERT INTO kubernetes_instances
-        (id, tenant_id, name, base_url, oauth_base_url, auth_type, username, password_encrypted, token_encrypted, insecure)
+        (id, tenant_id, name, base_url, oauth_base_url, auth_type, username, password_encrypted, token_encrypted, verify_tls)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING *
         "#,
@@ -214,7 +222,7 @@ async fn create_instance(
     .bind(payload.username.as_deref().map(str::trim).filter(|v| !v.is_empty()))
     .bind(password_encrypted)
     .bind(token_encrypted)
-    .bind(payload.insecure.unwrap_or(false))
+    .bind(payload.verify_tls.unwrap_or(true))
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
@@ -293,7 +301,7 @@ async fn update_instance(
             username = $5,
             password_encrypted = $6,
             token_encrypted = $7,
-            insecure = $8
+            verify_tls = $8
         WHERE id = $9
         RETURNING *
         "#,
@@ -305,7 +313,7 @@ async fn update_instance(
     .bind(payload.username.as_deref().map(str::trim).filter(|v| !v.is_empty()))
     .bind(password_encrypted)
     .bind(token_encrypted)
-    .bind(payload.insecure.unwrap_or(false))
+    .bind(payload.verify_tls.unwrap_or(true))
     .bind(id)
     .fetch_one(&state.pool)
     .await
@@ -689,23 +697,62 @@ fn normalize_auth_type(raw: &str) -> String {
     }
 }
 
-fn build_client(insecure: bool) -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(insecure)
-        .build()
+fn get_client<'a>(state: &'a KubernetesApiState, verify_tls: bool) -> &'a reqwest::Client {
+    if verify_tls {
+        &state.client_tls
+    } else {
+        &state.client_insecure
+    }
 }
 
-fn build_oauth_client(insecure: bool) -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
-        .danger_accept_invalid_certs(insecure)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
+fn get_oauth_client<'a>(state: &'a KubernetesApiState, verify_tls: bool) -> &'a reqwest::Client {
+    if verify_tls {
+        &state.oauth_client_tls
+    } else {
+        &state.oauth_client_insecure
+    }
+}
+
+async fn send_with_auth<F>(
+    state: &KubernetesApiState,
+    instance: &KubernetesInstance,
+    build_req: F,
+) -> Result<reqwest::Response, (StatusCode, Json<ErrorResponse>)>
+where
+    F: Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+{
+    let client = get_client(state, instance.verify_tls);
+    let req = apply_auth(state, build_req(client), instance, false).await?;
+    let resp = req.send().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("Kubernetes request failed: {}", e),
+            }),
+        )
+    })?;
+
+    if resp.status() == StatusCode::UNAUTHORIZED && instance.auth_type != "token" {
+        let req = apply_auth(state, build_req(client), instance, true).await?;
+        let retry = req.send().await.map_err(|e| {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorResponse {
+                    error: format!("Kubernetes request failed: {}", e),
+                }),
+            )
+        })?;
+        return Ok(retry);
+    }
+
+    Ok(resp)
 }
 
 async fn apply_auth(
     state: &KubernetesApiState,
     req: reqwest::RequestBuilder,
     instance: &KubernetesInstance,
+    force_refresh: bool,
 ) -> Result<reqwest::RequestBuilder, (StatusCode, Json<ErrorResponse>)> {
     match instance.auth_type.as_str() {
         "token" => {
@@ -741,7 +788,7 @@ async fn apply_auth(
                 ));
             }
 
-            let token = fetch_openshift_token(instance, &username, &password).await?;
+            let token = fetch_openshift_token(state, instance, &username, &password, force_refresh).await?;
             Ok(req.bearer_auth(token))
         }
     }
@@ -796,27 +843,11 @@ async fn fetch_k8s_json(
     instance: &KubernetesInstance,
     path: &str,
 ) -> Result<serde_json::Value, (StatusCode, Json<ErrorResponse>)> {
-    let client = build_client(instance.insecure).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
-
     let url = format!("{}{}", instance.base_url.trim_end_matches('/'), path);
-    let mut req = client.get(url).header("Accept", "application/json");
-    req = apply_auth(state, req, instance).await?;
-
-    let resp = req.send().await.map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorResponse {
-                error: format!("Kubernetes request failed: {}", e),
-            }),
-        )
-    })?;
+    let resp = send_with_auth(state, instance, |client| {
+        client.get(url.clone()).header("Accept", "application/json")
+    })
+    .await?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -842,10 +873,18 @@ async fn fetch_k8s_json(
 }
 
 async fn fetch_openshift_token(
+    state: &KubernetesApiState,
     instance: &KubernetesInstance,
     username: &str,
     password: &str,
+    force_refresh: bool,
 ) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+    if !force_refresh {
+        if let Some(token) = state.token_cache.read().await.get(&instance.id).cloned() {
+            return Ok(token);
+        }
+    }
+
     let oauth_url = instance
         .oauth_base_url
         .as_deref()
@@ -861,15 +900,7 @@ async fn fetch_openshift_token(
             )
         })?;
 
-    let client = build_oauth_client(instance.insecure).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to create HTTP client: {}", e),
-            }),
-        )
-    })?;
-
+    let client = get_oauth_client(state, instance.verify_tls);
     let csrf = Uuid::new_v4().to_string();
     let resp = client
         .get(oauth_url)
@@ -902,6 +933,7 @@ async fn fetch_openshift_token(
         ));
     }
 
+    state.token_cache.write().await.insert(instance.id, token.clone());
     Ok(token)
 }
 

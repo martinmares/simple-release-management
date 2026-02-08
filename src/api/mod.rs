@@ -11,6 +11,9 @@ pub mod tenants;
 use axum::{routing::get, Json, Router};
 use serde::Serialize;
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// Vytvoří router s všemi API endpointy
 pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
@@ -26,10 +29,35 @@ pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
     let argocd_state = argocd::ArgocdApiState {
         pool: pool.clone(),
         encryption_secret: registry_state.encryption_secret.clone(),
+        client_tls: reqwest::Client::builder()
+            .build()
+            .expect("Failed to build Argocd HTTP client"),
+        client_insecure: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("Failed to build Argocd HTTP client"),
+        token_cache: Arc::new(RwLock::new(HashMap::new())),
     };
     let kubernetes_state = kubernetes::KubernetesApiState {
         pool: pool.clone(),
         encryption_secret: registry_state.encryption_secret.clone(),
+        client_tls: reqwest::Client::builder()
+            .build()
+            .expect("Failed to build Kubernetes HTTP client"),
+        client_insecure: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .expect("Failed to build Kubernetes HTTP client"),
+        oauth_client_tls: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build Kubernetes OAuth client"),
+        oauth_client_insecure: reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build Kubernetes OAuth client"),
+        token_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     let api_v1 = Router::new()

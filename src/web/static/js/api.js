@@ -512,6 +512,16 @@ class ApiClient {
         return this.get(`/argocd-apps/${id}/events`);
     }
 
+    async getArgocdDeployTags(id) {
+        return this.get(`/argocd-apps/${id}/deploy-tags`);
+    }
+
+    async updateArgocdTargetRevision(id, targetRevision) {
+        return this.post(`/argocd-apps/${id}/target-revision`, {
+            target_revision: targetRevision,
+        });
+    }
+
     async refreshArgocdApp(id) {
         return this.post(`/argocd-apps/${id}/refresh`, {});
     }

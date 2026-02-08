@@ -317,7 +317,7 @@ pub struct KubernetesInstance {
     pub password_encrypted: Option<String>,
     #[serde(skip_serializing)]
     pub token_encrypted: Option<String>,
-    pub insecure: bool,
+    pub verify_tls: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -326,6 +326,7 @@ pub struct EnvironmentArgocdApp {
     pub id: Uuid,
     pub environment_id: Uuid,
     pub argocd_instance_id: Uuid,
+    pub project_name: String,
     pub application_name: String,
     pub is_active: bool,
     pub ignore_resources: Option<serde_json::Value>,

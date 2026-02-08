@@ -1100,6 +1100,18 @@ router.on('/tenants/:id', async (params) => {
                 environment: entry.env,
             }))
         );
+        const k8sNamespacesByEnv = await Promise.all(
+            environments.map(async env => ({
+                env,
+                namespaces: await api.getKubernetesNamespaces(env.id).catch(() => []),
+            }))
+        );
+        const k8sNamespaces = k8sNamespacesByEnv.flatMap(entry =>
+            entry.namespaces.map(ns => ({
+                ...ns,
+                environment: entry.env,
+            }))
+        );
 
         const gitRepoById = new Map(gitRepos.map(repo => [repo.id, repo]));
         const registryById = new Map(registries.map(reg => [reg.id, reg]));
@@ -1385,17 +1397,22 @@ router.on('/tenants/:id', async (params) => {
                                             No ArgoCD instances yet
                                         </div>
                                     ` : argocdInstances.map(inst => `
-                                        <a href="#/argocd/${inst.id}/edit" class="list-group-item list-group-item-action">
+                                        <div class="list-group-item">
                                             <div class="d-flex align-items-center justify-content-between">
                                                 <div>
                                                     <div class="fw-semibold">${inst.name}</div>
                                                     <div class="text-secondary small"><code class="small">${inst.base_url}</code></div>
                                                 </div>
-                                                <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
-                                                    ${inst.verify_tls === false ? 'insecure' : 'tls'}
-                                                </span>
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
+                                                        ${inst.verify_tls === false ? 'insecure' : 'tls'}
+                                                    </span>
+                                                    <a href="#/argocd/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                        Edit
+                                                    </a>
+                                                </div>
                                             </div>
-                                        </a>
+                                        </div>
                                     `).join('')}
                                 </div>
                             </div>
@@ -1413,22 +1430,30 @@ router.on('/tenants/:id', async (params) => {
                                     ` : argocdApps.map(app => {
                                         const env = app.environment;
                                         return `
-                                            <a href="#/argocd-apps/${app.id}" class="list-group-item list-group-item-action">
+                                            <div class="list-group-item">
                                                 <div class="d-flex align-items-center justify-content-between">
                                                     <div>
-                                                        <div class="fw-semibold">${app.application_name}</div>
+                                                        <div><a href="#/argocd-apps/${app.id}" class="fw-semibold text-reset">${app.application_name}</a></div>
                                                         <div class="text-secondary small">
                                                             Env:
                                                             <span class="badge ms-1" style="${env?.color ? `background:${env.color};color:#fff;` : ''}">
                                                                 ${env?.name || '-'}
                                                             </span>
                                                         </div>
+                                                        <div class="text-secondary small">
+                                                            Project: <code class="small">${app.project_name || 'default'}</code>
+                                                        </div>
                                                     </div>
-                                                    <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
-                                                        ${app.is_active ? 'active' : 'inactive'}
-                                                    </span>
+                                                    <div class="d-flex align-items-center gap-2">
+                                                        <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                                            ${app.is_active ? 'active' : 'inactive'}
+                                                        </span>
+                                                        <a href="#/argocd-apps/${app.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                            Edit
+                                                        </a>
+                                                    </div>
                                                 </div>
-                                            </a>
+                                            </div>
                                         `;
                                     }).join('')}
                                 </div>
@@ -1454,22 +1479,68 @@ router.on('/tenants/:id', async (params) => {
                                             No Kubernetes instances yet
                                         </div>
                                     ` : kubernetesInstances.map(inst => `
-                                        <a href="#/kubernetes/${inst.id}/edit" class="list-group-item list-group-item-action">
+                                        <div class="list-group-item">
                                             <div class="d-flex align-items-center justify-content-between">
                                                 <div>
                                                     <div class="fw-semibold">${inst.name}</div>
                                                     <div class="text-secondary small"><code class="small">${inst.base_url}</code></div>
                                                 </div>
-                                                <span class="badge ${inst.insecure ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
-                                                    ${inst.insecure ? 'insecure' : 'tls'}
-                                                </span>
+                                                <div class="d-flex align-items-center gap-2">
+                                                    <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
+                                                        ${inst.verify_tls === false ? 'insecure' : 'tls'}
+                                                    </span>
+                                                    <a href="#/kubernetes/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                        Edit
+                                                    </a>
+                                                </div>
                                             </div>
-                                        </a>
+                                        </div>
                                     `).join('')}
                                 </div>
                             </div>
                         </div>
-                        <div class="col-md-6"></div>
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">Kubernetes Namespaces</h3>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${k8sNamespaces.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No Kubernetes namespaces yet
+                                        </div>
+                                    ` : k8sNamespaces.map(ns => {
+                                        const env = ns.environment;
+                                        return `
+                                            <div class="list-group-item">
+                                                <div class="d-flex align-items-center justify-content-between">
+                                                    <div>
+                                                        <div><a href="#/kubernetes-namespaces/${ns.id}" class="fw-semibold text-reset">${ns.namespace}</a></div>
+                                                        <div class="text-secondary small">
+                                                            Env:
+                                                            <span class="badge ms-1" style="${env?.color ? `background:${env.color};color:#fff;` : ''}">
+                                                                ${env?.name || '-'}
+                                                            </span>
+                                                        </div>
+                                                        <div class="text-secondary small">
+                                                            Instance: <code class="small">${ns.instance_name || '-'}</code>
+                                                        </div>
+                                                    </div>
+                                                    <div class="d-flex align-items-center gap-2">
+                                                        <span class="badge ${ns.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                                            ${ns.is_active ? 'active' : 'inactive'}
+                                                        </span>
+                                                        <a href="#/kubernetes-namespaces/${ns.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                            Edit
+                                                        </a>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                 </div>
@@ -1918,7 +1989,16 @@ router.on('/argocd/:id/edit', async (params) => {
         const instance = await api.getArgocdInstance(params.id);
         const tenants = await api.getTenants();
         const form = createArgocdInstanceForm(instance, tenants);
-        content.innerHTML = form;
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${instance.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+        ` + form;
         const formEl = document.getElementById('argocd-instance-form');
         formEl.addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -2008,6 +2088,22 @@ router.on('/argocd-apps/:id', async (params) => {
                             <div><span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span> <span class="text-secondary small">${env.slug}</span></div>
                         </div>
                     </div>
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <div class="text-secondary">Project</div>
+                            <div><code class="small">${app.project_name || 'default'}</code></div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-secondary small">Target Revision</div>
+                        <div class="d-flex align-items-center gap-2">
+                            <code class="small" id="argocd-target-revision">Loading...</code>
+                            <button class="btn btn-outline-primary btn-sm" id="argocd-change-revision-btn">
+                                <i class="ti ti-pencil"></i>
+                                Change Target Revision
+                            </button>
+                        </div>
+                    </div>
                     <div class="mt-3" id="argocd-status-card">
                         <div class="text-secondary small">Status</div>
                         <div class="text-secondary">Loading...</div>
@@ -2072,10 +2168,15 @@ router.on('/argocd-apps/:id', async (params) => {
         `;
 
         const statusEl = document.getElementById('argocd-status-card');
+        const targetRevisionEl = document.getElementById('argocd-target-revision');
         const renderStatus = (status) => {
             if (!status) {
                 statusEl.innerHTML = '<div class="text-secondary small">Status</div><div class="text-secondary">-</div>';
+                if (targetRevisionEl) targetRevisionEl.textContent = '-';
                 return;
+            }
+            if (targetRevisionEl) {
+                targetRevisionEl.textContent = status?.target_revision || status?.revision || '-';
             }
             const conditions = Array.isArray(status.conditions) ? status.conditions : [];
             const issues = Array.isArray(status.resource_issues) ? status.resource_issues : [];
@@ -2274,6 +2375,85 @@ router.on('/argocd-apps/:id', async (params) => {
         if (eventSource) {
             window.addEventListener('hashchange', () => eventSource.close(), { once: true });
         }
+
+        const changeRevisionBtn = document.getElementById('argocd-change-revision-btn');
+        const showChangeRevisionDialog = async () => {
+            let tags = [];
+            try {
+                tags = await api.getArgocdDeployTags(app.id);
+            } catch {}
+
+            const modalHtml = `
+                <div class="modal modal-blur fade show" style="display: block;" id="argocd-revision-modal">
+                    <div class="modal-dialog modal-md modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Change Target Revision</h5>
+                                <button type="button" class="btn-close" id="argocd-revision-close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Recent successful tags</label>
+                                    <select class="form-select" id="argocd-revision-select">
+                                        <option value="">Select tag...</option>
+                                        ${Array.isArray(tags) ? tags.map(t => `<option value="${t}">${t}</option>`).join('') : ''}
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Or enter revision</label>
+                                    <input type="text" class="form-control" id="argocd-revision-input" placeholder="2026.01.29.01-tst">
+                                </div>
+                                <div class="text-secondary small">Current: <code class="small">${targetRevisionEl?.textContent || '-'}</code></div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-link" id="argocd-revision-cancel">Cancel</button>
+                                <button type="button" class="btn btn-primary" id="argocd-revision-apply" disabled>Apply</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('argocd-revision-modal');
+            const closeModal = () => {
+                modal?.remove();
+            };
+            const selectEl = document.getElementById('argocd-revision-select');
+            const inputEl = document.getElementById('argocd-revision-input');
+            const applyBtn = document.getElementById('argocd-revision-apply');
+            const updateApplyState = () => {
+                const value = (inputEl?.value || '').trim() || (selectEl?.value || '').trim();
+                applyBtn.disabled = value.length === 0;
+            };
+            selectEl?.addEventListener('change', () => {
+                if (selectEl.value) {
+                    inputEl.value = selectEl.value;
+                }
+                updateApplyState();
+            });
+            inputEl?.addEventListener('input', updateApplyState);
+            updateApplyState();
+
+            document.getElementById('argocd-revision-close')?.addEventListener('click', closeModal);
+            document.getElementById('argocd-revision-cancel')?.addEventListener('click', closeModal);
+
+            applyBtn?.addEventListener('click', async () => {
+                const value = (inputEl?.value || '').trim() || (selectEl?.value || '').trim();
+                if (!value) return;
+                applyBtn.disabled = true;
+                try {
+                    await api.updateArgocdTargetRevision(app.id, value);
+                    getApp().showSuccess('Target revision updated');
+                    closeModal();
+                    await loadStatus();
+                } catch (err) {
+                    getApp().showError(`Failed to update revision: ${err.message}`);
+                    applyBtn.disabled = false;
+                }
+            });
+        };
+
+        changeRevisionBtn?.addEventListener('click', showChangeRevisionDialog);
     } catch (error) {
         console.error(error);
         content.innerHTML = `<div class="alert alert-danger">Failed to load ArgoCD app</div>`;
@@ -2287,7 +2467,16 @@ router.on('/argocd-apps/:id/edit', async (params) => {
         const app = await api.getArgocdApp(params.id);
         const environment = await api.getEnvironment(app.environment_id);
         const instances = await api.getArgocdInstances(environment.tenant_id);
-        content.innerHTML = createArgocdAppForm(app, instances, environment);
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${environment.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+        ` + createArgocdAppForm(app, instances, environment);
         const formEl = document.getElementById('argocd-app-form');
         formEl.addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -2340,7 +2529,16 @@ router.on('/kubernetes/:id/edit', async (params) => {
         const instance = await api.getKubernetesInstance(params.id);
         const tenants = await api.getTenants();
         const form = createKubernetesInstanceForm(instance, tenants);
-        content.innerHTML = form;
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${instance.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+        ` + form;
         const formEl = document.getElementById('kubernetes-instance-form');
         formEl.addEventListener('submit', async (e) => {
             await handleFormSubmit(e, async (data) => {
@@ -2440,6 +2638,12 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
                                 <pre id="kubernetes-event-log" style="margin:0;max-height:320px;overflow:auto;font-family:SFMono-Regular,Consolas,'Liberation Mono',monospace;font-size:12px;line-height:1.4;background:#0b0f14;color:#cfe3f4;padding:12px;border-bottom-left-radius:8px;border-bottom-right-radius:8px;white-space:pre-wrap;"></pre>
                             </div>
                         </div>
+                    </div>
+                    <div class="mt-3">
+                        <button class="btn btn-outline-primary btn-sm" id="k8s-skopeo-open">
+                            <i class="ti ti-wand"></i>
+                            Skopeo Helper
+                        </button>
                     </div>
                     <hr class="my-4">
                     <ul class="nav nav-tabs" id="kubernetes-resource-tabs">
@@ -2695,6 +2899,172 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
             }
             renderResources(kind, resourceCache.get(fetchKind));
         };
+
+        const openSkopeoModal = () => {
+            const modalHtml = `
+                <div class="modal modal-blur fade show" style="display: block;" id="k8s-skopeo-modal">
+                    <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Skopeo Helper</h5>
+                                <button type="button" class="btn-close" id="k8s-skopeo-close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label">Image filter (substring, case-insensitive)</label>
+                                        <input type="text" class="form-control" id="k8s-skopeo-filter" placeholder="/nac-test/">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label">Replacements</label>
+                                        <div id="k8s-skopeo-replacements"></div>
+                                        <button type="button" class="btn btn-outline-secondary btn-sm mt-2" id="k8s-skopeo-add">
+                                            <i class="ti ti-plus"></i>
+                                            Add replacement
+                                        </button>
+                                    </div>
+                                </div>
+                                <div class="mt-3">
+                                    <div class="d-flex align-items-center justify-content-between">
+                                        <label class="form-label mb-0">Generated commands</label>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <button class="btn btn-outline-primary btn-sm" id="k8s-skopeo-generate">
+                                                <i class="ti ti-wand"></i>
+                                                Generate
+                                            </button>
+                                            <button class="btn btn-outline-secondary btn-sm" id="k8s-skopeo-copy">
+                                                <i class="ti ti-copy"></i>
+                                                Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <pre class="mt-2" id="k8s-skopeo-output" style="margin:0;max-height:260px;overflow:auto;font-family:SFMono-Regular,Consolas,'Liberation Mono',monospace;font-size:12px;line-height:1.4;background:#0b0f14;color:#cfe3f4;padding:12px;border-radius:6px;white-space:pre-wrap;"></pre>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-link" id="k8s-skopeo-cancel">Close</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('k8s-skopeo-modal');
+            const closeModal = () => modal?.remove();
+
+            const replacementsEl = document.getElementById('k8s-skopeo-replacements');
+            const addReplacementRow = (fromVal = '', toVal = '') => {
+                const row = document.createElement('div');
+                row.className = 'row g-2 mb-2';
+                row.innerHTML = `
+                    <div class="col-5">
+                        <input type="text" class="form-control form-control-sm k8s-replace-from" placeholder="from" value="${fromVal}">
+                    </div>
+                    <div class="col-5">
+                        <input type="text" class="form-control form-control-sm k8s-replace-to" placeholder="to" value="${toVal}">
+                    </div>
+                    <div class="col-2">
+                        <button type="button" class="btn btn-outline-danger btn-sm w-100 k8s-replace-remove">
+                            <i class="ti ti-trash"></i>
+                        </button>
+                    </div>
+                `;
+                row.querySelector('.k8s-replace-remove')?.addEventListener('click', () => row.remove());
+                replacementsEl?.appendChild(row);
+            };
+            addReplacementRow();
+            document.getElementById('k8s-skopeo-add')?.addEventListener('click', () => addReplacementRow());
+
+            const skopeoOutput = document.getElementById('k8s-skopeo-output');
+            let skopeoTimer = null;
+            const scheduleGenerate = () => {
+                if (skopeoTimer) {
+                    clearTimeout(skopeoTimer);
+                }
+                skopeoTimer = setTimeout(() => {
+                    generateSkopeo();
+                }, 300);
+            };
+            const generateSkopeo = async () => {
+                await loadResources('deployments');
+                const filter = (document.getElementById('k8s-skopeo-filter')?.value || '').trim().toLowerCase();
+                const deployments = resourceCache.get('deployments');
+                const items = Array.isArray(deployments?.items) ? deployments.items : [];
+                const images = [];
+                items.forEach(item => {
+                    const containers = item?.spec?.template?.spec?.containers || [];
+                    const initContainers = item?.spec?.template?.spec?.initContainers || [];
+                    [...containers, ...initContainers].forEach(c => {
+                        if (c?.image) images.push(c.image);
+                    });
+                });
+                const uniqueImages = Array.from(new Set(images));
+                const filtered = filter
+                    ? uniqueImages.filter(img => img.toLowerCase().includes(filter))
+                    : uniqueImages;
+
+                const rules = Array.from(document.querySelectorAll('#k8s-skopeo-replacements .row')).map(row => {
+                    const from = row.querySelector('.k8s-replace-from')?.value || '';
+                    const to = row.querySelector('.k8s-replace-to')?.value || '';
+                    return { find: from, replace: to };
+                });
+
+                const commands = filtered.map(src => {
+                    const dst = applyReplaceRules(src, rules);
+                    return `skopeo copy docker://${src} docker://${dst}`;
+                });
+
+                skopeoOutput.textContent = commands.join('\n\n');
+            };
+            document.getElementById('k8s-skopeo-generate')?.addEventListener('click', generateSkopeo);
+            document.getElementById('k8s-skopeo-filter')?.addEventListener('input', scheduleGenerate);
+
+            const copySkopeo = async () => {
+                const text = skopeoOutput.textContent || '';
+                if (!text.trim()) {
+                    getApp().showError('Nothing to copy');
+                    return;
+                }
+                try {
+                    if (navigator.clipboard?.writeText) {
+                        await navigator.clipboard.writeText(text);
+                        getApp().showSuccess('Commands copied to clipboard');
+                        return;
+                    }
+                } catch (error) {
+                    console.warn('Clipboard API failed, falling back to execCommand:', error);
+                }
+
+                try {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    textarea.setAttribute('readonly', '');
+                    textarea.style.position = 'absolute';
+                    textarea.style.left = '-9999px';
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    const success = document.execCommand('copy');
+                    textarea.remove();
+                    if (success) {
+                        getApp().showSuccess('Commands copied to clipboard');
+                    } else {
+                        window.prompt('Copy commands:', text);
+                        getApp().showError('Clipboard unavailable. Copied to prompt.');
+                    }
+                } catch (error) {
+                    window.prompt('Copy commands:', text);
+                    getApp().showError('Clipboard unavailable. Copied to prompt.');
+                }
+            };
+            document.getElementById('k8s-skopeo-copy')?.addEventListener('click', copySkopeo);
+
+            document.getElementById('k8s-skopeo-close')?.addEventListener('click', closeModal);
+            document.getElementById('k8s-skopeo-cancel')?.addEventListener('click', closeModal);
+
+            replacementsEl?.addEventListener('input', scheduleGenerate);
+        };
+
+        document.getElementById('k8s-skopeo-open')?.addEventListener('click', openSkopeoModal);
 
         document.querySelectorAll('#kubernetes-resource-tabs .nav-link').forEach(btn => {
             btn.addEventListener('click', async () => {
@@ -3029,19 +3399,27 @@ router.on('/environments/:id/edit', async (params) => {
                     ` : argocdApps.map(app => {
                         const instance = argocdInstances.find(i => i.id === app.argocd_instance_id);
                         return `
-                            <a href="#/argocd-apps/${app.id}" class="list-group-item list-group-item-action">
+                            <div class="list-group-item">
                                 <div class="d-flex align-items-center justify-content-between">
                                     <div>
-                                        <div class="fw-semibold">${app.application_name}</div>
+                                        <div><a href="#/argocd-apps/${app.id}" class="fw-semibold text-reset">${app.application_name}</a></div>
                                         <div class="text-secondary small">
                                             ${instance ? `${instance.name} · ${instance.base_url}` : 'instance'}
                                         </div>
+                                        <div class="text-secondary small">
+                                            Project: <code class="small">${app.project_name || 'default'}</code>
+                                        </div>
                                     </div>
-                                    <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
-                                        ${app.is_active ? 'active' : 'inactive'}
-                                    </span>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                            ${app.is_active ? 'active' : 'inactive'}
+                                        </span>
+                                        <a href="#/argocd-apps/${app.id}/edit" class="btn btn-outline-primary btn-sm">
+                                            Edit
+                                        </a>
+                                    </div>
                                 </div>
-                            </a>
+                            </div>
                         `;
                     }).join('')}
                 </div>
@@ -3081,7 +3459,16 @@ router.on('/environments/:id/edit', async (params) => {
                 </div>
             </div>
         `;
-        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos) + appList + namespaceList;
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/tenants/${environment.tenant_id}" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Tenant
+                    </a>
+                </div>
+            </div>
+        ` + createEnvironmentForm(environment, tenants, registries, gitRepos) + appList + namespaceList;
         attachEnvironmentColorPreview();
         attachEnvironmentSlugPreview();
         attachEnvironmentVarHandlers();

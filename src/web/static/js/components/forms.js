@@ -958,6 +958,13 @@ function createArgocdAppForm(app = null, instances = [], environment = null) {
                 </div>
 
                 <div class="mb-3">
+                    <label class="form-label required">Project</label>
+                    <input type="text" class="form-control" name="project_name"
+                           value="${app?.project_name || 'default'}"
+                           placeholder="nac" required>
+                </div>
+
+                <div class="mb-3">
                     <label class="form-label required">Application Name</label>
                     <input type="text" class="form-control" name="application_name"
                            value="${app?.application_name || ''}"
@@ -1071,8 +1078,8 @@ function createKubernetesInstanceForm(instance = null, tenants = []) {
 
                 <div class="mt-3">
                     <label class="form-check">
-                        <input class="form-check-input" type="checkbox" name="insecure" ${instance?.insecure ? 'checked' : ''}>
-                        <span class="form-check-label">Insecure (allow self-signed certs)</span>
+                        <input class="form-check-input" type="checkbox" name="verify_tls" ${instance?.verify_tls !== false ? 'checked' : ''}>
+                        <span class="form-check-label">Verify TLS certificates</span>
                     </label>
                 </div>
             </div>
@@ -1491,10 +1498,6 @@ async function handleFormSubmit(event, submitHandler) {
     const verifyTlsInput = form.querySelector('input[name="verify_tls"]');
     if (verifyTlsInput) {
         data.verify_tls = verifyTlsInput.checked === true;
-    }
-    const insecureInput = form.querySelector('input[name="insecure"]');
-    if (insecureInput) {
-        data.insecure = insecureInput.checked === true;
     }
 
     // Clean up empty optional fields (convert empty strings to null or remove them)
