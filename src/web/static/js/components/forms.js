@@ -992,6 +992,165 @@ function createArgocdAppForm(app = null, instances = [], environment = null) {
 }
 
 /**
+ * Vytvoří Kubernetes instance form
+ */
+function createKubernetesInstanceForm(instance = null, tenants = []) {
+    const isEdit = !!instance;
+    const authTypes = [
+        { value: 'basic', label: 'Username + Password' },
+        { value: 'token', label: 'Token' },
+    ];
+    return `
+        <form id="kubernetes-instance-form" class="card" data-kubernetes-mode="${isEdit ? 'edit' : 'new'}">
+            <div class="card-header">
+                <h3 class="card-title">${isEdit ? 'Edit Kubernetes Instance' : 'New Kubernetes Instance'}</h3>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <label class="form-label required">Tenant</label>
+                    <select class="form-select" name="tenant_id" ${isEdit ? 'disabled' : ''} required>
+                        <option value="">Select tenant...</option>
+                        ${tenants.map(t => `
+                            <option value="${t.id}" ${instance?.tenant_id === t.id ? 'selected' : ''}>
+                                ${t.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                    ${isEdit ? `<input type="hidden" name="tenant_id" value="${instance.tenant_id}">` : ''}
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Name</label>
+                    <input type="text" class="form-control" name="name"
+                           value="${instance?.name || ''}"
+                           placeholder="Kubernetes (prod)" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Base URL</label>
+                    <input type="url" class="form-control" name="base_url"
+                           value="${instance?.base_url || ''}"
+                           placeholder="https://api.cluster.example:6443" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">OAuth Base URL</label>
+                    <input type="url" class="form-control" name="oauth_base_url"
+                           value="${instance?.oauth_base_url || ''}"
+                           placeholder="https://oauth-openshift.apps.cluster.example" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Auth Type</label>
+                    <select class="form-select" name="auth_type" required>
+                        ${authTypes.map(t => `
+                            <option value="${t.value}" ${instance?.auth_type === t.value ? 'selected' : ''}>${t.label}</option>
+                        `).join('')}
+                    </select>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Username</label>
+                        <input type="text" class="form-control" name="username"
+                               value="${instance?.username || ''}"
+                               placeholder="admin">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Password</label>
+                        <input type="password" class="form-control" name="password"
+                               placeholder="${isEdit ? 'Leave blank to keep' : ''}">
+                    </div>
+                </div>
+
+                <div class="mt-3">
+                    <label class="form-label">Token</label>
+                    <input type="password" class="form-control" name="token"
+                           placeholder="${isEdit ? 'Leave blank to keep' : ''}">
+                </div>
+
+                <div class="mt-3">
+                    <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="insecure" ${instance?.insecure ? 'checked' : ''}>
+                        <span class="form-check-label">Insecure (allow self-signed certs)</span>
+                    </label>
+                </div>
+            </div>
+            <div class="card-footer text-end">
+                <div class="d-flex">
+                    <a href="#/tenants${instance?.tenant_id ? `/${instance.tenant_id}` : ''}" class="btn btn-link">Cancel</a>
+                    <button type="submit" class="btn btn-primary ms-auto">
+                        <i class="ti ti-check me-2"></i>
+                        ${isEdit ? 'Update Instance' : 'Create Instance'}
+                    </button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+/**
+ * Vytvoří Kubernetes namespace form
+ */
+function createKubernetesNamespaceForm(entry = null, instances = [], environment = null) {
+    const isEdit = !!entry;
+    return `
+        <form id="kubernetes-namespace-form" class="card" data-kubernetes-namespace-mode="${isEdit ? 'edit' : 'new'}">
+            <div class="card-header">
+                <h3 class="card-title">${isEdit ? 'Edit Kubernetes Namespace' : 'New Kubernetes Namespace'}</h3>
+            </div>
+            <div class="card-body">
+                ${environment ? `
+                    <div class="mb-3">
+                        <label class="form-label">Environment</label>
+                        <div class="form-control-plaintext">
+                            <span class="badge" style="${environment.color ? `background:${environment.color};color:#fff;` : ''}">${environment.name}</span>
+                            <span class="text-secondary small ms-2">${environment.slug}</span>
+                        </div>
+                        <input type="hidden" name="environment_id" value="${environment.id}">
+                    </div>
+                ` : ''}
+
+                <div class="mb-3">
+                    <label class="form-label required">Kubernetes Instance</label>
+                    <select class="form-select" name="kubernetes_instance_id" required>
+                        <option value="">Select instance...</option>
+                        ${instances.map(i => `
+                            <option value="${i.id}" ${entry?.kubernetes_instance_id === i.id ? 'selected' : ''}>
+                                ${i.name} (${i.base_url})
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-label required">Namespace</label>
+                    <input type="text" class="form-control" name="namespace"
+                           value="${entry?.namespace || ''}"
+                           placeholder="nac-test" required>
+                </div>
+
+                <div class="mb-3">
+                    <label class="form-check">
+                        <input class="form-check-input" type="checkbox" name="is_active" ${entry?.is_active !== false ? 'checked' : ''}>
+                        <span class="form-check-label">Active</span>
+                    </label>
+                </div>
+            </div>
+            <div class="card-footer text-end">
+                <div class="d-flex">
+                    <a href="#/environments${environment?.id ? `/${environment.id}/edit` : ''}" class="btn btn-link">Cancel</a>
+                    <button type="submit" class="btn btn-primary ms-auto">
+                        <i class="ti ti-check me-2"></i>
+                        ${isEdit ? 'Update Namespace' : 'Create Namespace'}
+                    </button>
+                </div>
+            </div>
+        </form>
+    `;
+}
+
+/**
  * Vytvoří deploy target form
  */
 function createDeployTargetForm(target = null, tenants = [], gitRepos = [], environments = [], encjsonKeys = [], envVars = [], extraEnvVars = [], options = {}) {
@@ -1332,6 +1491,10 @@ async function handleFormSubmit(event, submitHandler) {
     const verifyTlsInput = form.querySelector('input[name="verify_tls"]');
     if (verifyTlsInput) {
         data.verify_tls = verifyTlsInput.checked === true;
+    }
+    const insecureInput = form.querySelector('input[name="insecure"]');
+    if (insecureInput) {
+        data.insecure = insecureInput.checked === true;
     }
 
     // Clean up empty optional fields (convert empty strings to null or remove them)

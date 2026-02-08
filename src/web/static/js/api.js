@@ -524,6 +524,61 @@ class ApiClient {
         return this.post(`/argocd-apps/${id}/terminate`, {});
     }
 
+    // Kubernetes instances
+    async getKubernetesInstances(tenantId) {
+        return this.get(`/tenants/${tenantId}/kubernetes`);
+    }
+
+    async getKubernetesInstance(id) {
+        return this.get(`/kubernetes/${id}`);
+    }
+
+    async createKubernetesInstance(tenantId, payload) {
+        return this.post(`/tenants/${tenantId}/kubernetes`, payload);
+    }
+
+    async updateKubernetesInstance(id, payload) {
+        return this.put(`/kubernetes/${id}`, payload);
+    }
+
+    async deleteKubernetesInstance(id) {
+        return this.delete(`/kubernetes/${id}`);
+    }
+
+    // Kubernetes namespaces
+    async getKubernetesNamespaces(environmentId) {
+        return this.get(`/environments/${environmentId}/kubernetes-namespaces`);
+    }
+
+    async getKubernetesNamespace(id) {
+        return this.get(`/kubernetes-namespaces/${id}`);
+    }
+
+    async createKubernetesNamespace(environmentId, payload) {
+        return this.post(`/environments/${environmentId}/kubernetes-namespaces`, payload);
+    }
+
+    async updateKubernetesNamespace(id, payload) {
+        return this.put(`/kubernetes-namespaces/${id}`, payload);
+    }
+
+    async deleteKubernetesNamespace(id) {
+        return this.delete(`/kubernetes-namespaces/${id}`);
+    }
+
+    async getKubernetesNamespaceStatus(id) {
+        return this.get(`/kubernetes-namespaces/${id}/status`);
+    }
+
+    async getKubernetesNamespaceEvents(id) {
+        return this.get(`/kubernetes-namespaces/${id}/events`);
+    }
+
+    async getKubernetesNamespaceResources(id, kind) {
+        const query = kind ? `?kind=${encodeURIComponent(kind)}` : '';
+        return this.get(`/kubernetes-namespaces/${id}/resources${query}`);
+    }
+
     async getEnvironments(tenantId) {
         return this.get(`/tenants/${tenantId}/environments`);
     }

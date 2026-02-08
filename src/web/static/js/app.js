@@ -1079,13 +1079,14 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [tenant, registries, bundles, gitRepos, environments, argocdInstances] = await Promise.all([
+        const [tenant, registries, bundles, gitRepos, environments, argocdInstances, kubernetesInstances] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
             api.getBundles(params.id),
             api.getGitRepos(params.id),
             api.getEnvironments(params.id),
             api.getArgocdInstances(params.id),
+            api.getKubernetesInstances(params.id),
         ]);
         const argocdAppsByEnv = await Promise.all(
             environments.map(async env => ({
@@ -1433,6 +1434,42 @@ router.on('/tenants/:id', async (params) => {
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h3 class="card-title">Kubernetes Instances</h3>
+                                    <div class="card-actions">
+                                        <a href="#/kubernetes/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            Add
+                                        </a>
+                                    </div>
+                                </div>
+                                <div class="list-group list-group-flush">
+                                    ${kubernetesInstances.length === 0 ? `
+                                        <div class="list-group-item text-center text-secondary py-4">
+                                            No Kubernetes instances yet
+                                        </div>
+                                    ` : kubernetesInstances.map(inst => `
+                                        <a href="#/kubernetes/${inst.id}/edit" class="list-group-item list-group-item-action">
+                                            <div class="d-flex align-items-center justify-content-between">
+                                                <div>
+                                                    <div class="fw-semibold">${inst.name}</div>
+                                                    <div class="text-secondary small"><code class="small">${inst.base_url}</code></div>
+                                                </div>
+                                                <span class="badge ${inst.insecure ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
+                                                    ${inst.insecure ? 'insecure' : 'tls'}
+                                                </span>
+                                            </div>
+                                        </a>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6"></div>
                     </div>
 
                 </div>
@@ -2271,6 +2308,472 @@ router.on('/argocd-apps/:id/edit', async (params) => {
     }
 });
 
+// Kubernetes instances
+router.on('/kubernetes/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const tenants = await api.getTenants();
+        const form = createKubernetesInstanceForm(null, tenants);
+        content.innerHTML = form;
+        const tenantSelect = document.querySelector('select[name="tenant_id"]');
+        if (query?.tenant_id && tenantSelect) {
+            tenantSelect.value = query.tenant_id;
+        }
+        const formEl = document.getElementById('kubernetes-instance-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                await api.createKubernetesInstance(data.tenant_id, data);
+                router.navigate(`/tenants/${data.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load form</div>`;
+    }
+});
+
+router.on('/kubernetes/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const instance = await api.getKubernetesInstance(params.id);
+        const tenants = await api.getTenants();
+        const form = createKubernetesInstanceForm(instance, tenants);
+        content.innerHTML = form;
+        const formEl = document.getElementById('kubernetes-instance-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                await api.updateKubernetesInstance(params.id, data);
+                router.navigate(`/tenants/${instance.tenant_id}`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load instance</div>`;
+    }
+});
+
+// Kubernetes namespaces
+router.on('/kubernetes-namespaces/new', async (params, query) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const environment = await api.getEnvironment(query.environment_id);
+        const instances = await api.getKubernetesInstances(environment.tenant_id);
+        content.innerHTML = createKubernetesNamespaceForm(null, instances, environment);
+
+        const formEl = document.getElementById('kubernetes-namespace-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                const envId = data.environment_id;
+                delete data.environment_id;
+                await api.createKubernetesNamespace(envId, data);
+                router.navigate(`/environments/${envId}/edit`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load form</div>`;
+    }
+});
+
+router.on('/kubernetes-namespaces/:id', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const entry = await api.getKubernetesNamespace(params.id);
+        const instance = await api.getKubernetesInstance(entry.kubernetes_instance_id);
+        const env = await api.getEnvironment(entry.environment_id);
+
+        content.innerHTML = `
+            <div class="row mb-3">
+                <div class="col">
+                    <a href="#/environments/${env.id}/edit" class="btn btn-ghost-secondary">
+                        <i class="ti ti-arrow-left"></i>
+                        Back to Environment
+                    </a>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">${entry.namespace}</h3>
+                    <div class="card-actions">
+                        <a href="#/kubernetes-namespaces/${entry.id}/edit" class="btn btn-primary btn-sm">
+                            <i class="ti ti-pencil"></i>
+                            Edit
+                        </a>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <div class="text-secondary">Instance</div>
+                            <div>${instance.name}</div>
+                            <div class="text-secondary small"><code class="small">${instance.base_url}</code></div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="text-secondary">Environment</div>
+                            <div><span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span> <span class="text-secondary small">${env.slug}</span></div>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="text-secondary small mb-2">Cluster Version</div>
+                        <div class="table-responsive">
+                            <table class="table table-vcenter card-table table-sm small">
+                                <tbody id="k8s-version-table">
+                                    <tr><td class="text-secondary">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="mt-3">
+                        <div class="card log-panel" style="background: transparent; border: none;">
+                            <div class="terminal-header" style="display:flex;align-items:center;gap:6px;padding:10px 12px;background:#12171d;border-bottom:1px solid rgba(255,255,255,0.08);border-top-left-radius:8px;border-top-right-radius:8px;">
+                                <span class="terminal-dot red" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#ff5f57;"></span>
+                                <span class="terminal-dot yellow" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#febc2e;"></span>
+                                <span class="terminal-dot green" style="width:10px;height:10px;border-radius:999px;display:inline-block;background:#28c840;"></span>
+                                <span class="ms-2 text-secondary" style="font-size:12px;">Kubernetes Live Events</span>
+                            </div>
+                            <div class="card-body p-0">
+                                <pre id="kubernetes-event-log" style="margin:0;max-height:320px;overflow:auto;font-family:SFMono-Regular,Consolas,'Liberation Mono',monospace;font-size:12px;line-height:1.4;background:#0b0f14;color:#cfe3f4;padding:12px;border-bottom-left-radius:8px;border-bottom-right-radius:8px;white-space:pre-wrap;"></pre>
+                            </div>
+                        </div>
+                    </div>
+                    <hr class="my-4">
+                    <ul class="nav nav-tabs" id="kubernetes-resource-tabs">
+                        <li class="nav-item"><button class="nav-link active" data-kind="namespaces">Namespaces</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="deployments">Deployments</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="pods">Pods</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="services">Services</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="routes">Routes</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="configmaps">ConfigMaps</button></li>
+                        <li class="nav-item"><button class="nav-link" data-kind="images">Docker Images</button></li>
+                    </ul>
+                    <div class="table-responsive mt-2">
+                        <table class="table table-vcenter card-table">
+                            <thead id="k8s-resource-head"></thead>
+                            <tbody id="k8s-resource-body">
+                                <tr><td class="text-secondary">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card-footer d-none"></div>
+            </div>
+        `;
+
+        const versionTable = document.getElementById('k8s-version-table');
+        const renderVersion = (data) => {
+            if (!data || typeof data !== 'object') {
+                versionTable.innerHTML = '<tr><td class="text-secondary">No data</td></tr>';
+                return;
+            }
+            const rows = [
+                ['Major', data.major],
+                ['Minor', data.minor],
+                ['Git Version', data.gitVersion],
+                ['Git Commit', data.gitCommit],
+                ['Git Tree State', data.gitTreeState],
+                ['Build Date', data.buildDate],
+                ['Go Version', data.goVersion],
+                ['Compiler', data.compiler],
+                ['Platform', data.platform],
+            ].filter(([, v]) => v !== undefined);
+            versionTable.innerHTML = rows.map(([k, v]) => `
+                <tr>
+                    <td class="text-secondary">${k}</td>
+                    <td><code class="small">${v ?? '-'}</code></td>
+                </tr>
+            `).join('');
+        };
+
+        const loadVersion = async () => {
+            try {
+                const data = await api.getKubernetesNamespaceStatus(entry.id);
+                renderVersion(data);
+            } catch (err) {
+                versionTable.innerHTML = `<tr><td class="text-danger">Failed to load version</td></tr>`;
+            }
+        };
+
+        const resourceHead = document.getElementById('k8s-resource-head');
+        const resourceBody = document.getElementById('k8s-resource-body');
+        const resourceCache = new Map();
+
+        const formatAge = (ts) => {
+            if (!ts) return '-';
+            const diffMs = Date.now() - new Date(ts).getTime();
+            if (!Number.isFinite(diffMs) || diffMs < 0) return '-';
+            const mins = Math.floor(diffMs / 60000);
+            if (mins < 60) return `${mins}m`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours}h`;
+            const days = Math.floor(hours / 24);
+            return `${days}d`;
+        };
+
+        const renderResources = (kind, data) => {
+            if (kind === 'namespaces') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Phase</th><th>Labels</th><th>Age</th></tr>
+                `;
+                const meta = data?.metadata || {};
+                const status = data?.status || {};
+                const labels = meta.labels ? Object.entries(meta.labels).map(([k, v]) => `${k}=${v}`).join(', ') : '-';
+                resourceBody.innerHTML = `
+                    <tr>
+                        <td><code class="small">${meta.name || entry.namespace}</code></td>
+                        <td>${status.phase || '-'}</td>
+                        <td>${labels || '-'}</td>
+                        <td>${formatAge(meta.creationTimestamp)}</td>
+                    </tr>
+                `;
+                return;
+            }
+            if (kind === 'deployments') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Ready</th><th>Up-to-date</th><th>Available</th><th>Age</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                if (items.length === 0) {
+                    resourceBody.innerHTML = `<tr><td colspan="5" class="text-secondary">No deployments</td></tr>`;
+                    return;
+                }
+                resourceBody.innerHTML = items.map(item => {
+                    const meta = item.metadata || {};
+                    const spec = item.spec || {};
+                    const status = item.status || {};
+                    const ready = `${status.readyReplicas || 0}/${spec.replicas || 0}`;
+                    return `
+                        <tr>
+                            <td><code class="small">${meta.name || '-'}</code></td>
+                            <td>${ready}</td>
+                            <td>${status.updatedReplicas || 0}</td>
+                            <td>${status.availableReplicas || 0}</td>
+                            <td>${formatAge(meta.creationTimestamp)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                return;
+            }
+            if (kind === 'pods') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Phase</th><th>Ready</th><th>Restarts</th><th>Age</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                if (items.length === 0) {
+                    resourceBody.innerHTML = `<tr><td colspan="5" class="text-secondary">No pods</td></tr>`;
+                    return;
+                }
+                resourceBody.innerHTML = items.map(item => {
+                    const meta = item.metadata || {};
+                    const status = item.status || {};
+                    const containers = Array.isArray(status.containerStatuses) ? status.containerStatuses : [];
+                    const ready = containers.filter(c => c.ready).length;
+                    const restarts = containers.reduce((acc, c) => acc + (c.restartCount || 0), 0);
+                    return `
+                        <tr>
+                            <td><code class="small">${meta.name || '-'}</code></td>
+                            <td>${status.phase || '-'}</td>
+                            <td>${ready}/${containers.length}</td>
+                            <td>${restarts}</td>
+                            <td>${formatAge(meta.creationTimestamp)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                return;
+            }
+            if (kind === 'services') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Type</th><th>Cluster IP</th><th>Ports</th><th>Age</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                if (items.length === 0) {
+                    resourceBody.innerHTML = `<tr><td colspan="5" class="text-secondary">No services</td></tr>`;
+                    return;
+                }
+                resourceBody.innerHTML = items.map(item => {
+                    const meta = item.metadata || {};
+                    const spec = item.spec || {};
+                    const ports = Array.isArray(spec.ports) ? spec.ports.map(p => `${p.port}/${p.protocol || 'TCP'}`).join(', ') : '-';
+                    return `
+                        <tr>
+                            <td><code class="small">${meta.name || '-'}</code></td>
+                            <td>${spec.type || '-'}</td>
+                            <td>${spec.clusterIP || '-'}</td>
+                            <td>${ports || '-'}</td>
+                            <td>${formatAge(meta.creationTimestamp)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                return;
+            }
+            if (kind === 'routes') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Host</th><th>Target</th><th>TLS</th><th>Age</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                if (items.length === 0) {
+                    resourceBody.innerHTML = `<tr><td colspan="5" class="text-secondary">No routes</td></tr>`;
+                    return;
+                }
+                resourceBody.innerHTML = items.map(item => {
+                    const meta = item.metadata || {};
+                    const spec = item.spec || {};
+                    return `
+                        <tr>
+                            <td><code class="small">${meta.name || '-'}</code></td>
+                            <td>${spec.host || '-'}</td>
+                            <td>${spec.to?.name || '-'}</td>
+                            <td>${spec.tls ? 'yes' : 'no'}</td>
+                            <td>${formatAge(meta.creationTimestamp)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                return;
+            }
+            if (kind === 'configmaps') {
+                resourceHead.innerHTML = `
+                    <tr><th>Name</th><th>Keys</th><th>Age</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                if (items.length === 0) {
+                    resourceBody.innerHTML = `<tr><td colspan="3" class="text-secondary">No config maps</td></tr>`;
+                    return;
+                }
+                resourceBody.innerHTML = items.map(item => {
+                    const meta = item.metadata || {};
+                    const dataKeys = item.data ? Object.keys(item.data).length : 0;
+                    return `
+                        <tr>
+                            <td><code class="small">${meta.name || '-'}</code></td>
+                            <td>${dataKeys}</td>
+                            <td>${formatAge(meta.creationTimestamp)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                return;
+            }
+            if (kind === 'images') {
+                resourceHead.innerHTML = `
+                    <tr><th>Deployment</th><th>Container</th><th>Docker Image</th></tr>
+                `;
+                const items = Array.isArray(data?.items) ? data.items : [];
+                const rows = [];
+                items.forEach(item => {
+                    const meta = item.metadata || {};
+                    const containers = item?.spec?.template?.spec?.containers || [];
+                    containers.forEach(c => {
+                        rows.push(`
+                            <tr>
+                                <td><code class="small">${meta.name || '-'}</code></td>
+                                <td>${c.name || '-'}</td>
+                                <td><code class="small">${c.image || '-'}</code></td>
+                            </tr>
+                        `);
+                    });
+                });
+                resourceBody.innerHTML = rows.length > 0
+                    ? rows.join('')
+                    : `<tr><td colspan="3" class="text-secondary">No images</td></tr>`;
+            }
+        };
+
+        const loadResources = async (kind) => {
+            const fetchKind = kind === 'images' ? 'deployments' : kind;
+            if (!resourceCache.has(fetchKind)) {
+                resourceBody.innerHTML = `<tr><td class="text-secondary">Loading...</td></tr>`;
+                try {
+                    const data = await api.getKubernetesNamespaceResources(entry.id, fetchKind);
+                    resourceCache.set(fetchKind, data);
+                } catch (err) {
+                    resourceBody.innerHTML = `<tr><td class="text-danger">Failed to load resources</td></tr>`;
+                    return;
+                }
+            }
+            renderResources(kind, resourceCache.get(fetchKind));
+        };
+
+        document.querySelectorAll('#kubernetes-resource-tabs .nav-link').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                document.querySelectorAll('#kubernetes-resource-tabs .nav-link').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                await loadResources(btn.getAttribute('data-kind'));
+            });
+        });
+
+        const eventLog = document.getElementById('kubernetes-event-log');
+        const logLines = [];
+        const renderLog = () => {
+            const tail = logLines.slice(-100);
+            eventLog.textContent = tail.join('\\n');
+            eventLog.scrollTop = eventLog.scrollHeight;
+        };
+        const appendEvent = (ev) => {
+            const ts = ev.timestamp || '';
+            const type = ev.type || ev.event_type || '';
+            const reason = ev.reason || '';
+            const kind = ev.kind || '';
+            const name = ev.name || '';
+            const msg = ev.message || '';
+            const line = `${ts}  ${type}  ${reason}  ${kind}/${name}: ${msg}`.trim();
+            logLines.push(line);
+            renderLog();
+        };
+
+        api.getKubernetesNamespaceEvents(entry.id).then(events => {
+            if (Array.isArray(events)) {
+                events.reverse().forEach(appendEvent);
+            }
+        }).catch(() => {});
+
+        let eventSource = null;
+        try {
+            eventSource = new EventSource(`${api.baseUrl}/kubernetes-namespaces/${entry.id}/events/stream`);
+            eventSource.onmessage = (evt) => {
+                try {
+                    const ev = JSON.parse(evt.data);
+                    appendEvent(ev);
+                } catch {}
+            };
+        } catch {}
+
+        setTimeout(loadVersion, 0);
+        loadResources('namespaces');
+
+        if (eventSource) {
+            window.addEventListener('hashchange', () => eventSource.close(), { once: true });
+        }
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load Kubernetes namespace</div>`;
+    }
+});
+
+router.on('/kubernetes-namespaces/:id/edit', async (params) => {
+    const content = document.getElementById('app-content');
+    content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
+    try {
+        const entry = await api.getKubernetesNamespace(params.id);
+        const environment = await api.getEnvironment(entry.environment_id);
+        const instances = await api.getKubernetesInstances(environment.tenant_id);
+        content.innerHTML = createKubernetesNamespaceForm(entry, instances, environment);
+        const formEl = document.getElementById('kubernetes-namespace-form');
+        formEl.addEventListener('submit', async (e) => {
+            await handleFormSubmit(e, async (data) => {
+                delete data.environment_id;
+                await api.updateKubernetesNamespace(params.id, data);
+                router.navigate(`/environments/${environment.id}/edit`);
+            });
+        });
+    } catch (error) {
+        console.error(error);
+        content.innerHTML = `<div class="alert alert-danger">Failed to load namespace</div>`;
+    }
+});
+
 // Registry Detail
 router.on('/registries/:id', async (params) => {
     const content = document.getElementById('app-content');
@@ -2499,10 +3002,11 @@ router.on('/environments/:id/edit', async (params) => {
 
     try {
         const environment = await api.getEnvironment(params.id);
-        const [tenants, argocdApps, argocdInstances] = await Promise.all([
+        const [tenants, argocdApps, argocdInstances, kubernetesNamespaces] = await Promise.all([
             api.getTenants(),
             api.getArgocdApps(params.id),
             api.getArgocdInstances(environment.tenant_id),
+            api.getKubernetesNamespaces(params.id),
         ]);
         const registries = environment?.tenant_id ? await api.getRegistries(environment.tenant_id).catch(() => []) : [];
         const gitRepos = environment?.tenant_id ? await api.getGitRepos(environment.tenant_id).catch(() => []) : [];
@@ -2543,7 +3047,41 @@ router.on('/environments/:id/edit', async (params) => {
                 </div>
             </div>
         `;
-        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos) + appList;
+        const namespaceList = `
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">Kubernetes Namespaces</h3>
+                    <div class="card-actions">
+                        <a href="#/kubernetes-namespaces/new?environment_id=${environment.id}" class="btn btn-primary btn-sm">
+                            <i class="ti ti-plus"></i>
+                            Add
+                        </a>
+                    </div>
+                </div>
+                <div class="list-group list-group-flush">
+                    ${kubernetesNamespaces.length === 0 ? `
+                        <div class="list-group-item text-center text-secondary py-4">
+                            No Kubernetes namespaces yet
+                        </div>
+                    ` : kubernetesNamespaces.map(entry => `
+                        <a href="#/kubernetes-namespaces/${entry.id}" class="list-group-item list-group-item-action">
+                            <div class="d-flex align-items-center justify-content-between">
+                                <div>
+                                    <div class="fw-semibold">${entry.namespace}</div>
+                                    <div class="text-secondary small">
+                                        ${entry.instance_name} · ${entry.instance_base_url}
+                                    </div>
+                                </div>
+                                <span class="badge ${entry.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
+                                    ${entry.is_active ? 'active' : 'inactive'}
+                                </span>
+                            </div>
+                        </a>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+        content.innerHTML = createEnvironmentForm(environment, tenants, registries, gitRepos) + appList + namespaceList;
         attachEnvironmentColorPreview();
         attachEnvironmentSlugPreview();
         attachEnvironmentVarHandlers();

@@ -305,6 +305,23 @@ pub struct ArgocdInstance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct KubernetesInstance {
+    pub id: Uuid,
+    pub tenant_id: Uuid,
+    pub name: String,
+    pub base_url: String,
+    pub oauth_base_url: Option<String>,
+    pub auth_type: String,
+    pub username: Option<String>,
+    #[serde(skip_serializing)]
+    pub password_encrypted: Option<String>,
+    #[serde(skip_serializing)]
+    pub token_encrypted: Option<String>,
+    pub insecure: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct EnvironmentArgocdApp {
     pub id: Uuid,
     pub environment_id: Uuid,
@@ -318,6 +335,15 @@ pub struct EnvironmentArgocdApp {
     pub last_operation_message: Option<String>,
     pub last_revision: Option<String>,
     pub last_checked_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct EnvironmentKubernetesNamespace {
+    pub id: Uuid,
+    pub environment_id: Uuid,
+    pub kubernetes_instance_id: Uuid,
+    pub namespace: String,
+    pub is_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
