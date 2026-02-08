@@ -287,9 +287,16 @@ class ApiClient {
         });
     }
 
-    async getNextCopyTag(bundleId, version, timezoneOffsetMinutes = null) {
-        const params = timezoneOffsetMinutes === null ? '' : `?tz_offset_minutes=${encodeURIComponent(timezoneOffsetMinutes)}`;
-        return this.get(`/bundles/${bundleId}/versions/${version}/next-tag${params}`);
+    async getNextCopyTag(bundleId, version, timezoneOffsetMinutes = null, environmentId = null) {
+        const params = new URLSearchParams();
+        if (timezoneOffsetMinutes !== null && timezoneOffsetMinutes !== undefined) {
+            params.set('tz_offset_minutes', timezoneOffsetMinutes);
+        }
+        if (environmentId) {
+            params.set('environment_id', environmentId);
+        }
+        const query = params.toString();
+        return this.get(`/bundles/${bundleId}/versions/${version}/next-tag${query ? `?${query}` : ''}`);
     }
 
     async precheckCopyImages(bundleId, version, environmentId = null, sourceRegistryId = null) {

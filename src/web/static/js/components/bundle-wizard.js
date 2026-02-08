@@ -18,7 +18,6 @@ class BundleWizard {
                 name: '',
                 description: '',
                 source_registry_id: '',
-                target_registry_id: '',
                 auto_tag_enabled: false,
             },
             imageMappings: [],
@@ -102,8 +101,6 @@ class BundleWizard {
             : [];
 
         const sourceRegistries = filteredRegistries.filter(r => r.role === 'source' || r.role === 'both');
-        const targetRegistries = filteredRegistries.filter(r => r.role === 'target' || r.role === 'both');
-
         return `
             <h3 class="mb-3">Bundle Information</h3>
 
@@ -154,21 +151,6 @@ class BundleWizard {
                                 `).join('')}
                             </select>
                             <small class="form-hint">Registry to pull images from</small>
-                        </div>
-                    </div>
-
-                    <div class="col-md-6">
-                        <div class="mb-3">
-                            <label class="form-label required">Target Registry</label>
-                            <select class="form-select" id="bundle-target-registry" required>
-                                <option value="">Select target...</option>
-                                ${targetRegistries.map(r => `
-                                    <option value="${r.id}" ${this.data.bundle.target_registry_id === r.id ? 'selected' : ''}>
-                                        ${r.name} (${r.registry_type})
-                                    </option>
-                                `).join('')}
-                            </select>
-                            <small class="form-hint">Registry to push images to</small>
                         </div>
                     </div>
                 </div>
@@ -330,7 +312,6 @@ class BundleWizard {
      */
     renderStep3(registries) {
         const sourceRegistry = registries.find(r => r.id === this.data.bundle.source_registry_id);
-        const targetRegistry = registries.find(r => r.id === this.data.bundle.target_registry_id);
 
         return `
             <h3 class="mb-3">Review Bundle</h3>
@@ -349,9 +330,6 @@ class BundleWizard {
 
                         <dt class="col-4">Source Registry:</dt>
                         <dd class="col-8">${sourceRegistry?.name || 'N/A'}</dd>
-
-                        <dt class="col-4">Target Registry:</dt>
-                        <dd class="col-8">${targetRegistry?.name || 'N/A'}</dd>
 
                         <dt class="col-4">Auto Tag:</dt>
                         <dd class="col-8">${this.data.bundle.auto_tag_enabled ? 'Enabled' : 'Disabled'}</dd>
@@ -401,19 +379,15 @@ class BundleWizard {
         this.data.bundle.name = document.getElementById('bundle-name').value;
         this.data.bundle.description = document.getElementById('bundle-description').value;
         const sourceSelect = document.getElementById('bundle-source-registry');
-        const targetSelect = document.getElementById('bundle-target-registry');
         if (sourceSelect) {
             this.data.bundle.source_registry_id = sourceSelect.value;
-        }
-        if (targetSelect) {
-            this.data.bundle.target_registry_id = targetSelect.value;
         }
         this.data.bundle.auto_tag_enabled = document.getElementById('bundle-auto-tag')?.checked || false;
         if (!this.data.bundle.tenant_id || !this.data.bundle.name) {
             throw new Error('Please fill in all required fields');
         }
         if (this.options.showRegistrySelectors) {
-            if (!this.data.bundle.source_registry_id || !this.data.bundle.target_registry_id) {
+            if (!this.data.bundle.source_registry_id) {
                 throw new Error('Please fill in all required fields');
             }
         }
@@ -545,7 +519,6 @@ class BundleWizard {
             name: this.data.bundle.name,
             description: this.data.bundle.description,
             source_registry_id: this.data.bundle.source_registry_id,
-            target_registry_id: this.data.bundle.target_registry_id,
             auto_tag_enabled: this.data.bundle.auto_tag_enabled,
         });
 

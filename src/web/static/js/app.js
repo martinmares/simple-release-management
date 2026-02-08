@@ -3648,8 +3648,6 @@ router.on('/bundles', async () => {
                             ` : rows.map(bundle => {
                                 const tenant = tenantMap[bundle.tenant_id];
                                 const sourceReg = registryMap[bundle.source_registry_id];
-                                const targetReg = registryMap[bundle.target_registry_id];
-
                                 return `
                                 <tr>
                                     <td>
@@ -3658,10 +3656,6 @@ router.on('/bundles', async () => {
                                             <div class="mt-1">
                                                 <i class="ti ti-download" style="font-size: 0.8em;"></i>
                                                 <span style="font-size: 0.85em;">${sourceReg?.base_url || 'Unknown'}${sourceReg?.default_project_path ? ` (path: ${sourceReg.default_project_path})` : ''}</span>
-                                            </div>
-                                            <div>
-                                                <i class="ti ti-upload" style="font-size: 0.8em;"></i>
-                                                <span style="font-size: 0.85em;">${targetReg?.base_url || 'Unknown'}${targetReg?.default_project_path ? ` (path: ${targetReg.default_project_path})` : ''}</span>
                                             </div>
                                         </div>
                                     </td>
@@ -3742,7 +3736,6 @@ router.on('/bundles/new', async (params, query) => {
                     wizard.data.bundle.tenant_id = tenantSelect.value;
                     // Clear registry selections when tenant changes
                     wizard.data.bundle.source_registry_id = '';
-                    wizard.data.bundle.target_registry_id = '';
                     renderWizard();
                 });
             }
@@ -3885,14 +3878,13 @@ router.on('/bundles/:id', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
-        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, targetRegistry, registries, environments] = await Promise.all([
+        const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, registries, environments] = await Promise.all([
             api.getBundleVersions(params.id),
             api.getBundleCopyJobs(params.id),
             api.getReleases(),
             api.getBundleDeployments(params.id),
             bundle.tenant_id ? api.getTenant(bundle.tenant_id).catch(() => null) : null,
             bundle.source_registry_id ? api.getRegistry(bundle.source_registry_id).catch(() => null) : null,
-            bundle.target_registry_id ? api.getRegistry(bundle.target_registry_id).catch(() => null) : null,
             api.getRegistries().catch(() => []),
             bundle.tenant_id ? api.getEnvironments(bundle.tenant_id).catch(() => []) : Promise.resolve([]),
         ]);
@@ -3947,7 +3939,6 @@ router.on('/bundles/:id', async (params) => {
                                 <div class="text-secondary small">
                                     <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
                                     <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
-                                    <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url}${targetRegistry.default_project_path ? ` (path: ${targetRegistry.default_project_path})` : ''}</code>` : 'Target: -'}</div>
                                 </div>
                             </div>
                             <div class="card-actions">
@@ -4411,7 +4402,6 @@ router.on('/bundles/:id/edit', async (params) => {
                     name: data.name,
                     description: data.description,
                     source_registry_id: bundle.source_registry_id,
-                    target_registry_id: bundle.target_registry_id,
                     auto_tag_enabled: data.auto_tag_enabled === 'on' || data.auto_tag_enabled === true,
                 });
                 getApp().showSuccess('Bundle updated successfully');
@@ -4473,7 +4463,6 @@ router.on('/bundles/:id/copy', async (params) => {
         wizard.data.bundle.name = `${bundle.name} Copy`;
         wizard.data.bundle.description = bundle.description || '';
         wizard.data.bundle.source_registry_id = bundle.source_registry_id;
-        wizard.data.bundle.target_registry_id = bundle.target_registry_id;
         wizard.data.bundle.auto_tag_enabled = bundle.auto_tag_enabled;
         wizard.data.imageMappings = mappings.map(m => ({
             source_image: m.source_image,
@@ -4512,7 +4501,6 @@ router.on('/bundles/:id/copy', async (params) => {
                 tenantSelect.addEventListener('change', () => {
                     wizard.data.bundle.tenant_id = tenantSelect.value;
                     wizard.data.bundle.source_registry_id = '';
-                    wizard.data.bundle.target_registry_id = '';
                     renderWizard();
                 });
             }

@@ -15,7 +15,6 @@ use crate::db::models::{Bundle, BundleVersion, ImageMapping};
 #[derive(Debug, Deserialize)]
 pub struct CreateBundleRequest {
     pub source_registry_id: Uuid,
-    pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub auto_tag_enabled: Option<bool>,
@@ -27,7 +26,6 @@ pub struct UpdateBundleRequest {
     pub name: String,
     pub description: Option<String>,
     pub source_registry_id: Uuid,
-    pub target_registry_id: Uuid,
     pub auto_tag_enabled: Option<bool>,
 }
 
@@ -121,7 +119,6 @@ pub struct BundleWithStats {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub source_registry_id: Uuid,
-    pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub auto_tag_enabled: bool,
@@ -301,16 +298,14 @@ async fn create_bundle(
         ));
     }
 
-    // Zkontrolovat že source a target registry existují a patří k tomuto tenantu
-    let registries_valid = sqlx::query_scalar::<_, bool>(
+    // Zkontrolovat že source registry existuje a patří k tomuto tenantu
+    let registry_valid = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
             SELECT 1 FROM registries
-            WHERE id IN ($1, $2) AND tenant_id = $3
-            GROUP BY tenant_id HAVING COUNT(*) = 2
+            WHERE id = $1 AND tenant_id = $2
         )"
     )
     .bind(payload.source_registry_id)
-    .bind(payload.target_registry_id)
     .bind(tenant_id)
     .fetch_one(&pool)
     .await
@@ -323,11 +318,11 @@ async fn create_bundle(
         )
     })?;
 
-    if !registries_valid {
+    if !registry_valid {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Source or target registry not found or doesn't belong to this tenant".to_string(),
+                error: "Source registry not found or doesn't belong to this tenant".to_string(),
             }),
         ));
     }
@@ -346,13 +341,12 @@ async fn create_bundle(
     let auto_tag_enabled = payload.auto_tag_enabled.unwrap_or(false);
 
     let bundle = sqlx::query_as::<_, Bundle>(
-        "INSERT INTO bundles (tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version)
-         VALUES ($1, $2, $3, $4, $5, $6, 1)
-         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version, created_at",
+        "INSERT INTO bundles (tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version)
+         VALUES ($1, $2, $3, $4, $5, 1)
+         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, created_at",
     )
     .bind(tenant_id)
     .bind(payload.source_registry_id)
-    .bind(payload.target_registry_id)
     .bind(&payload.name)
     .bind(&payload.description)
     .bind(auto_tag_enabled)
@@ -428,14 +422,13 @@ async fn update_bundle(
 
     let bundle = sqlx::query_as::<_, Bundle>(
         "UPDATE bundles
-         SET name = $1, description = $2, source_registry_id = $3, target_registry_id = $4, auto_tag_enabled = $5
-         WHERE id = $6
-         RETURNING id, tenant_id, source_registry_id, target_registry_id, name, description, auto_tag_enabled, current_version, created_at",
+         SET name = $1, description = $2, source_registry_id = $3, auto_tag_enabled = $4
+         WHERE id = $5
+         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, created_at",
     )
     .bind(&payload.name)
     .bind(&payload.description)
     .bind(payload.source_registry_id)
-    .bind(payload.target_registry_id)
     .bind(auto_tag_enabled)
     .bind(id)
     .fetch_optional(&pool)

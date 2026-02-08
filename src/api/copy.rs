@@ -54,6 +54,7 @@ pub struct CopyJobResponse {
 #[derive(Debug, Deserialize)]
 pub struct NextTagQuery {
     pub tz_offset_minutes: Option<i32>,
+    pub environment_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -576,15 +577,14 @@ async fn copy_bundle_version(
     }
 
     // Získat registries pro URL construction
-    if payload.environment_id.is_none() {
-        return Err((
+    let environment_id = payload.environment_id.ok_or_else(|| {
+        (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
                 error: "Environment is required".to_string(),
             }),
-        ));
-    }
-    let environment_id = payload.environment_id;
+        )
+    })?;
 
     let environment = sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
         .bind(environment_id)
@@ -662,15 +662,15 @@ async fn copy_bundle_version(
         let date = local_date_from_offset(payload.timezone_offset_minutes);
         let counter: i32 = sqlx::query_scalar(
             r#"
-            INSERT INTO bundle_tag_counters (bundle_id, target_registry_id, date, counter)
+            INSERT INTO bundle_tag_counters (bundle_id, environment_id, date, counter)
             VALUES ($1, $2, $3, 1)
-            ON CONFLICT (bundle_id, target_registry_id, date)
+            ON CONFLICT (bundle_id, environment_id, date)
             DO UPDATE SET counter = bundle_tag_counters.counter + 1, updated_at = now()
             RETURNING counter
             "#,
         )
         .bind(bundle.id)
-        .bind(target_registry_id)
+        .bind(environment_id)
         .bind(date)
         .fetch_one(&state.pool)
         .await
@@ -697,15 +697,6 @@ async fn copy_bundle_version(
     };
 
     // Vytvořit job
-    if payload.environment_id.is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Environment is required".to_string(),
-            }),
-        ));
-    }
-
     let job_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO copy_jobs (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id, environment_id)
@@ -716,7 +707,7 @@ async fn copy_bundle_version(
     .bind(&target_tag)
     .bind(source_registry_id)
     .bind(target_registry_id)
-    .bind(payload.environment_id)
+    .bind(environment_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -807,12 +798,21 @@ async fn get_next_copy_tag(
         ));
     }
 
+    let environment_id = query.environment_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Environment is required".to_string(),
+            }),
+        )
+    })?;
+
     let date = local_date_from_offset(query.tz_offset_minutes);
     let current: Option<i32> = sqlx::query_scalar(
-        "SELECT counter FROM bundle_tag_counters WHERE bundle_id = $1 AND target_registry_id = $2 AND date = $3",
+        "SELECT counter FROM bundle_tag_counters WHERE bundle_id = $1 AND environment_id = $2 AND date = $3",
     )
     .bind(bundle.id)
-    .bind(bundle.target_registry_id)
+    .bind(environment_id)
     .bind(date)
     .fetch_optional(&state.pool)
     .await
@@ -1639,11 +1639,11 @@ async fn start_selective_copy_job(
         ));
     }
 
-    let (Some(source_registry_id), Some(target_registry_id)) = (source_registry_id, target_registry_id) else {
+    let (Some(source_registry_id), Some(target_registry_id), Some(environment_id)) = (source_registry_id, target_registry_id, environment_id) else {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Base copy job is missing registries".to_string(),
+                error: "Base copy job is missing registries or environment".to_string(),
             }),
         ));
     };
@@ -1652,15 +1652,15 @@ async fn start_selective_copy_job(
         let date = local_date_from_offset(payload.timezone_offset_minutes);
         let counter: i32 = sqlx::query_scalar(
             r#"
-            INSERT INTO bundle_tag_counters (bundle_id, target_registry_id, date, counter)
+            INSERT INTO bundle_tag_counters (bundle_id, environment_id, date, counter)
             VALUES ($1, $2, $3, 1)
-            ON CONFLICT (bundle_id, target_registry_id, date)
+            ON CONFLICT (bundle_id, environment_id, date)
             DO UPDATE SET counter = bundle_tag_counters.counter + 1, updated_at = now()
             RETURNING counter
             "#,
         )
         .bind(bundle_id)
-        .bind(target_registry_id)
+        .bind(environment_id)
         .bind(date)
         .fetch_one(&state.pool)
         .await

@@ -83,7 +83,6 @@ pub struct Bundle {
     pub id: Uuid,
     pub tenant_id: Uuid,
     pub source_registry_id: Uuid,
-    pub target_registry_id: Uuid,
     pub name: String,
     pub description: Option<String>,
     pub auto_tag_enabled: bool,
