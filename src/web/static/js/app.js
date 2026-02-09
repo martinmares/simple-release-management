@@ -4002,6 +4002,7 @@ router.on('/bundles/:id', async (params) => {
                 releaseByCopyJobId.set(r.copy_job_id, r);
             }
         });
+        const copyJobById = new Map((copyJobs || []).map(job => [job.job_id, job]));
 
         content.innerHTML = `
             ${tenant?.id ? `
@@ -4200,17 +4201,29 @@ router.on('/bundles/:id', async (params) => {
                                             </td>
                                             <td>
                                                 <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
-                                                <div class="text-secondary small mt-1">
-                                                    ${
-                                                        job.environment_id && environmentMap.get(job.environment_id)
-                                                            ? `Env: <span class="badge" style="${environmentMap.get(job.environment_id).color ? `background:${environmentMap.get(job.environment_id).color};color:#fff;` : ''}">${environmentMap.get(job.environment_id).name}</span>`
-                                                            : 'Env: -'
-                                                    }
-                                                </div>
-                                                <div class="text-secondary small">
-                                                    <div>${job.source_registry_id ? `Source: <code>${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}</div>
-                                                    <div>${job.target_registry_id ? `Target: <code>${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}</div>
-                                                </div>
+                                                ${(() => {
+                                                    const targetEnv = job.environment_id ? environmentMap.get(job.environment_id) : null;
+                                                    const baseJob = job.base_copy_job_id ? copyJobById.get(job.base_copy_job_id) : null;
+                                                    const sourceEnv = baseJob?.environment_id ? environmentMap.get(baseJob.environment_id) : null;
+                                                    const sourceRegistry = job.source_registry_id ? registryMap[job.source_registry_id] : null;
+                                                    const targetRegistry = job.target_registry_id ? registryMap[job.target_registry_id] : null;
+                                                    const sourcePath = sourceEnv?.source_project_path || sourceRegistry?.default_project_path || '-';
+                                                    const targetPath = targetEnv?.target_project_path || targetRegistry?.default_project_path || '-';
+                                                    const sourceEnvBadge = sourceEnv
+                                                        ? `<span class="badge" style="${sourceEnv.color ? `background:${sourceEnv.color};color:#fff;` : ''}">${sourceEnv.name}</span>`
+                                                        : '-';
+                                                    const targetEnvBadge = targetEnv
+                                                        ? `<span class="badge" style="${targetEnv.color ? `background:${targetEnv.color};color:#fff;` : ''}">${targetEnv.name}</span>`
+                                                        : '-';
+                                                    return `
+                                                        <div class="text-secondary small mt-1">
+                                                            <div>Env Src: ${sourceEnvBadge}</div>
+                                                            <div>Env Trg: ${targetEnvBadge}</div>
+                                                            <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url} (path: ${sourcePath})</code>` : 'Source: -'}</div>
+                                                            <div>${targetRegistry?.base_url ? `Target: <code>${targetRegistry.base_url} (path: ${targetPath})</code>` : 'Target: -'}</div>
+                                                        </div>
+                                                    `;
+                                                })()}
                                             </td>
                                             <td>
                                                 ${(() => {
@@ -4313,6 +4326,7 @@ router.on('/bundles/:id', async (params) => {
                                                     row.status === 'in_progress' ? 'bg-info text-info-fg' :
                                                     'bg-secondary text-secondary-fg'
                                                 }">${row.status}</span>
+                                                ${row.dry_run ? '<span class="badge bg-azure-lt text-azure-fg ms-2">dry-run</span>' : ''}
                                             </td>
                                             <td>${new Date(row.started_at).toLocaleString('cs-CZ')}</td>
                                             <td>${row.completed_at ? new Date(row.completed_at).toLocaleString('cs-CZ') : '-'}</td>
@@ -5058,20 +5072,11 @@ router.on('/bundles/:id/versions/:version', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
-        const [bundle, version, mappings, copyJobs, registries] = await Promise.all([
+        const [bundle, version, mappings] = await Promise.all([
             api.getBundle(params.id),
             api.getBundleVersion(params.id, params.version),
             api.getImageMappings(params.id, params.version),
-            api.getBundleCopyJobs(params.id),
-            api.getRegistries().catch(() => []),
         ]);
-
-        const registryMap = {};
-        (registries || []).forEach(r => {
-            registryMap[r.id] = r;
-        });
-
-        const versionJobs = copyJobs.filter(j => j.version === Number(params.version));
 
         content.innerHTML = `
             <div class="row mb-3">
@@ -5153,104 +5158,7 @@ router.on('/bundles/:id/versions/:version', async (params) => {
                 </div>
             </div>
 
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title">Copy Jobs</h3>
-                </div>
-                <div class="table-responsive">
-                    <table class="table table-vcenter card-table">
-                        <thead>
-                            <tr>
-                                <th>Target Tag</th>
-                                <th>Status</th>
-                                <th>Started</th>
-                                <th>Completed</th>
-                                <th>Duration</th>
-                                <th class="w-1"></th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${versionJobs.length === 0 ? `
-                                <tr>
-                                    <td colspan="6" class="text-center text-secondary py-4">
-                                        No copy jobs for this version.
-                                    </td>
-                                </tr>
-                            ` : versionJobs.map(job => `
-                                <tr>
-                                    <td>
-                                        <a href="#/copy-jobs/${job.job_id}"><span class="badge bg-azure-lt">${job.target_tag}</span></a>
-                                        ${job.validate_only ? '<span class="badge bg-azure-lt text-azure-fg ms-2">validate</span>' : ''}
-                                        ${job.is_selective ? '<span class="badge bg-purple-lt text-purple-fg ms-2">selective</span>' : ''}
-                                        <div class="text-secondary small mt-1">
-                                            ${job.source_registry_id ? `Source: <code class="small">${registryMap[job.source_registry_id]?.base_url || '-'}${registryMap[job.source_registry_id]?.default_project_path ? ` (path: ${registryMap[job.source_registry_id]?.default_project_path})` : ''}</code>` : 'Source: -'}
-                                        </div>
-                                        <div class="text-secondary small">
-                                            ${job.target_registry_id ? `Target: <code class="small">${registryMap[job.target_registry_id]?.base_url || '-'}${registryMap[job.target_registry_id]?.default_project_path ? ` (path: ${registryMap[job.target_registry_id]?.default_project_path})` : ''}</code>` : 'Target: -'}
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <span class="badge ${
-                                            job.status === 'success' ? 'bg-success text-success-fg' :
-                                            job.status === 'failed' ? 'bg-danger text-danger-fg' :
-                                            job.status === 'in_progress' ? 'bg-info text-info-fg' :
-                                            job.status === 'pending' ? 'bg-warning text-warning-fg' :
-                                            job.status === 'cancelled' || job.status === 'canceled' ? 'bg-warning text-warning-fg' :
-                                            'bg-secondary text-secondary-fg'
-                                        }">${job.status}</span>
-                                    </td>
-                                    <td>${new Date(job.started_at).toLocaleString('cs-CZ')}</td>
-                                    <td>${job.completed_at ? new Date(job.completed_at).toLocaleString('cs-CZ') : '-'}</td>
-                                    <td>${job.completed_at ? (() => {
-                                        const start = new Date(job.started_at).getTime();
-                                        const end = new Date(job.completed_at).getTime();
-                                        const secs = Math.max(0, Math.floor((end - start) / 1000));
-                                        const mins = Math.floor(secs / 60);
-                                        const rem = secs % 60;
-                                        return mins > 0 ? `${mins}m ${rem}s` : `${rem}s`;
-                                    })() : '-'}</td>
-                                    <td>
-                                        ${!job.is_release_job && job.status === 'success' ? `
-                                            <div class="d-flex flex-column gap-1">
-                                                <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
-                                                    <i class="ti ti-rocket"></i>
-                                                    Release Images
-                                                </a>
-                                                <button type="button" class="btn btn-sm btn-outline-secondary selective-copy-btn" data-job-id="${job.job_id}">
-                                                    <i class="ti ti-adjustments"></i>
-                                                    Selective Copy
-                                                </button>
-                                                <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
-                                                    <i class="ti ti-rocket"></i>
-                                                    Deploy Action
-                                                </button>
-                                            </div>
-                                        ` : job.is_release_job ? `
-                                            <span class="badge bg-purple-lt text-purple-fg">image release</span>
-                                        ` : ''}
-                                    </td>
-                                </tr>
-                            `).join('')}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
         `;
-
-        document.querySelectorAll('.auto-deploy-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const jobId = btn.getAttribute('data-job-id');
-                const targetTag = btn.getAttribute('data-target-tag');
-                await runAutoDeployFromCopyJob(jobId, bundle?.tenant_id, targetTag);
-            });
-        });
-
-        document.querySelectorAll('.selective-copy-btn').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const jobId = btn.getAttribute('data-job-id');
-                await runSelectiveCopyFromJob(jobId, bundle);
-            });
-        });
 
         const exportBtn = document.getElementById('export-mappings-btn');
         if (exportBtn) {
