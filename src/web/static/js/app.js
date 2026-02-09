@@ -4242,6 +4242,7 @@ router.on('/bundles/:id', async (params) => {
                                                     job.status === 'success' ? 'bg-success text-success-fg' :
                                                     job.status === 'failed' ? 'bg-danger text-danger-fg' :
                                                     job.status === 'in_progress' ? 'bg-info text-info-fg' :
+                                                    job.status === 'cancelled' || job.status === 'canceled' ? 'bg-warning text-warning-fg' :
                                                     'bg-secondary text-secondary-fg'
                                                 }">${job.status}</span>
                                             </td>
