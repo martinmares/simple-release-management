@@ -2382,12 +2382,33 @@ router.on('/argocd-apps/:id', async (params) => {
         };
 
         refreshBtn.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Refresh ArgoCD App?',
+                'This will fetch the latest status and resources for this application.',
+                'Refresh',
+                'Cancel'
+            );
+            if (!confirmed) return;
             await runAction(refreshBtn, 'Refreshing', () => api.refreshArgocdApp(app.id));
         });
         syncBtn.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Sync ArgoCD App?',
+                'This will apply the desired state to the cluster.',
+                'Sync',
+                'Cancel'
+            );
+            if (!confirmed) return;
             await runAction(syncBtn, 'Syncing', () => api.syncArgocdApp(app.id));
         });
         termBtn.addEventListener('click', async () => {
+            const confirmed = await showConfirmDialog(
+                'Terminate ArgoCD Operation?',
+                'This will stop the currently running operation for this application.',
+                'Terminate',
+                'Cancel'
+            );
+            if (!confirmed) return;
             await runAction(termBtn, 'Terminating', () => api.terminateArgocdApp(app.id));
         });
 
