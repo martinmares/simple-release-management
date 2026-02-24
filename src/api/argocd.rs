@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -144,6 +144,16 @@ pub struct ArgocdResource {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ArgocdCleanupCandidate {
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub group: Option<String>,
+    pub sync_status: Option<String>,
+    pub requires_pruning: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ArgocdEvent {
     pub kind: Option<String>,
     pub name: Option<String>,
@@ -175,6 +185,8 @@ pub fn router(state: ArgocdApiState) -> Router {
         .route("/argocd-apps/{id}/status", get(get_app_status))
         .route("/argocd-apps/{id}/refresh", post(refresh_app))
         .route("/argocd-apps/{id}/sync", post(sync_app))
+        .route("/argocd-apps/{id}/cleanup-preview", get(get_cleanup_preview))
+        .route("/argocd-apps/{id}/cleanup-sync", post(cleanup_sync_app))
         .route("/argocd-apps/{id}/terminate", post(terminate_app))
         .route("/argocd-apps/{id}/target-revision", post(update_target_revision))
         .route("/argocd-apps/{id}/stream", get(stream_app_status))
@@ -696,24 +708,32 @@ async fn sync_app(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
     let (instance, app) = load_instance_and_app(&state.pool, id).await?;
-    let ignore_list = extract_ignore_list(&app);
-    if ignore_list.is_empty() {
-        call_argocd_action(&state, &instance, &app, "sync").await?;
-        return Ok(StatusCode::ACCEPTED);
-    }
-    let matchers = parse_ignore_matchers(&ignore_list);
-    let resources = fetch_argocd_resources(&state, &instance, &app).await?;
-    let filtered: Vec<ArgocdSyncResource> = resources
-        .into_iter()
-        .filter(|r| !matches_ignore(&matchers, r))
-        .map(|r| ArgocdSyncResource {
-            group: r.group.unwrap_or_default(),
-            kind: r.kind,
-            name: r.name,
-            namespace: r.namespace.unwrap_or_default(),
-        })
-        .collect();
-    call_argocd_sync(&state, &instance, &app, filtered).await?;
+    perform_sync_with_filters(&state, &instance, &app, false, false).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn get_cleanup_preview(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ArgocdCleanupCandidate>>, (StatusCode, Json<ErrorResponse>)> {
+    let (instance, app) = load_instance_and_app(&state.pool, id).await?;
+    let mut items = fetch_argocd_prune_candidates(&state, &instance, &app).await?;
+    items.sort_by(|a, b| {
+        let a_ns = a.namespace.as_deref().unwrap_or("");
+        let b_ns = b.namespace.as_deref().unwrap_or("");
+        (a_ns, a.kind.as_str(), a.name.as_str()).cmp(&(b_ns, b.kind.as_str(), b.name.as_str()))
+    });
+    Ok(Json(items))
+}
+
+async fn cleanup_sync_app(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let (instance, app) = load_instance_and_app(&state.pool, id).await?;
+    perform_sync_with_filters(&state, &instance, &app, false, false).await?;
+    wait_for_argocd_operation_completion(&state, &instance, &app).await?;
+    perform_sync_with_filters(&state, &instance, &app, true, true).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -992,9 +1012,24 @@ async fn call_argocd_sync(
     instance: &ArgocdInstance,
     app: &EnvironmentArgocdApp,
     resources: Vec<ArgocdSyncResource>,
+    prune: bool,
+    out_of_sync_only: bool,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let url = format!("{}/api/v1/applications/{}/sync", instance.base_url, app.application_name);
-    let payload = serde_json::json!({ "resources": resources });
+    let mut sync_options: Vec<&str> = Vec::new();
+    if prune {
+        sync_options.push("Prune=true");
+    }
+    if out_of_sync_only {
+        sync_options.push("ApplyOutOfSyncOnly=true");
+    }
+    let mut payload = serde_json::json!({ "resources": resources });
+    if prune {
+        payload["prune"] = serde_json::json!(true);
+    }
+    if !sync_options.is_empty() {
+        payload["syncOptions"] = serde_json::json!(sync_options);
+    }
     let resp = send_with_auth(state, instance, |client| client.post(url.clone()).json(&payload)).await?;
     if !resp.status().is_success() {
         let status = resp.status();
@@ -1007,6 +1042,187 @@ async fn call_argocd_sync(
         ));
     }
     Ok(())
+}
+
+async fn perform_sync_with_filters(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+    prune: bool,
+    out_of_sync_only: bool,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let ignore_list = extract_ignore_list(app);
+    if ignore_list.is_empty() && !prune && !out_of_sync_only {
+        call_argocd_action(state, instance, app, "sync").await?;
+        return Ok(());
+    }
+    let matchers = parse_ignore_matchers(&ignore_list);
+    let resources = fetch_argocd_resources(state, instance, app).await?;
+    let filtered: Vec<ArgocdSyncResource> = resources
+        .into_iter()
+        .filter(|r| !matches_ignore(&matchers, r))
+        .map(|r| ArgocdSyncResource {
+            group: r.group.unwrap_or_default(),
+            kind: r.kind,
+            name: r.name,
+            namespace: r.namespace.unwrap_or_default(),
+        })
+        .collect();
+    call_argocd_sync(state, instance, app, filtered, prune, out_of_sync_only).await
+}
+
+async fn wait_for_argocd_operation_completion(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let mut seen_active_phase = false;
+    let mut idle_polls = 0usize;
+
+    loop {
+        let status = fetch_argocd_status(state, instance, app).await?;
+        match status.operation_phase.as_deref() {
+            Some("Running") | Some("Pending") | Some("Terminating") => {
+                seen_active_phase = true;
+                idle_polls = 0;
+            }
+            Some("Succeeded") => return Ok(()),
+            Some("Failed") | Some("Error") => {
+                return Err((
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "ArgoCD sync phase failed: {} {}",
+                            status.operation_phase.unwrap_or_else(|| "unknown".to_string()),
+                            status.operation_message.unwrap_or_default()
+                        )
+                        .trim()
+                        .to_string(),
+                    }),
+                ));
+            }
+            _ => {
+                if status.sync_status.as_deref() == Some("Synced") {
+                    return Ok(());
+                }
+                idle_polls += 1;
+                if seen_active_phase && idle_polls >= 2 {
+                    return Ok(());
+                }
+                if !seen_active_phase && idle_polls >= 3 {
+                    return Ok(());
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err((
+                StatusCode::GATEWAY_TIMEOUT,
+                Json(ErrorResponse {
+                    error: "Timed out waiting for ArgoCD sync completion".to_string(),
+                }),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+async fn fetch_argocd_prune_candidates(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+) -> Result<Vec<ArgocdCleanupCandidate>, (StatusCode, Json<ErrorResponse>)> {
+    let url = format!(
+        "{}/api/v1/applications/{}/managed-resources",
+        instance.base_url, app.application_name
+    );
+    let resp = send_with_auth(state, instance, |client| client.get(url.clone())).await?;
+    let value: serde_json::Value = resp.json().await.map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD response decode failed: {}", e),
+            }),
+        )
+    })?;
+
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let ignore_list = extract_ignore_list(app);
+    let matchers = parse_ignore_matchers(&ignore_list);
+    let mut out = Vec::new();
+
+    for item in items {
+        let kind = item
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let name = item
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if kind.is_empty() || name.is_empty() {
+            continue;
+        }
+
+        let namespace = item
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|v| !v.trim().is_empty());
+        let group = item
+            .get("group")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .filter(|v| !v.trim().is_empty());
+        let sync_status = item
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| item.pointer("/sync/status").and_then(|v| v.as_str()).map(str::to_string));
+
+        let requires_pruning = item
+            .get("requiresPruning")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let has_live_state = item.get("liveState").map(|v| !v.is_null()).unwrap_or(false);
+        let target_missing = item.get("targetState").map(|v| v.is_null()).unwrap_or(true);
+        let is_candidate = requires_pruning || (has_live_state && target_missing);
+        if !is_candidate {
+            continue;
+        }
+
+        let as_resource = ArgocdResource {
+            kind: kind.clone(),
+            name: name.clone(),
+            namespace: namespace.clone(),
+            group: group.clone(),
+            version: None,
+            health: None,
+            sync: sync_status.clone(),
+        };
+        if matches_ignore(&matchers, &as_resource) {
+            continue;
+        }
+
+        out.push(ArgocdCleanupCandidate {
+            kind,
+            name,
+            namespace,
+            group,
+            sync_status,
+            requires_pruning,
+        });
+    }
+    Ok(out)
 }
 
 async fn patch_argocd_target_revision(

@@ -546,6 +546,14 @@ class ApiClient {
         return this.post(`/argocd-apps/${id}/sync`, {});
     }
 
+    async getArgocdCleanupPreview(id) {
+        return this.get(`/argocd-apps/${id}/cleanup-preview`);
+    }
+
+    async cleanupSyncArgocdApp(id) {
+        return this.post(`/argocd-apps/${id}/cleanup-sync`, {});
+    }
+
     async terminateArgocdApp(id) {
         return this.post(`/argocd-apps/${id}/terminate`, {});
     }

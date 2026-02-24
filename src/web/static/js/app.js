@@ -2348,6 +2348,7 @@ router.on('/argocd-apps/:id', async (params) => {
                                 <div class="d-flex gap-2">
                                     <button class="btn btn-outline-secondary" id="argocd-refresh-btn"><i class="ti ti-refresh"></i> Refresh</button>
                                     <button class="btn btn-success" id="argocd-sync-btn"><i class="ti ti-rocket"></i> Sync</button>
+                                    <button class="btn btn-warning" id="argocd-cleanup-sync-btn"><i class="ti ti-trash"></i> Cleanup Sync</button>
                                     <button class="btn btn-outline-danger" id="argocd-terminate-btn"><i class="ti ti-circle-x"></i> Terminate</button>
                                 </div>
                             </div>
@@ -2524,11 +2525,12 @@ router.on('/argocd-apps/:id', async (params) => {
 
         const refreshBtn = document.getElementById('argocd-refresh-btn');
         const syncBtn = document.getElementById('argocd-sync-btn');
+        const cleanupSyncBtn = document.getElementById('argocd-cleanup-sync-btn');
         const termBtn = document.getElementById('argocd-terminate-btn');
         const canDeploy = getApp()?.canDeploy?.() || false;
 
         if (!canDeploy) {
-            [refreshBtn, syncBtn, termBtn].forEach((btn) => {
+            [refreshBtn, syncBtn, cleanupSyncBtn, termBtn].forEach((btn) => {
                 if (!btn) return;
                 btn.disabled = true;
                 btn.title = 'Deploy role required';
@@ -2578,6 +2580,69 @@ router.on('/argocd-apps/:id', async (params) => {
             );
             if (!confirmed) return;
             await runAction(syncBtn, 'Syncing', () => api.syncArgocdApp(app.id));
+        });
+        cleanupSyncBtn.addEventListener('click', async () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
+
+            let candidates = [];
+            try {
+                const preview = await api.getArgocdCleanupPreview(app.id);
+                candidates = Array.isArray(preview) ? preview : [];
+            } catch (err) {
+                getApp().showError(`Cleanup preview failed: ${err.message}`);
+                return;
+            }
+
+            const confirmed = await new Promise((resolve) => {
+                const listItems = candidates
+                    .map((item) => {
+                        const ns = item.namespace || '-';
+                        const status = item.sync_status || '-';
+                        const label = `${item.kind}/${item.name}`;
+                        return `<li><code>${escapeHtml(label)}</code> <span class="text-secondary">ns=${escapeHtml(ns)}, sync=${escapeHtml(status)}</span></li>`;
+                    })
+                    .join('');
+                const summary = candidates.length === 0
+                    ? '<div class="alert alert-secondary mb-0">No prune candidates found right now. Cleanup Sync can still run.</div>'
+                    : `<div class="alert alert-warning mb-2">Objects to prune: <strong>${candidates.length}</strong></div>`;
+
+                const modalHtml = `
+                    <div class="modal modal-blur fade show" style="display: block;" id="argocd-cleanup-sync-modal">
+                        <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">Cleanup Sync Preview</h5>
+                                </div>
+                                <div class="modal-body">
+                                    <p class="text-secondary mb-2">This will run normal Sync first, then Sync with <code>Prune=true</code> and <code>ApplyOutOfSyncOnly=true</code>.</p>
+                                    ${summary}
+                                    ${candidates.length > 0 ? `<div style="max-height:260px; overflow:auto;"><ul class="mb-0 ps-3 small">${listItems}</ul></div>` : ''}
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-link link-secondary" id="argocd-cleanup-cancel">No</button>
+                                    <button type="button" class="btn btn-warning" id="argocd-cleanup-confirm">Yes, Cleanup Sync</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-backdrop fade show"></div>
+                `;
+                document.body.insertAdjacentHTML('beforeend', modalHtml);
+                const modal = document.getElementById('argocd-cleanup-sync-modal');
+                const backdrop = document.querySelector('.modal-backdrop');
+                const close = (value) => {
+                    modal?.remove();
+                    backdrop?.remove();
+                    resolve(value);
+                };
+                document.getElementById('argocd-cleanup-cancel')?.addEventListener('click', () => close(false));
+                document.getElementById('argocd-cleanup-confirm')?.addEventListener('click', () => close(true));
+            });
+            if (!confirmed) return;
+            await runAction(cleanupSyncBtn, 'Cleanup Syncing', () => api.cleanupSyncArgocdApp(app.id));
         });
         termBtn.addEventListener('click', async () => {
             if (!canDeploy) {
