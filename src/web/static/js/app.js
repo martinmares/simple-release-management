@@ -3392,7 +3392,7 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
         const logLines = [];
         const renderLog = () => {
             const tail = logLines.slice(-100);
-            eventLog.textContent = tail.join('\\n');
+            eventLog.textContent = tail.join('\n');
             eventLog.scrollTop = eventLog.scrollHeight;
         };
         const appendEvent = (ev) => {
