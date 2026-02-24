@@ -15,6 +15,10 @@ pub struct CliArgs {
     /// Server port to bind to
     #[arg(long, default_value_t = 3000)]
     pub port: u16,
+
+    /// Disable authorization middleware (development/testing only)
+    #[arg(long, default_value_t = false)]
+    pub disable_auth: bool,
 }
 
 #[allow(dead_code)]
@@ -36,11 +40,21 @@ pub struct Config {
     pub copy_max_retries: u32,
     pub copy_retry_delay_seconds: u64,
     pub static_dir: String,
+    pub auth_enabled: bool,
 }
 
 impl Config {
     pub fn from_env_and_cli(cli: CliArgs) -> Result<Self> {
         dotenv::dotenv().ok();
+
+        let env_auth_enabled = parse_bool_env("AUTH_ENABLED").unwrap_or_else(|| {
+            parse_bool_env("AUTH_REQUIRED").unwrap_or(true)
+        });
+        let auth_enabled = if cli.disable_auth {
+            false
+        } else {
+            env_auth_enabled
+        };
 
         let config = Config {
             database_url: env::var("DATABASE_URL")
@@ -98,6 +112,8 @@ impl Config {
 
             static_dir: env::var("STATIC_DIR")
                 .unwrap_or_else(|_| "src/web/static".to_string()),
+
+            auth_enabled,
         };
 
         Ok(config)
@@ -105,5 +121,15 @@ impl Config {
 
     pub fn server_address(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+}
+
+fn parse_bool_env(name: &str) -> Option<bool> {
+    let raw = env::var(name).ok()?;
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
     }
 }

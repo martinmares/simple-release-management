@@ -5,7 +5,7 @@ use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Sse},
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use anyhow::Context;
 use futures::stream;
@@ -29,6 +29,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
+    auth::AuthContext,
     crypto,
     db::models::{
         DeployJob, DeployJobDiff, DeployJobLog, DeployTarget, DeployTargetEncjsonKey, DeployTargetEnv,
@@ -2472,43 +2473,84 @@ async fn list_release_deploy_jobs(
 }
 
 async fn list_deploy_jobs(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<DeployApiState>,
 ) -> Result<Json<Vec<DeployJobListRow>>, (StatusCode, Json<ErrorResponse>)> {
-    let jobs = sqlx::query_as::<_, DeployJobListRow>(
-        r#"
-        SELECT
-            dj.id,
-            dj.status,
-            dj.started_at,
-            dj.completed_at,
-            dj.error_message,
-            dj.commit_sha,
-            dj.tag_name,
-            e.name as target_name,
-            e.slug AS env_name,
-            e.color AS env_color,
-            dj.environment_id,
-            r.id as release_db_id,
-            r.release_id,
-            r.is_auto,
-            b.id as bundle_id,
-            b.name as bundle_name,
-            t.id as tenant_id,
-            t.name as tenant_name,
-            dj.dry_run
-        FROM deploy_jobs dj
-        JOIN environments e ON e.id = dj.environment_id
-        JOIN releases r ON r.id = dj.release_id
-        JOIN copy_jobs cj ON cj.id = r.copy_job_id
-        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
-        JOIN bundles b ON b.id = bv.bundle_id
-        JOIN tenants t ON t.id = b.tenant_id
-        ORDER BY dj.started_at DESC
-        LIMIT 200
-        "#
-    )
-    .fetch_all(&state.pool)
-    .await
+    let jobs = if auth.is_admin() {
+        sqlx::query_as::<_, DeployJobListRow>(
+            r#"
+            SELECT
+                dj.id,
+                dj.status,
+                dj.started_at,
+                dj.completed_at,
+                dj.error_message,
+                dj.commit_sha,
+                dj.tag_name,
+                e.name as target_name,
+                e.slug AS env_name,
+                e.color AS env_color,
+                dj.environment_id,
+                r.id as release_db_id,
+                r.release_id,
+                r.is_auto,
+                b.id as bundle_id,
+                b.name as bundle_name,
+                t.id as tenant_id,
+                t.name as tenant_name,
+                dj.dry_run
+            FROM deploy_jobs dj
+            JOIN environments e ON e.id = dj.environment_id
+            JOIN releases r ON r.id = dj.release_id
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            JOIN tenants t ON t.id = b.tenant_id
+            ORDER BY dj.started_at DESC
+            LIMIT 200
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query_as::<_, DeployJobListRow>(
+            r#"
+            SELECT
+                dj.id,
+                dj.status,
+                dj.started_at,
+                dj.completed_at,
+                dj.error_message,
+                dj.commit_sha,
+                dj.tag_name,
+                e.name as target_name,
+                e.slug AS env_name,
+                e.color AS env_color,
+                dj.environment_id,
+                r.id as release_db_id,
+                r.release_id,
+                r.is_auto,
+                b.id as bundle_id,
+                b.name as bundle_name,
+                t.id as tenant_id,
+                t.name as tenant_name,
+                dj.dry_run
+            FROM deploy_jobs dj
+            JOIN environments e ON e.id = dj.environment_id
+            JOIN releases r ON r.id = dj.release_id
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            JOIN tenants t ON t.id = b.tenant_id
+            WHERE t.id = ANY($1)
+            ORDER BY dj.started_at DESC
+            LIMIT 200
+            "#,
+        )
+        .bind(&auth.tenant_ids)
+        .fetch_all(&state.pool)
+        .await
+    }
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2564,6 +2606,7 @@ async fn get_deploy_job(
 }
 
 async fn create_deploy_job(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<DeployApiState>,
     Json(payload): Json<CreateDeployJobRequest>,
 ) -> Result<(StatusCode, Json<DeployJobResponse>), (StatusCode, Json<ErrorResponse>)> {
@@ -2644,6 +2687,15 @@ async fn create_deploy_job(
         )
     })?;
 
+    if !auth.is_tenant_allowed(release_tenant_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Tenant access denied".to_string(),
+            }),
+        ));
+    }
+
     if environment.tenant_id != release_tenant_id {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -2671,6 +2723,7 @@ async fn create_deploy_job(
 }
 
 async fn auto_deploy_from_copy_job(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<DeployApiState>,
     Json(payload): Json<AutoDeployFromCopyJobRequest>,
 ) -> Result<(StatusCode, Json<DeployJobResponse>), (StatusCode, Json<ErrorResponse>)> {
@@ -2735,6 +2788,15 @@ async fn auto_deploy_from_copy_job(
             }),
         ));
     };
+
+    if !auth.is_tenant_allowed(tenant_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Tenant access denied".to_string(),
+            }),
+        ));
+    }
 
     if status != "success" {
         return Err((
@@ -3691,6 +3753,20 @@ fn detect_encjson_api(contents: &str) -> EncJsonApi {
     }
 }
 
+fn format_command_failure(status: std::process::ExitStatus, stderr: &[u8]) -> String {
+    let status_text = status
+        .code()
+        .map(|code| format!("exit code {}", code))
+        .unwrap_or_else(|| "terminated by signal".to_string());
+    let stderr_text = String::from_utf8_lossy(stderr).trim().to_string();
+    let stderr_text = if stderr_text.is_empty() {
+        "<empty stderr>".to_string()
+    } else {
+        stderr_text
+    };
+    format!("{}, stderr: {}", status_text, stderr_text)
+}
+
 async fn run_encjson_modern(
     state: &DeployApiState,
     environment: &Environment,
@@ -3712,7 +3788,11 @@ async fn run_encjson_modern(
 
     let output = cmd.output().await?;
     if !output.status.success() {
-        anyhow::bail!("encjson-rs failed");
+        anyhow::bail!(
+            "encjson-rs failed for {} ({})",
+            file_path.display(),
+            format_command_failure(output.status, &output.stderr)
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -3729,7 +3809,8 @@ async fn run_encjson_legacy_pipeline(
         .arg("decrypt")
         .arg("-f")
         .arg(file_path)
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     if let Some(keydir) = keydir_override {
         legacy_cmd.arg("-k").arg(keydir);
@@ -3750,7 +3831,8 @@ async fn run_encjson_legacy_pipeline(
         .arg("dot-env")
         .arg("-")
         .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
 
     let mut modern_child = modern_cmd.spawn()?;
     let mut modern_stdin = modern_child
@@ -3761,17 +3843,25 @@ async fn run_encjson_legacy_pipeline(
     tokio::io::copy(&mut legacy_stdout, &mut modern_stdin).await?;
     drop(modern_stdin);
 
-    let output = modern_child.wait_with_output().await?;
-    let legacy_status = legacy_child.wait().await?;
+    let modern_output = modern_child.wait_with_output().await?;
+    let legacy_output = legacy_child.wait_with_output().await?;
 
-    if !legacy_status.success() {
-        anyhow::bail!("encjson legacy failed");
+    if !legacy_output.status.success() {
+        anyhow::bail!(
+            "encjson legacy failed for {} ({})",
+            file_path.display(),
+            format_command_failure(legacy_output.status, &legacy_output.stderr)
+        );
     }
-    if !output.status.success() {
-        anyhow::bail!("encjson-rs failed");
+    if !modern_output.status.success() {
+        anyhow::bail!(
+            "encjson-rs failed for {} ({})",
+            file_path.display(),
+            format_command_failure(modern_output.status, &modern_output.stderr)
+        );
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    Ok(String::from_utf8_lossy(&modern_output.stdout).to_string())
 }
 
 async fn build_encjson_keydir(

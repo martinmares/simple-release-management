@@ -1,4 +1,5 @@
 mod api;
+mod auth;
 mod config;
 mod crypto;
 mod db;
@@ -6,7 +7,7 @@ mod registry;
 mod services;
 
 use anyhow::{Context, Result};
-use axum::{routing::get, Router};
+use axum::{middleware, routing::get, Extension, Router};
 use clap::Parser;
 use config::{CliArgs, Config};
 use sqlx::postgres::PgPoolOptions;
@@ -37,6 +38,10 @@ async fn main() -> Result<()> {
     info!("Configuration loaded");
     info!("Server will listen on: {}", config.server_address());
     info!("Base path: {}", if config.base_path.is_empty() { "/" } else { &config.base_path });
+    info!(
+        "Authorization: {}",
+        if config.auth_enabled { "enabled" } else { "DISABLED (development mode)" }
+    );
 
     // Připojení k databázi
     info!("Connecting to database...");
@@ -113,7 +118,13 @@ async fn main() -> Result<()> {
         .merge(api_router)
         .nest("/api/v1", copy_router)
         .nest("/api/v1", deploy_router)
-        .fallback_service(serve_dir);
+        .fallback_service(serve_dir)
+        .layer(Extension(pool.clone()));
+    let app = if config.auth_enabled {
+        app.layer(middleware::from_fn(auth::auth_middleware))
+    } else {
+        app.layer(middleware::from_fn(auth::auth_disabled_middleware))
+    };
 
     info!("Application initialized successfully");
     info!("Starting HTTP server on {}", config.server_address());
