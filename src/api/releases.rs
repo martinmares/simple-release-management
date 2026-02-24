@@ -506,7 +506,7 @@ async fn create_release(
     let release = sqlx::query_as::<_, Release>(
         "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto)
          VALUES ($1, $2, 'draft', $3, $4, $5, false)
-         RETURNING id, copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason, created_at",
+         RETURNING *",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
@@ -646,7 +646,7 @@ async fn create_release_global(
     let release = sqlx::query_as::<_, Release>(
         "INSERT INTO releases (copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto)
          VALUES ($1, $2, 'draft', $3, $4, $5, false)
-         RETURNING id, copy_job_id, release_id, status, source_ref_mode, notes, created_by, is_auto, auto_reason, created_at",
+         RETURNING *",
     )
     .bind(payload.copy_job_id)
     .bind(&release_id)
@@ -699,7 +699,7 @@ async fn update_release(
         "UPDATE releases
          SET status = $1, notes = $2
          WHERE id = $3
-         RETURNING id, copy_job_id, release_id, status, notes, created_by, is_auto, auto_reason, created_at",
+         RETURNING *",
     )
     .bind(&payload.status)
     .bind(&payload.notes)
