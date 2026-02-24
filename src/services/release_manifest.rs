@@ -28,7 +28,6 @@ struct ReleaseBaseRow {
     created_at: DateTime<Utc>,
     copy_job_id: Uuid,
     target_registry_id: Option<Uuid>,
-    environment_id: Option<Uuid>,
     extra_tags: Option<Vec<String>>,
 }
 
@@ -44,7 +43,7 @@ struct ManifestImageRow {
 pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Result<ReleaseManifest> {
     let base = sqlx::query_as::<_, ReleaseBaseRow>(
         r#"
-        SELECT r.release_id, r.created_at, r.copy_job_id, cj.target_registry_id, cj.environment_id, r.extra_tags
+        SELECT r.release_id, r.created_at, r.copy_job_id, cj.target_registry_id, r.extra_tags
         FROM releases r
         JOIN copy_jobs cj ON cj.id = r.copy_job_id
         WHERE r.id = $1
@@ -60,33 +59,7 @@ pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Resul
             .fetch_optional(pool)
             .await?
             .flatten();
-
-        let project_path_override = if let Some(env_id) = base.environment_id {
-            sqlx::query_scalar::<_, Option<String>>(
-                "SELECT project_path_override FROM environment_registry_paths WHERE environment_id = $1 AND registry_id = $2 AND role = 'target'",
-            )
-            .bind(env_id)
-            .bind(registry_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten()
-        } else {
-            None
-        };
-
-        let default_project_path = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT default_project_path FROM registries WHERE id = $1",
-        )
-        .bind(registry_id)
-        .fetch_optional(pool)
-        .await?
-        .flatten();
-
-        let project_path = project_path_override
-            .or(default_project_path)
-            .and_then(|p| normalize_project_path(&p));
-
-        base_url.map(|url| join_registry_base(&url, project_path.as_deref()))
+        base_url.map(|url| normalize_registry_base(&url))
     } else {
         None
     };
@@ -137,21 +110,4 @@ fn normalize_registry_base(base_url: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     without_scheme.trim_end_matches('/').to_string()
-}
-
-fn normalize_project_path(path: &str) -> Option<String> {
-    let trimmed = path.trim().trim_matches('/');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-fn join_registry_base(base_url: &str, project_path: Option<&str>) -> String {
-    let base = normalize_registry_base(base_url);
-    match project_path {
-        Some(p) if !p.is_empty() => format!("{}/{}", base, p.trim_matches('/')),
-        _ => base,
-    }
 }
