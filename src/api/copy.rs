@@ -5,7 +5,7 @@ use axum::{
     http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use futures::stream::{self, BoxStream, Stream, StreamExt};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::crypto;
 use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registry};
 use crate::services::skopeo::SkopeoCredentials;
@@ -1024,6 +1025,7 @@ async fn get_copy_job_images(
 
 /// POST /api/v1/copy/jobs/release/precheck - ověří zdrojové images pro release
 async fn precheck_release_copy_images(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<CopyApiState>,
     Json(payload): Json<ReleaseCopyRequest>,
 ) -> Result<Json<PrecheckResult>, (StatusCode, Json<ErrorResponse>)> {
@@ -1081,8 +1083,8 @@ async fn precheck_release_copy_images(
             )
         })?;
 
-    let source_job = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>)>(
-        "SELECT target_registry_id, environment_id FROM copy_jobs WHERE id = $1",
+    let source_job = sqlx::query_as::<_, (Option<Uuid>, Option<Uuid>, Option<Uuid>)>(
+        "SELECT target_registry_id, environment_id, (SELECT b.tenant_id FROM bundle_versions bv JOIN bundles b ON bv.bundle_id = b.id WHERE bv.id = copy_jobs.bundle_version_id) AS tenant_id FROM copy_jobs WHERE id = $1",
     )
     .bind(payload.source_copy_job_id)
     .fetch_optional(&state.pool)
@@ -1113,6 +1115,18 @@ async fn precheck_release_copy_images(
         )
     })?;
     let source_env_id = source_job.1;
+    let tenant_id = source_job.2;
+
+    if let Some(tenant_id) = tenant_id {
+        if !auth.is_tenant_allowed(tenant_id) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Tenant access denied".to_string(),
+                }),
+            ));
+        }
+    }
 
     let source_registry = sqlx::query_as::<_, Registry>("SELECT * FROM registries WHERE id = $1")
         .bind(source_registry_id)
@@ -1226,6 +1240,7 @@ async fn precheck_release_copy_images(
 
 /// POST /api/v1/copy/jobs/release - Spustí release copy job ze zdrojového jobu
 async fn start_release_copy_job(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<CopyApiState>,
     Json(payload): Json<ReleaseCopyRequest>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
@@ -1310,6 +1325,36 @@ async fn start_release_copy_job(
                 error: format!("Release with ID '{}' already exists", release_id),
             }),
         ));
+    }
+
+    let tenant_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT b.tenant_id
+         FROM copy_jobs cj
+         JOIN bundle_versions bv ON cj.bundle_version_id = bv.id
+         JOIN bundles b ON bv.bundle_id = b.id
+         WHERE cj.id = $1"
+    )
+    .bind(payload.source_copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if let Some(tenant_id) = tenant_id {
+        if !auth.is_tenant_allowed(tenant_id) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Tenant access denied".to_string(),
+                }),
+            ));
+        }
     }
 
     // Zdrojový job musí existovat a být úspěšný
@@ -1576,6 +1621,7 @@ async fn start_release_copy_job(
 
 /// POST /api/v1/copy/jobs/selective - Spustí selective copy job ze zdrojového jobu
 async fn start_selective_copy_job(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<CopyApiState>,
     Json(payload): Json<SelectiveCopyRequest>,
 ) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
@@ -1588,7 +1634,7 @@ async fn start_selective_copy_job(
         ));
     }
 
-    let base_job = sqlx::query_as::<_, (Uuid, Uuid, String, bool, Option<Uuid>, Option<Uuid>, String, Uuid, bool, Option<Uuid>)>(
+    let base_job = sqlx::query_as::<_, (Uuid, Uuid, String, bool, Option<Uuid>, Option<Uuid>, String, Uuid, Uuid, bool, Option<Uuid>)>(
         r#"
         SELECT
             cj.id,
@@ -1599,6 +1645,7 @@ async fn start_selective_copy_job(
             cj.target_registry_id,
             cj.target_tag,
             b.id AS bundle_id,
+            b.tenant_id,
             b.auto_tag_enabled,
             cj.environment_id
         FROM copy_jobs cj
@@ -1619,7 +1666,7 @@ async fn start_selective_copy_job(
         )
     })?;
 
-    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, _base_tag, bundle_id, auto_tag_enabled, environment_id)) = base_job else {
+    let Some((base_job_id, bundle_version_id, status, is_release_job, source_registry_id, target_registry_id, _base_tag, bundle_id, tenant_id, auto_tag_enabled, environment_id)) = base_job else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -1627,6 +1674,15 @@ async fn start_selective_copy_job(
             }),
         ));
     };
+
+    if !auth.is_tenant_allowed(tenant_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Tenant access denied".to_string(),
+            }),
+        ));
+    }
 
     if status != "success" {
         return Err((
@@ -1799,35 +1855,68 @@ async fn start_selective_copy_job(
 
 /// GET /api/v1/copy/jobs - seznam copy jobů
 async fn list_copy_jobs(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<CopyApiState>,
 ) -> Result<Json<Vec<CopyJobSummary>>, (StatusCode, Json<ErrorResponse>)> {
-    let jobs = sqlx::query_as::<_, CopyJobSummary>(
-        r#"
-        SELECT
-            cj.id AS job_id,
-            bv.bundle_id,
-            b.name AS bundle_name,
-            bv.version,
-            cj.target_tag,
-            cj.status,
-            cj.is_release_job,
-            cj.is_selective,
-            cj.base_copy_job_id,
-            cj.validate_only,
-            cj.source_registry_id,
-            cj.target_registry_id,
-            cj.environment_id,
-            cj.started_at,
-            cj.completed_at
-        FROM copy_jobs cj
-        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
-        JOIN bundles b ON b.id = bv.bundle_id
-        ORDER BY cj.started_at DESC
-        LIMIT 100
-        "#
-    )
-    .fetch_all(&state.pool)
-    .await
+    let jobs = if auth.is_admin() {
+        sqlx::query_as::<_, CopyJobSummary>(
+            r#"
+            SELECT
+                cj.id AS job_id,
+                bv.bundle_id,
+                b.name AS bundle_name,
+                bv.version,
+                cj.target_tag,
+                cj.status,
+                cj.is_release_job,
+                cj.is_selective,
+                cj.base_copy_job_id,
+                cj.validate_only,
+                cj.source_registry_id,
+                cj.target_registry_id,
+                cj.environment_id,
+                cj.started_at,
+                cj.completed_at
+            FROM copy_jobs cj
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            ORDER BY cj.started_at DESC
+            LIMIT 100
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query_as::<_, CopyJobSummary>(
+            r#"
+            SELECT
+                cj.id AS job_id,
+                bv.bundle_id,
+                b.name AS bundle_name,
+                bv.version,
+                cj.target_tag,
+                cj.status,
+                cj.is_release_job,
+                cj.is_selective,
+                cj.base_copy_job_id,
+                cj.validate_only,
+                cj.source_registry_id,
+                cj.target_registry_id,
+                cj.environment_id,
+                cj.started_at,
+                cj.completed_at
+            FROM copy_jobs cj
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            WHERE b.tenant_id = ANY($1)
+            ORDER BY cj.started_at DESC
+            LIMIT 100
+            "#,
+        )
+        .bind(&auth.tenant_ids)
+        .fetch_all(&state.pool)
+        .await
+    }
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1842,6 +1931,7 @@ async fn list_copy_jobs(
 
 /// GET /api/v1/copy/jobs/compare?job_a=...&job_b=... - porovnání digestů mezi dvěma copy joby
 async fn compare_copy_jobs(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<CopyApiState>,
     Query(params): Query<CompareCopyJobsQuery>,
 ) -> Result<Json<Vec<CompareCopyJobsRow>>, (StatusCode, Json<ErrorResponse>)> {
@@ -1852,6 +1942,67 @@ async fn compare_copy_jobs(
                 error: "Select two different copy jobs".to_string(),
             }),
         ));
+    }
+
+    if !auth.is_admin() {
+        let tenant_a = sqlx::query_scalar::<_, Uuid>(
+            "SELECT b.tenant_id
+             FROM copy_jobs cj
+             JOIN bundle_versions bv ON cj.bundle_version_id = bv.id
+             JOIN bundles b ON bv.bundle_id = b.id
+             WHERE cj.id = $1",
+        )
+        .bind(params.job_a)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        let tenant_b = sqlx::query_scalar::<_, Uuid>(
+            "SELECT b.tenant_id
+             FROM copy_jobs cj
+             JOIN bundle_versions bv ON cj.bundle_version_id = bv.id
+             JOIN bundles b ON bv.bundle_id = b.id
+             WHERE cj.id = $1",
+        )
+        .bind(params.job_b)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        if let Some(tenant_id) = tenant_a {
+            if !auth.is_tenant_allowed(tenant_id) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Tenant access denied".to_string(),
+                    }),
+                ));
+            }
+        }
+        if let Some(tenant_id) = tenant_b {
+            if !auth.is_tenant_allowed(tenant_id) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Tenant access denied".to_string(),
+                    }),
+                ));
+            }
+        }
     }
 
     let rows_a = sqlx::query_as::<_, CopyJobDigestRow>(

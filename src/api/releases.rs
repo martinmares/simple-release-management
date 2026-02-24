@@ -3,14 +3,14 @@ use axum::{
     http::{header, StatusCode},
     response::IntoResponse,
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::{db::models::Release, services::release_manifest::build_release_manifest};
+use crate::{auth::AuthContext, db::models::Release, services::release_manifest::build_release_manifest};
 
 /// Request pro vytvoření nového release
 #[derive(Debug, Deserialize)]
@@ -86,43 +86,84 @@ pub fn router(pool: PgPool) -> Router {
 
 /// GET /api/v1/releases - Seznam všech releases
 async fn list_all_releases(
+    Extension(auth): Extension<AuthContext>,
     State(pool): State<PgPool>,
 ) -> Result<Json<Vec<ReleaseSummary>>, (StatusCode, Json<ErrorResponse>)> {
-    let releases = sqlx::query_as::<_, ReleaseSummary>(
-        r#"
-        SELECT
-            r.id,
-            r.copy_job_id,
-            r.release_id,
-            r.status,
-            r.source_ref_mode,
-            r.is_auto,
-            r.created_at,
-            t.id AS tenant_id,
-            t.name AS tenant_name,
-            b.id AS bundle_id,
-            b.name AS bundle_name,
-            COALESCE(COUNT(dj.id), 0) AS deploy_total,
-            COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
-            COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
-            COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
-            COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending,
-            e.id AS environment_id,
-            e.name AS environment_name,
-            e.color AS environment_color
-        FROM releases r
-        JOIN copy_jobs cj ON cj.id = r.copy_job_id
-        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
-        JOIN bundles b ON b.id = bv.bundle_id
-        JOIN tenants t ON t.id = b.tenant_id
-        LEFT JOIN environments e ON e.id = cj.environment_id
-        LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
-        GROUP BY r.id, t.id, b.id, e.id
-        ORDER BY r.created_at DESC
-        "#
-    )
-    .fetch_all(&pool)
-    .await
+    let releases = if auth.is_admin() {
+        sqlx::query_as::<_, ReleaseSummary>(
+            r#"
+            SELECT
+                r.id,
+                r.copy_job_id,
+                r.release_id,
+                r.status,
+                r.source_ref_mode,
+                r.is_auto,
+                r.created_at,
+                t.id AS tenant_id,
+                t.name AS tenant_name,
+                b.id AS bundle_id,
+                b.name AS bundle_name,
+                COALESCE(COUNT(dj.id), 0) AS deploy_total,
+                COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
+                COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
+                COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
+                COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending,
+                e.id AS environment_id,
+                e.name AS environment_name,
+                e.color AS environment_color
+            FROM releases r
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            JOIN tenants t ON t.id = b.tenant_id
+            LEFT JOIN environments e ON e.id = cj.environment_id
+            LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
+            GROUP BY r.id, t.id, b.id, e.id
+            ORDER BY r.created_at DESC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+    } else {
+        sqlx::query_as::<_, ReleaseSummary>(
+            r#"
+            SELECT
+                r.id,
+                r.copy_job_id,
+                r.release_id,
+                r.status,
+                r.source_ref_mode,
+                r.is_auto,
+                r.created_at,
+                t.id AS tenant_id,
+                t.name AS tenant_name,
+                b.id AS bundle_id,
+                b.name AS bundle_name,
+                COALESCE(COUNT(dj.id), 0) AS deploy_total,
+                COALESCE(SUM(CASE WHEN dj.status = 'success' THEN 1 ELSE 0 END), 0) AS deploy_success,
+                COALESCE(SUM(CASE WHEN dj.status = 'failed' THEN 1 ELSE 0 END), 0) AS deploy_failed,
+                COALESCE(SUM(CASE WHEN dj.status = 'in_progress' THEN 1 ELSE 0 END), 0) AS deploy_in_progress,
+                COALESCE(SUM(CASE WHEN dj.status = 'pending' THEN 1 ELSE 0 END), 0) AS deploy_pending,
+                e.id AS environment_id,
+                e.name AS environment_name,
+                e.color AS environment_color
+            FROM releases r
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            JOIN tenants t ON t.id = b.tenant_id
+            LEFT JOIN environments e ON e.id = cj.environment_id
+            LEFT JOIN deploy_jobs dj ON dj.release_id = r.id
+            WHERE t.id = ANY($1)
+            GROUP BY r.id, t.id, b.id, e.id
+            ORDER BY r.created_at DESC
+            "#,
+        )
+        .bind(&auth.tenant_ids)
+        .fetch_all(&pool)
+        .await
+    }
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -191,6 +232,7 @@ async fn list_releases(
 
 /// GET /api/v1/releases/compare?release_a=...&release_b=... - porovnání digestů mezi dvěma releases
 async fn compare_releases(
+    Extension(auth): Extension<AuthContext>,
     State(pool): State<PgPool>,
     Query(params): Query<CompareReleasesQuery>,
 ) -> Result<Json<Vec<CompareReleaseRow>>, (StatusCode, Json<ErrorResponse>)> {
@@ -201,6 +243,73 @@ async fn compare_releases(
                 error: "Select two different releases".to_string(),
             }),
         ));
+    }
+
+    if !auth.is_admin() {
+        let tenant_a = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT b.tenant_id
+            FROM releases r
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            WHERE r.id = $1
+            "#
+        )
+        .bind(params.release_a)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        let tenant_b = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT b.tenant_id
+            FROM releases r
+            JOIN copy_jobs cj ON cj.id = r.copy_job_id
+            JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+            JOIN bundles b ON b.id = bv.bundle_id
+            WHERE r.id = $1
+            "#
+        )
+        .bind(params.release_b)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
+
+        if let Some(tenant_id) = tenant_a {
+            if !auth.is_tenant_allowed(tenant_id) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Tenant access denied".to_string(),
+                    }),
+                ));
+            }
+        }
+        if let Some(tenant_id) = tenant_b {
+            if !auth.is_tenant_allowed(tenant_id) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(ErrorResponse {
+                        error: "Tenant access denied".to_string(),
+                    }),
+                ));
+            }
+        }
     }
 
     let manifest_a = build_release_manifest(&pool, params.release_a).await.map_err(|e| {
@@ -431,6 +540,7 @@ async fn create_release(
 
 /// POST /api/v1/releases - Vytvoření nového release bez tenanta (tenant se odvodí z copy jobu)
 async fn create_release_global(
+    Extension(auth): Extension<AuthContext>,
     State(pool): State<PgPool>,
     Json(payload): Json<CreateReleaseRequest>,
 ) -> Result<(StatusCode, Json<Release>), (StatusCode, Json<ErrorResponse>)> {
@@ -467,6 +577,36 @@ async fn create_release_global(
                 error: "Copy job not found".to_string(),
             }),
         ));
+    }
+
+    let tenant_id = sqlx::query_scalar::<_, Uuid>(
+        "SELECT b.tenant_id
+         FROM copy_jobs cj
+         JOIN bundle_versions bv ON cj.bundle_version_id = bv.id
+         JOIN bundles b ON bv.bundle_id = b.id
+         WHERE cj.id = $1"
+    )
+    .bind(payload.copy_job_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if let Some(tenant_id) = tenant_id {
+        if !auth.is_tenant_allowed(tenant_id) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: "Tenant access denied".to_string(),
+                }),
+            ));
+        }
     }
 
     // Zkontrolovat že copy job je úspěšný

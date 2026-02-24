@@ -4,12 +4,13 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::crypto;
 use crate::db::models::Registry;
 use crate::services::skopeo::SkopeoCredentials;
@@ -634,19 +635,29 @@ async fn upsert_environment_paths(
 
 /// GET /api/v1/registries - Seznam všech registries
 async fn list_all_registries(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<RegistryApiState>,
 ) -> Result<Json<Vec<Registry>>, (StatusCode, Json<ErrorResponse>)> {
-    let registries = sqlx::query_as::<_, Registry>("SELECT * FROM registries ORDER BY created_at DESC")
+    let registries = if auth.is_admin() {
+        sqlx::query_as::<_, Registry>("SELECT * FROM registries ORDER BY created_at DESC")
+            .fetch_all(&state.pool)
+            .await
+    } else {
+        sqlx::query_as::<_, Registry>(
+            "SELECT * FROM registries WHERE tenant_id = ANY($1) ORDER BY created_at DESC",
+        )
+        .bind(&auth.tenant_ids)
         .fetch_all(&state.pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Database error: {}", e),
-                }),
-            )
-        })?;
+    }
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
 
     Ok(Json(registries))
 }

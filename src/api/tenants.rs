@@ -2,12 +2,13 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::db::models::Tenant;
 
 /// Request pro vytvoření nového tenanta
@@ -41,19 +42,29 @@ pub fn router(pool: PgPool) -> Router {
 
 /// GET /api/v1/tenants - Seznam všech tenantů
 async fn list_tenants(
+    Extension(auth): Extension<AuthContext>,
     State(pool): State<PgPool>,
 ) -> Result<Json<Vec<Tenant>>, (StatusCode, Json<ErrorResponse>)> {
-    let tenants = sqlx::query_as::<_, Tenant>("SELECT * FROM tenants ORDER BY created_at DESC")
+    let tenants = if auth.is_admin() {
+        sqlx::query_as::<_, Tenant>("SELECT * FROM tenants ORDER BY created_at DESC")
+            .fetch_all(&pool)
+            .await
+    } else {
+        sqlx::query_as::<_, Tenant>(
+            "SELECT * FROM tenants WHERE id = ANY($1) ORDER BY created_at DESC",
+        )
+        .bind(&auth.tenant_ids)
         .fetch_all(&pool)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Database error: {}", e),
-                }),
-            )
-        })?;
+    }
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
 
     Ok(Json(tenants))
 }

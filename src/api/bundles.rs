@@ -2,13 +2,14 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::{get, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::db::models::{Bundle, BundleVersion, ImageMapping};
 
 /// Request pro vytvoření nového bundle
@@ -154,30 +155,58 @@ pub fn router(pool: PgPool) -> Router {
 
 /// GET /api/v1/bundles - Seznam všech bundles
 async fn list_all_bundles(
+    Extension(auth): Extension<AuthContext>,
     State(pool): State<PgPool>,
 ) -> Result<Json<Vec<BundleWithStats>>, (StatusCode, Json<ErrorResponse>)> {
-    let bundles = sqlx::query_as::<_, BundleWithStats>(
-        r#"
-        SELECT
-            b.*,
-            COALESCE(
-                (SELECT COUNT(*)
-                 FROM image_mappings im
-                 WHERE im.bundle_version_id = (
-                     SELECT bv.id
-                     FROM bundle_versions bv
-                     WHERE bv.bundle_id = b.id
-                     ORDER BY bv.version DESC
-                     LIMIT 1
-                 )),
-                0
-            ) as image_count
-        FROM bundles b
-        ORDER BY b.created_at DESC
-        "#
-    )
-    .fetch_all(&pool)
-    .await
+    let bundles = if auth.is_admin() {
+        sqlx::query_as::<_, BundleWithStats>(
+            r#"
+            SELECT
+                b.*,
+                COALESCE(
+                    (SELECT COUNT(*)
+                     FROM image_mappings im
+                     WHERE im.bundle_version_id = (
+                         SELECT bv.id
+                         FROM bundle_versions bv
+                         WHERE bv.bundle_id = b.id
+                         ORDER BY bv.version DESC
+                         LIMIT 1
+                     )),
+                    0
+                ) as image_count
+            FROM bundles b
+            ORDER BY b.created_at DESC
+            "#,
+        )
+        .fetch_all(&pool)
+        .await
+    } else {
+        sqlx::query_as::<_, BundleWithStats>(
+            r#"
+            SELECT
+                b.*,
+                COALESCE(
+                    (SELECT COUNT(*)
+                     FROM image_mappings im
+                     WHERE im.bundle_version_id = (
+                         SELECT bv.id
+                         FROM bundle_versions bv
+                         WHERE bv.bundle_id = b.id
+                         ORDER BY bv.version DESC
+                         LIMIT 1
+                     )),
+                    0
+                ) as image_count
+            FROM bundles b
+            WHERE b.tenant_id = ANY($1)
+            ORDER BY b.created_at DESC
+            "#,
+        )
+        .bind(&auth.tenant_ids)
+        .fetch_all(&pool)
+        .await
+    }
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,

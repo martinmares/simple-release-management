@@ -2,12 +2,13 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     routing::get,
-    Json, Router,
+    Extension, Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::{
     crypto,
     db::models::GitRepository,
@@ -55,13 +56,23 @@ pub fn router(state: GitRepoApiState) -> Router {
 }
 
 async fn list_git_repos(
+    Extension(auth): Extension<AuthContext>,
     State(state): State<GitRepoApiState>,
 ) -> Result<Json<Vec<GitRepository>>, (StatusCode, Json<ErrorResponse>)> {
-    let repos = sqlx::query_as::<_, GitRepository>(
-        "SELECT * FROM git_repositories ORDER BY created_at DESC",
-    )
-    .fetch_all(&state.pool)
-    .await
+    let repos = if auth.is_admin() {
+        sqlx::query_as::<_, GitRepository>(
+            "SELECT * FROM git_repositories ORDER BY created_at DESC",
+        )
+        .fetch_all(&state.pool)
+        .await
+    } else {
+        sqlx::query_as::<_, GitRepository>(
+            "SELECT * FROM git_repositories WHERE tenant_id = ANY($1) ORDER BY created_at DESC",
+        )
+        .bind(&auth.tenant_ids)
+        .fetch_all(&state.pool)
+        .await
+    }
     .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
