@@ -366,7 +366,7 @@ Step 1: Bundle Info
 Step 2: Image Mappings
 ├── Add mappings dynamically
 ├── Source: registry.com/project/image:tag
-├── Target: project/image (bez registry URL)
+├── Target: project/image (registry base + project path se doplní z registry configu)
 └── Remove unwanted mappings
 
 Step 3: Review

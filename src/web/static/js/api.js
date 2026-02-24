@@ -41,6 +41,11 @@ class ApiClient {
             }
 
             if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    window.dispatchEvent(new CustomEvent('api-auth-error', {
+                        detail: { status: response.status }
+                    }));
+                }
                 throw new ApiError(
                     (data && data.error) || 'Request failed',
                     response.status,
@@ -123,6 +128,10 @@ class ApiClient {
 
     async getTenants() {
         return this.get('/tenants');
+    }
+
+    async getAuthMe() {
+        return this.get('/auth/me');
     }
 
     async getTenant(id) {

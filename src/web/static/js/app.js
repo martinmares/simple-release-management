@@ -8,6 +8,43 @@ window.getApp = function() {
     return appElement ? Alpine.$data(appElement) : null;
 };
 
+function renderScopeNotice() {
+    const app = getApp();
+    if (!app?.auth?.loaded) return '';
+    const roles = app.auth.roles?.length ? app.auth.roles.join(', ') : 'none';
+    const tenants = app.auth.is_admin
+        ? 'all tenants'
+        : (app.auth.tenant_slugs?.length ? app.auth.tenant_slugs.join(', ') : 'none');
+    return `
+        <div class="alert alert-info d-flex align-items-center mb-4" role="alert">
+            <i class="ti ti-shield me-2"></i>
+            <div>
+                <strong>Access scope</strong> · roles: ${escapeHtml(roles)} · tenants: ${escapeHtml(tenants)}
+            </div>
+        </div>
+    `;
+}
+
+function requireWriteAccess(actionLabel = 'This action') {
+    const app = getApp();
+    if (!app?.canWrite()) {
+        app?.showError(`${actionLabel} requires developer or admin role.`);
+        router.navigate('/');
+        return false;
+    }
+    return true;
+}
+
+function requireDeployAccess(actionLabel = 'This action') {
+    const app = getApp();
+    if (!app?.canDeploy()) {
+        app?.showError(`${actionLabel} requires deploy_manager or admin role.`);
+        router.navigate('/');
+        return false;
+    }
+    return true;
+}
+
 function escapeHtml(value) {
     return String(value)
         .replace(/&/g, '&amp;')
@@ -266,6 +303,14 @@ document.addEventListener('alpine:init', () => {
         loading: false,
         loadingMessage: '',
         toasts: [],
+        auth: {
+            loaded: false,
+            username: null,
+            email: null,
+            roles: [],
+            tenant_slugs: [],
+            is_admin: false,
+        },
 
 
         // Inicializace
@@ -287,6 +332,30 @@ document.addEventListener('alpine:init', () => {
                     })
                     .catch(() => {});
             }
+
+            api.getAuthMe()
+                .then((res) => {
+                    this.auth = {
+                        loaded: true,
+                        username: res?.username || null,
+                        email: res?.email || null,
+                        roles: res?.roles || [],
+                        tenant_slugs: res?.tenant_slugs || [],
+                        is_admin: res?.is_admin || false,
+                    };
+                })
+                .catch(() => {
+                    this.auth.loaded = true;
+                });
+
+            window.addEventListener('api-auth-error', (event) => {
+                const status = event?.detail?.status;
+                if (status === 401) {
+                    this.showError('Authentication required. Please sign in.');
+                } else if (status === 403) {
+                    this.showError('Access denied by role or tenant scope.');
+                }
+            });
 
             // no keyboard shortcuts
         },
@@ -339,6 +408,31 @@ document.addEventListener('alpine:init', () => {
 
         showInfo(message, title = 'Info') {
             this.showToast('info', title, message);
+        },
+
+        hasRole(role) {
+            return Array.isArray(this.auth.roles) && this.auth.roles.includes(role);
+        },
+
+        canWrite() {
+            return this.auth.is_admin || this.hasRole('developer');
+        },
+
+        canDeploy() {
+            return this.auth.is_admin || this.hasRole('deploy_manager');
+        },
+
+        authUserLabel() {
+            if (!this.auth.loaded) return 'Loading...';
+            if (this.auth.username) return this.auth.username;
+            return 'Unknown user';
+        },
+
+        authTenantLabel() {
+            if (!this.auth.loaded) return '';
+            if (this.auth.is_admin) return 'all tenants';
+            if (!this.auth.tenant_slugs || this.auth.tenant_slugs.length === 0) return 'no tenant scope';
+            return this.auth.tenant_slugs.join(', ');
         },
 
         // ==================== HELPER METHODS ====================
@@ -477,6 +571,7 @@ router.on('/', async () => {
             .slice(0, 5);
 
         content.innerHTML = `
+            ${renderScopeNotice()}
             <!-- Stats Row -->
             <div class="row row-deck row-cards mb-4">
                 <div class="col-sm-6 col-lg-3">
@@ -952,6 +1047,7 @@ router.on('/tenants', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [tenants, registries, bundles] = await Promise.all([
             api.getTenants(),
             api.getRegistries(),
@@ -971,14 +1067,19 @@ router.on('/tenants', async () => {
         });
 
         const renderTenants = (rows, searchQuery = '') => `
+            ${renderScopeNotice()}
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Tenants</h3>
                     <div class="card-actions">
-                        <a href="#/tenants/new" class="btn btn-primary">
-                            <i class="ti ti-plus"></i>
-                            New Tenant
-                        </a>
+                        ${canWrite ? `
+                            <a href="#/tenants/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Tenant
+                            </a>
+                        ` : `
+                            <span class="text-secondary small">Write access required</span>
+                        `}
                     </div>
                 </div>
                 <div class="card-body border-bottom py-3">
@@ -1085,6 +1186,7 @@ router.on('/tenants/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [tenant, registries, bundles, gitRepos, environments, argocdInstances, kubernetesInstances] = await Promise.all([
             api.getTenant(params.id),
             api.getRegistries(params.id),
@@ -1172,14 +1274,18 @@ router.on('/tenants/:id', async (params) => {
                         <div class="card-header">
                             <h3 class="card-title">${tenant.name}</h3>
                             <div class="card-actions">
-                                <a href="#/tenants/${tenant.id}/edit" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-pencil"></i>
-                                    Edit
-                                </a>
-                                <button class="btn btn-danger btn-sm" id="delete-tenant-btn">
-                                    <i class="ti ti-trash"></i>
-                                    Delete
-                                </button>
+                                ${canWrite ? `
+                                    <a href="#/tenants/${tenant.id}/edit" class="btn btn-primary btn-sm">
+                                        <i class="ti ti-pencil"></i>
+                                        Edit
+                                    </a>
+                                    <button class="btn btn-danger btn-sm" id="delete-tenant-btn">
+                                        <i class="ti ti-trash"></i>
+                                        Delete
+                                    </button>
+                                ` : `
+                                    <span class="text-secondary small">Write access required</span>
+                                `}
                             </div>
                         </div>
                         <div class="card-body">
@@ -1204,10 +1310,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">Environments</h3>
                                     <div class="card-actions">
-                                        <a href="#/environments/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            Add
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/environments/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                Add
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1270,10 +1380,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">Registries</h3>
                                     <div class="card-actions">
-                                        <a href="#/registries/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            Add
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/registries/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                Add
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1345,10 +1459,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">Bundles</h3>
                                     <div class="card-actions">
-                                        <a href="#/bundles/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            New Bundle
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/bundles/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                New Bundle
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1378,10 +1496,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">Git Repos</h3>
                                     <div class="card-actions">
-                                        <a href="#/git-repos/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            Add
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/git-repos/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                Add
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1411,10 +1533,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">ArgoCD Instances</h3>
                                     <div class="card-actions">
-                                        <a href="#/argocd/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            Add
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/argocd/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                Add
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1433,9 +1559,13 @@ router.on('/tenants/:id', async (params) => {
                                                     <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
                                                         ${inst.verify_tls === false ? 'insecure' : 'tls'}
                                                     </span>
-                                                    <a href="#/argocd/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
-                                                        Edit
-                                                    </a>
+                                                    ${canWrite ? `
+                                                        <a href="#/argocd/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                            Edit
+                                                        </a>
+                                                    ` : `
+                                                        <span class="text-secondary small">read-only</span>
+                                                    `}
                                                 </div>
                                             </div>
                                         </div>
@@ -1480,9 +1610,13 @@ router.on('/tenants/:id', async (params) => {
                                                         <span class="badge ${app.is_active ? 'bg-green-lt text-green-fg' : 'bg-yellow-lt text-yellow-fg'}">
                                                             ${app.is_active ? 'active' : 'inactive'}
                                                         </span>
-                                                        <a href="#/argocd-apps/${app.id}/edit" class="btn btn-outline-primary btn-sm">
-                                                            Edit
-                                                        </a>
+                                                        ${canWrite ? `
+                                                            <a href="#/argocd-apps/${app.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                                Edit
+                                                            </a>
+                                                        ` : `
+                                                            <span class="text-secondary small">read-only</span>
+                                                        `}
                                                     </div>
                                                 </div>
                                             </div>
@@ -1499,10 +1633,14 @@ router.on('/tenants/:id', async (params) => {
                                 <div class="card-header">
                                     <h3 class="card-title">Kubernetes Instances</h3>
                                     <div class="card-actions">
-                                        <a href="#/kubernetes/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
-                                            <i class="ti ti-plus"></i>
-                                            Add
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/kubernetes/new?tenant_id=${tenant.id}" class="btn btn-primary btn-sm">
+                                                <i class="ti ti-plus"></i>
+                                                Add
+                                            </a>
+                                        ` : `
+                                            <span class="text-secondary small">Write access required</span>
+                                        `}
                                     </div>
                                 </div>
                                 <div class="list-group list-group-flush">
@@ -1521,9 +1659,13 @@ router.on('/tenants/:id', async (params) => {
                                                     <span class="badge ${inst.verify_tls === false ? 'bg-yellow-lt text-yellow-fg' : 'bg-green-lt text-green-fg'}">
                                                         ${inst.verify_tls === false ? 'insecure' : 'tls'}
                                                     </span>
-                                                    <a href="#/kubernetes/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
-                                                        Edit
-                                                    </a>
+                                                    ${canWrite ? `
+                                                        <a href="#/kubernetes/${inst.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                            Edit
+                                                        </a>
+                                                    ` : `
+                                                        <span class="text-secondary small">read-only</span>
+                                                    `}
                                                 </div>
                                             </div>
                                         </div>
@@ -1617,6 +1759,7 @@ router.on('/tenants/:id', async (params) => {
 
 // Tenant New/Edit
 router.on('/tenants/new', async () => {
+    if (!requireWriteAccess('Create tenant')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = createTenantForm();
 
@@ -1633,6 +1776,7 @@ router.on('/tenants/new', async () => {
 });
 
 router.on('/tenants/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit tenant')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -1664,6 +1808,7 @@ router.on('/registries', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [registries, tenants] = await Promise.all([
             api.getRegistries(),
             api.getTenants()
@@ -1677,14 +1822,19 @@ router.on('/registries', async () => {
         window._registryListData = { registries, tenantMap };
 
         content.innerHTML = `
+            ${renderScopeNotice()}
             <div class="card" x-data="registryList()">
                 <div class="card-header">
                     <h3 class="card-title">Registries</h3>
                     <div class="card-actions">
-                        <a href="#/registries/new" class="btn btn-primary">
-                            <i class="ti ti-plus"></i>
-                            New Registry
-                        </a>
+                        ${canWrite ? `
+                            <a href="#/registries/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Registry
+                            </a>
+                        ` : `
+                            <span class="text-secondary small">Write access required</span>
+                        `}
                     </div>
                 </div>
 
@@ -1794,6 +1944,7 @@ router.on('/git-repos', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [repos, tenants] = await Promise.all([
             api.getGitRepos(),
             api.getTenants(),
@@ -1803,14 +1954,19 @@ router.on('/git-repos', async () => {
         tenants.forEach(t => tenantMap[t.id] = t);
 
         const renderRepos = (rows, searchQuery = '', selectedTenant = '') => `
+            ${renderScopeNotice()}
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Git Repositories</h3>
                     <div class="card-actions">
-                        <a href="#/git-repos/new" class="btn btn-primary">
-                            <i class="ti ti-plus"></i>
-                            New Git Repo
-                        </a>
+                        ${canWrite ? `
+                            <a href="#/git-repos/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Git Repo
+                            </a>
+                        ` : `
+                            <span class="text-secondary small">Write access required</span>
+                        `}
                     </div>
                 </div>
                 <div class="card-body border-bottom py-3">
@@ -1895,6 +2051,7 @@ router.on('/git-repos', async () => {
 });
 
 router.on('/git-repos/new', async (params, query) => {
+    if (!requireWriteAccess('Create git repository')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -1934,6 +2091,7 @@ router.on('/git-repos/new', async (params, query) => {
 });
 
 router.on('/git-repos/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit git repository')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -1993,6 +2151,7 @@ router.on('/git-repos/:id/edit', async (params) => {
 
 // ArgoCD instances
 router.on('/argocd/new', async (params, query) => {
+    if (!requireWriteAccess('Create ArgoCD instance')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2021,6 +2180,7 @@ router.on('/argocd/new', async (params, query) => {
 });
 
 router.on('/argocd/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit ArgoCD instance')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2068,6 +2228,7 @@ router.on('/argocd/:id/edit', async (params) => {
 
 // ArgoCD apps
 router.on('/argocd-apps/new', async (params, query) => {
+    if (!requireWriteAccess('Create ArgoCD app')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2364,6 +2525,15 @@ router.on('/argocd-apps/:id', async (params) => {
         const refreshBtn = document.getElementById('argocd-refresh-btn');
         const syncBtn = document.getElementById('argocd-sync-btn');
         const termBtn = document.getElementById('argocd-terminate-btn');
+        const canDeploy = getApp()?.canDeploy?.() || false;
+
+        if (!canDeploy) {
+            [refreshBtn, syncBtn, termBtn].forEach((btn) => {
+                if (!btn) return;
+                btn.disabled = true;
+                btn.title = 'Deploy role required';
+            });
+        }
 
         const runAction = async (btn, actionLabel, fn) => {
             const original = btn.innerHTML;
@@ -2382,6 +2552,10 @@ router.on('/argocd-apps/:id', async (params) => {
         };
 
         refreshBtn.addEventListener('click', async () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
             const confirmed = await showConfirmDialog(
                 'Refresh ArgoCD App?',
                 'This will fetch the latest status and resources for this application.',
@@ -2392,6 +2566,10 @@ router.on('/argocd-apps/:id', async (params) => {
             await runAction(refreshBtn, 'Refreshing', () => api.refreshArgocdApp(app.id));
         });
         syncBtn.addEventListener('click', async () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
             const confirmed = await showConfirmDialog(
                 'Sync ArgoCD App?',
                 'This will apply the desired state to the cluster.',
@@ -2402,6 +2580,10 @@ router.on('/argocd-apps/:id', async (params) => {
             await runAction(syncBtn, 'Syncing', () => api.syncArgocdApp(app.id));
         });
         termBtn.addEventListener('click', async () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
             const confirmed = await showConfirmDialog(
                 'Terminate ArgoCD Operation?',
                 'This will stop the currently running operation for this application.',
@@ -2452,6 +2634,10 @@ router.on('/argocd-apps/:id', async (params) => {
         }
 
         const changeRevisionBtn = document.getElementById('argocd-change-revision-btn');
+        if (changeRevisionBtn && !canDeploy) {
+            changeRevisionBtn.disabled = true;
+            changeRevisionBtn.title = 'Deploy role required';
+        }
         const showChangeRevisionDialog = async () => {
             let tags = [];
             try {
@@ -2528,7 +2714,13 @@ router.on('/argocd-apps/:id', async (params) => {
             });
         };
 
-        changeRevisionBtn?.addEventListener('click', showChangeRevisionDialog);
+        changeRevisionBtn?.addEventListener('click', () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
+            showChangeRevisionDialog();
+        });
     } catch (error) {
         console.error(error);
         content.innerHTML = `<div class="alert alert-danger">Failed to load ArgoCD app</div>`;
@@ -2536,6 +2728,7 @@ router.on('/argocd-apps/:id', async (params) => {
 });
 
 router.on('/argocd-apps/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit ArgoCD app')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2590,6 +2783,7 @@ router.on('/argocd-apps/:id/edit', async (params) => {
 
 // Kubernetes instances
 router.on('/kubernetes/new', async (params, query) => {
+    if (!requireWriteAccess('Create Kubernetes instance')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2614,6 +2808,7 @@ router.on('/kubernetes/new', async (params, query) => {
 });
 
 router.on('/kubernetes/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit Kubernetes instance')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -2661,6 +2856,7 @@ router.on('/kubernetes/:id/edit', async (params) => {
 
 // Kubernetes namespaces
 router.on('/kubernetes-namespaces/new', async (params, query) => {
+    if (!requireWriteAccess('Create Kubernetes namespace')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -3269,6 +3465,7 @@ router.on('/kubernetes-namespaces/:id', async (params) => {
 });
 
 router.on('/kubernetes-namespaces/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit Kubernetes namespace')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
     try {
@@ -3416,6 +3613,7 @@ router.on('/registries/:id', async (params) => {
 
 // Registry New/Edit
 router.on('/registries/new', async (params, query) => {
+    if (!requireWriteAccess('Create registry')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -3448,6 +3646,7 @@ router.on('/registries/new', async (params, query) => {
 });
 
 router.on('/registries/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit registry')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -3487,6 +3686,7 @@ router.on('/registries/:id/edit', async (params) => {
 
 // Environment New/Edit
 router.on('/environments/new', async (params, query) => {
+    if (!requireWriteAccess('Create environment')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -3533,6 +3733,7 @@ router.on('/environments/new', async (params, query) => {
 });
 
 router.on('/environments/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit environment')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -3674,6 +3875,7 @@ router.on('/bundles', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [bundles, tenants, registries] = await Promise.all([
             api.getBundles(),
             api.getTenants(),
@@ -3687,14 +3889,19 @@ router.on('/bundles', async () => {
         registries.forEach(r => registryMap[r.id] = r);
 
         const renderBundles = (rows, searchQuery = '', selectedTenant = '') => `
+            ${renderScopeNotice()}
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Bundles</h3>
                     <div class="card-actions">
-                        <a href="#/bundles/new" class="btn btn-primary">
-                            <i class="ti ti-plus"></i>
-                            New Bundle
-                        </a>
+                        ${canWrite ? `
+                            <a href="#/bundles/new" class="btn btn-primary">
+                                <i class="ti ti-plus"></i>
+                                New Bundle
+                            </a>
+                        ` : `
+                            <span class="text-secondary small">Write access required</span>
+                        `}
                     </div>
                 </div>
                 <div class="card-body border-bottom py-3">
@@ -3801,6 +4008,7 @@ router.on('/bundles', async () => {
 
 // Bundle Wizard
 router.on('/bundles/new', async (params, query) => {
+    if (!requireWriteAccess('Create bundle')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -3971,6 +4179,8 @@ router.on('/bundles/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
+        const canDeploy = getApp()?.canDeploy?.() || false;
         const bundle = await api.getBundle(params.id);
         const [versions, copyJobs, releases, deployments, tenant, sourceRegistry, registries, environments] = await Promise.all([
             api.getBundleVersions(params.id),
@@ -4037,22 +4247,26 @@ router.on('/bundles/:id', async (params) => {
                                 </div>
                             </div>
                             <div class="card-actions">
-                                <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary btn-sm">
-                                    <i class="ti ti-plus"></i>
-                                    New Version
-                                </a>
+                                ${canWrite ? `
+                                    <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary btn-sm">
+                                        <i class="ti ti-plus"></i>
+                                        New Version
+                                    </a>
                                     <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
                                         <i class="ti ti-copy"></i>
                                         Duplicate Bundle
                                     </a>
-                                <a href="#/bundles/${bundle.id}/edit" class="btn btn-ghost-secondary btn-sm">
-                                    <i class="ti ti-pencil"></i>
-                                    Edit
-                                </a>
-                                <button class="btn btn-danger btn-sm" id="delete-bundle-btn">
-                                    <i class="ti ti-trash"></i>
-                                    Delete
-                                </button>
+                                    <a href="#/bundles/${bundle.id}/edit" class="btn btn-ghost-secondary btn-sm">
+                                        <i class="ti ti-pencil"></i>
+                                        Edit
+                                    </a>
+                                    <button class="btn btn-danger btn-sm" id="delete-bundle-btn">
+                                        <i class="ti ti-trash"></i>
+                                        Delete
+                                    </button>
+                                ` : `
+                                    <span class="text-secondary small">Write access required</span>
+                                `}
                             </div>
                         </div>
                         <div class="card-body">
@@ -4078,9 +4292,13 @@ router.on('/bundles/:id', async (params) => {
                                 <li class="mb-2">
                                     Start a copy job from the latest bundle version.
                                     ${latestVersion ? `
-                                        <a href="#/bundles/${bundle.id}/versions/${latestVersion}/copy" class="btn btn-sm btn-outline-primary ms-2">
-                                            Start Copy Job
-                                        </a>
+                                        ${canWrite ? `
+                                            <a href="#/bundles/${bundle.id}/versions/${latestVersion}/copy" class="btn btn-sm btn-outline-primary ms-2">
+                                                Start Copy Job
+                                            </a>
+                                        ` : `
+                                            <button class="btn btn-sm btn-outline-primary ms-2" disabled title="Write role required">Start Copy Job</button>
+                                        `}
                                     ` : ''}
                                 </li>
                                 <li class="mb-2">
@@ -4261,18 +4479,39 @@ router.on('/bundles/:id', async (params) => {
                                                     <span class="badge bg-purple-lt text-purple-fg">image release</span>
                                                 ` : job.status === 'success' ? `
                                                     <div class="d-flex flex-column gap-1">
-                                                        <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
-                                                            <i class="ti ti-rocket"></i>
-                                                            Release Images
-                                                        </a>
-                                                        <button type="button" class="btn btn-sm btn-outline-secondary selective-copy-btn" data-job-id="${job.job_id}">
-                                                            <i class="ti ti-adjustments"></i>
-                                                            Selective Copy
-                                                        </button>
-                                                        <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
-                                                            <i class="ti ti-rocket"></i>
-                                                            Deploy Action
-                                                        </button>
+                                                        ${canWrite ? `
+                                                            <a href="#/releases/new?copy_job_id=${job.job_id}" class="btn btn-sm btn-success">
+                                                                <i class="ti ti-rocket"></i>
+                                                                Release Images
+                                                            </a>
+                                                        ` : `
+                                                            <button class="btn btn-sm btn-success" disabled title="Write role required">
+                                                                <i class="ti ti-rocket"></i>
+                                                                Release Images
+                                                            </button>
+                                                        `}
+                                                        ${canWrite ? `
+                                                            <button type="button" class="btn btn-sm btn-outline-secondary selective-copy-btn" data-job-id="${job.job_id}">
+                                                                <i class="ti ti-adjustments"></i>
+                                                                Selective Copy
+                                                            </button>
+                                                        ` : `
+                                                            <button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Write role required">
+                                                                <i class="ti ti-adjustments"></i>
+                                                                Selective Copy
+                                                            </button>
+                                                        `}
+                                                        ${canDeploy ? `
+                                                            <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
+                                                                <i class="ti ti-rocket"></i>
+                                                                Deploy Action
+                                                            </button>
+                                                        ` : `
+                                                            <button type="button" class="btn btn-sm btn-outline-primary" disabled title="Deploy role required">
+                                                                <i class="ti ti-rocket"></i>
+                                                                Deploy Action
+                                                            </button>
+                                                        `}
                                                     </div>
                                                 ` : ''}
                                             </td>
@@ -4358,6 +4597,10 @@ router.on('/bundles/:id', async (params) => {
 
         document.querySelectorAll('.auto-deploy-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
+                if (!getApp()?.canDeploy?.()) {
+                    getApp().showError('Deploy role required.');
+                    return;
+                }
                 const jobId = btn.getAttribute('data-job-id');
                 const targetTag = btn.getAttribute('data-target-tag');
                 await runAutoDeployFromCopyJob(jobId, tenant?.id, targetTag);
@@ -4366,6 +4609,10 @@ router.on('/bundles/:id', async (params) => {
 
         document.querySelectorAll('.selective-copy-btn').forEach(btn => {
             btn.addEventListener('click', async () => {
+                if (!getApp()?.canWrite?.()) {
+                    getApp().showError('Write role required.');
+                    return;
+                }
                 const jobId = btn.getAttribute('data-job-id');
                 await runSelectiveCopyFromJob(jobId, bundle);
             });
@@ -4373,6 +4620,10 @@ router.on('/bundles/:id', async (params) => {
 
         // Delete handler
         document.getElementById('delete-bundle-btn').addEventListener('click', async () => {
+            if (!getApp()?.canWrite?.()) {
+                getApp().showError('Write role required.');
+                return;
+            }
             const confirmed = await showConfirmDialog(
                 'Delete Bundle?',
                 `Are you sure you want to delete "${bundle.name}"? This will delete all versions and image mappings.`,
@@ -4402,6 +4653,7 @@ router.on('/bundles/:id', async (params) => {
 
 // Bundle Edit (name/description only)
 router.on('/bundles/:id/edit', async (params) => {
+    if (!requireWriteAccess('Edit bundle')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -4554,6 +4806,7 @@ router.on('/bundles/:id/edit', async (params) => {
 
 // Copy Bundle
 router.on('/bundles/:id/copy', async (params) => {
+    if (!requireWriteAccess('Start copy job')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -4803,6 +5056,7 @@ router.on('/bundles/:id/copy', async (params) => {
 
 // New Bundle Version (must be before the generic version route)
 router.on('/bundles/:id/versions/new', async (params) => {
+    if (!requireWriteAccess('Create bundle version')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -5185,6 +5439,7 @@ router.on('/releases', async () => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const [releases, tenants, bundles] = await Promise.all([
             api.getReleases(),
             api.getTenants(),
@@ -5209,6 +5464,7 @@ router.on('/releases', async () => {
                 .filter(env => !selectedTenant || env.tenant_id === selectedTenant)
                 .sort((a, b) => a.name.localeCompare(b.name));
             return `
+                ${renderScopeNotice()}
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">Image Releases</h3>
@@ -5217,10 +5473,14 @@ router.on('/releases', async () => {
                                 <i class="ti ti-arrows-diff"></i>
                                 <span id="releases-compare-label">Compare (${selectedReleases.size}/2)</span>
                             </button>
-                            <a href="#/releases/new" class="btn btn-primary">
-                                <i class="ti ti-plus"></i>
-                                New Image Release
-                            </a>
+                            ${canWrite ? `
+                                <a href="#/releases/new" class="btn btn-primary">
+                                    <i class="ti ti-plus"></i>
+                                    New Image Release
+                                </a>
+                            ` : `
+                                <span class="text-secondary small">Write access required</span>
+                            `}
                         </div>
                     </div>
                     <div class="card-body border-bottom py-3">
@@ -5619,6 +5879,7 @@ router.on('/releases/:id', async (params) => {
             copyJob?.target_registry_id ? api.getRegistry(copyJob.target_registry_id).catch(() => null) : null,
         ]);
 
+        const canDeploy = getApp()?.canDeploy?.() || false;
         content.innerHTML = `
             <div class="row mb-3">
                 <div class="col">
@@ -5687,10 +5948,13 @@ router.on('/releases/:id', async (params) => {
                     <h3 class="card-title">Build Deploy</h3>
                 </div>
                 <div class="card-body">
-                    <button class="btn btn-primary" id="build-deploy-btn">
+                    <button class="btn btn-primary" id="build-deploy-btn" ${canDeploy ? '' : 'disabled'} title="${canDeploy ? '' : 'Deploy role required'}">
                         <i class="ti ti-rocket"></i>
                         Build Deploy
                     </button>
+                    ${canDeploy ? '' : `
+                        <div class="text-secondary small mt-2">Deploy role required to run Build Deploy.</div>
+                    `}
                     ${release.tenant_id ? `
                         <div class="text-secondary small mt-2">
                             Manage environments in <a href="#/tenants/${release.tenant_id}">Tenant detail</a>.
@@ -5773,6 +6037,10 @@ router.on('/releases/:id', async (params) => {
         const buildDeployBtn = document.getElementById('build-deploy-btn');
         if (buildDeployBtn) {
             buildDeployBtn.addEventListener('click', async () => {
+                if (!getApp()?.canDeploy?.()) {
+                    getApp().showError('Deploy role required.');
+                    return;
+                }
                 await runDeployFromRelease(release, environments);
             });
         }
@@ -5792,6 +6060,7 @@ router.on('/deploy-jobs/:id', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canDeploy = getApp()?.canDeploy?.() || false;
         const [job, logHistory, diffInfo, imageRows] = await Promise.all([
             api.getDeployJob(params.id),
             api.getDeployJobLogHistory(params.id),
@@ -5834,7 +6103,7 @@ router.on('/deploy-jobs/:id', async (params) => {
                     </h3>
                     ${job.status === 'pending' ? `
                         <div class="card-actions">
-                            <button class="btn btn-primary btn-sm" id="start-deploy-job-btn">
+                            <button class="btn btn-primary btn-sm" id="start-deploy-job-btn" ${canDeploy ? '' : 'disabled'} title="${canDeploy ? '' : 'Deploy role required'}">
                                 <i class="ti ti-player-play"></i>
                                 Start Deploy
                             </button>
@@ -5968,6 +6237,10 @@ router.on('/deploy-jobs/:id', async (params) => {
         const startBtn = document.getElementById('start-deploy-job-btn');
         if (startBtn) {
             startBtn.addEventListener('click', async () => {
+                if (!getApp()?.canDeploy?.()) {
+                    getApp().showError('Deploy role required.');
+                    return;
+                }
                 startBtn.disabled = true;
                 try {
                     await api.startDeployJob(params.id);
@@ -6005,6 +6278,7 @@ router.on('/deploy-jobs/:id', async (params) => {
 
 // Create Release
 router.on('/releases/new', async (params, query) => {
+    if (!requireWriteAccess('Create release')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
@@ -6619,10 +6893,12 @@ router.on('/releases/new', async (params, query) => {
 
 // Start Copy Job
 router.on('/bundles/:id/versions/:version/copy', async (params) => {
+    if (!requireWriteAccess('Start copy job')) return;
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     try {
+        const canWrite = getApp()?.canWrite?.() || false;
         const bundle = await api.getBundle(params.id);
         const [mappings, environments, registries] = await Promise.all([
             api.getImageMappings(params.id, params.version),
@@ -6703,11 +6979,12 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
                             <i class="ti ti-search"></i>
                             Pre-check Images
                         </button>
-                        <button type="button" class="btn btn-primary w-100" id="start-copy-btn">
+                        <button type="button" class="btn btn-primary w-100" id="start-copy-btn" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
                             <i class="ti ti-copy"></i>
                             Start Copy Job
                         </button>
                     </div>
+                    ${canWrite ? '' : `<div class="text-secondary small mt-2">Write role required to start copy job.</div>`}
                 </div>
             </div>
         `;
@@ -6838,6 +7115,10 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
         }
 
         document.getElementById('start-copy-btn').addEventListener('click', async () => {
+            if (!getApp()?.canWrite?.()) {
+                getApp().showError('Write role required.');
+                return;
+            }
             const targetTag = document.getElementById('target-tag').value;
             if (!autoTagEnabled && !targetTag) {
                 getApp().showError('Please enter a target tag');
@@ -6897,6 +7178,8 @@ router.on('/copy-jobs/:jobId', async (params) => {
     let logSource = null;
     const logLines = [];
     const apiBase = `${window.BASE_PATH || ''}/api/v1`;
+    const canWrite = getApp()?.canWrite?.() || false;
+    const canDeploy = getApp()?.canDeploy?.() || false;
 
     try {
         // Initial status + images
@@ -7064,14 +7347,28 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         ${isComplete ? `
                             <div class="d-grid gap-2">
                                 ${status.status === 'success' && !status.is_release_job ? `
-                                    <a href="#/releases/new?copy_job_id=${status.job_id}" class="btn btn-success">
-                                        <i class="ti ti-rocket"></i>
-                                        Release Images
-                                    </a>
-                                    <button class="btn btn-outline-primary" id="auto-deploy-btn">
-                                        <i class="ti ti-rocket"></i>
-                                        Deploy Action
-                                    </button>
+                                    ${canWrite ? `
+                                        <a href="#/releases/new?copy_job_id=${status.job_id}" class="btn btn-success">
+                                            <i class="ti ti-rocket"></i>
+                                            Release Images
+                                        </a>
+                                    ` : `
+                                        <button class="btn btn-success" disabled title="Write role required">
+                                            <i class="ti ti-rocket"></i>
+                                            Release Images
+                                        </button>
+                                    `}
+                                    ${canDeploy ? `
+                                        <button class="btn btn-outline-primary" id="auto-deploy-btn">
+                                            <i class="ti ti-rocket"></i>
+                                            Deploy Action
+                                        </button>
+                                    ` : `
+                                        <button class="btn btn-outline-primary" disabled title="Deploy role required">
+                                            <i class="ti ti-rocket"></i>
+                                            Deploy Action
+                                        </button>
+                                    `}
                                 ` : ''}
                                 <a href="#/copy-jobs" class="btn btn-outline-secondary">
                                     <i class="ti ti-list"></i>
@@ -7084,11 +7381,11 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             </div>
                         ` : status.status === 'pending' ? `
                             <div class="d-grid gap-2">
-                                <button class="btn btn-primary" id="start-copy-job">
+                                <button class="btn btn-primary" id="start-copy-job" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
                                     <i class="ti ti-play"></i>
                                     ${status.validate_only ? 'Start Validation' : 'Start Copy Job'}
                                 </button>
-                                <button class="btn btn-outline-danger" id="cancel-copy-job">
+                                <button class="btn btn-outline-danger" id="cancel-copy-job" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
                                     <i class="ti ti-x"></i>
                                     Cancel Copy Job
                                 </button>
@@ -7099,7 +7396,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             </div>
                         ` : status.status === 'in_progress' ? `
                             <div class="d-grid gap-2">
-                                <button class="btn btn-outline-danger" id="cancel-copy-job">
+                                <button class="btn btn-outline-danger" id="cancel-copy-job" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
                                     <i class="ti ti-x"></i>
                                     Cancel Copy Job
                                 </button>
@@ -7196,6 +7493,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
             const autoDeployBtn = document.getElementById('auto-deploy-btn');
             if (autoDeployBtn) {
                 autoDeployBtn.addEventListener('click', async () => {
+                    if (!getApp()?.canDeploy?.()) {
+                        getApp().showError('Deploy role required.');
+                        return;
+                    }
                     await runAutoDeployFromCopyJob(status.job_id, tenant?.id || bundle?.tenant_id, status.target_tag);
                 });
             }
@@ -7203,6 +7504,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
             const cancelBtn = document.getElementById('cancel-copy-job');
             if (cancelBtn) {
                 cancelBtn.addEventListener('click', async () => {
+                    if (!getApp()?.canWrite?.()) {
+                        getApp().showError('Write role required.');
+                        return;
+                    }
                     const confirmed = await showConfirmDialog(
                         'Cancel Copy Job?',
                         'This will stop further copies for this job.',
@@ -7238,6 +7543,10 @@ router.on('/copy-jobs/:jobId', async (params) => {
             const startBtn = document.getElementById('start-copy-job');
             if (!startBtn) return;
             startBtn.addEventListener('click', async () => {
+                if (!getApp()?.canWrite?.()) {
+                    getApp().showError('Write role required.');
+                    return;
+                }
                 try {
                     startBtn.disabled = true;
                     startBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
@@ -7363,6 +7672,7 @@ router.on('/copy-jobs', async () => {
         let activeTab = 'copy';
 
         const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '', tab = 'copy') => `
+            ${renderScopeNotice()}
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Copy Jobs</h3>
@@ -7814,6 +8124,7 @@ router.on('/deployments', async () => {
             });
 
             return `
+                ${renderScopeNotice()}
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">Deployments</h3>
