@@ -4,7 +4,6 @@ use aes_gcm::{
 };
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose, Engine};
-use rand::Rng;
 
 /// Encrypt a plaintext string using AES-256-GCM
 /// Returns base64-encoded string in format: nonce||ciphertext
@@ -16,8 +15,7 @@ pub fn encrypt(plaintext: &str, secret_key: &str) -> Result<String> {
     let cipher = Aes256Gcm::new(&key.into());
 
     // Generate random 12-byte nonce
-    let mut rng = rand::rng();
-    let nonce_bytes: [u8; 12] = rng.random();
+    let nonce_bytes: [u8; 12] = rand::random();
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     // Encrypt the plaintext

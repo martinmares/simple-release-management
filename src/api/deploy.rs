@@ -264,6 +264,7 @@ pub struct DeployApiState {
     pub apply_env_path: String,
     pub encjson_path: String,
     pub encjson_legacy_path: String,
+    pub encjson_key_dir: Option<String>,
     pub kubeconform_path: String,
     pub job_logs: Arc<RwLock<HashMap<Uuid, broadcast::Sender<String>>>>,
 }
@@ -1116,7 +1117,7 @@ async fn update_environment(
     .bind(payload.allow_auto_release.unwrap_or(current.allow_auto_release))
     .bind(payload.append_env_suffix.unwrap_or(current.append_env_suffix))
     .bind(payload.release_manifest_mode.clone().or_else(|| current.release_manifest_mode.clone()))
-    .bind(payload.encjson_key_dir.as_deref().map(str::trim).filter(|v| !v.is_empty()).or_else(|| current.encjson_key_dir.as_deref()))
+    .bind(payload.encjson_key_dir.as_deref().map(str::trim).filter(|v| !v.is_empty()))
     .bind(if payload.release_env_var_mappings.is_some() { env_vars_to_json(payload.release_env_var_mappings.clone()) } else { current.release_env_var_mappings.clone() })
     .bind(if payload.extra_env_vars.is_some() { extra_env_vars_to_json(payload.extra_env_vars.clone()) } else { current.extra_env_vars.clone() })
     .bind(payload.argocd_poll_interval_seconds.unwrap_or(current.argocd_poll_interval_seconds))
@@ -3623,9 +3624,10 @@ async fn build_env_file(
 
     let mut combined = String::new();
 
-    let key_dir_override = encjson_key_dir
+    let effective_key_dir = encjson_key_dir
         .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from);
+        .or_else(|| state.encjson_key_dir.as_deref().filter(|v| !v.trim().is_empty()));
+    let key_dir_override = effective_key_dir.map(PathBuf::from);
     let key_dir_override = key_dir_override.as_ref().map(|p| p.as_path());
 
     if secured.exists() {

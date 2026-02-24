@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
         apply_env_path: config.apply_env_path.clone(),
         encjson_path: config.encjson_path.clone(),
         encjson_legacy_path: config.encjson_legacy_path.clone(),
+        encjson_key_dir: config.encjson_key_dir.clone(),
         kubeconform_path: config.kubeconform_path.clone(),
         job_logs: Arc::new(RwLock::new(std::collections::HashMap::new())),
     };
