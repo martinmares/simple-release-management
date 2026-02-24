@@ -55,29 +55,32 @@ pub async fn build_release_manifest(pool: &PgPool, release_db_id: Uuid) -> Resul
     .await?;
 
     let registry_base = if let Some(registry_id) = base.target_registry_id {
-        let base_url = sqlx::query_scalar::<_, String>("SELECT base_url FROM registries WHERE id = $1")
+        let base_url = sqlx::query_scalar::<_, Option<String>>("SELECT base_url FROM registries WHERE id = $1")
             .bind(registry_id)
             .fetch_optional(pool)
-            .await?;
+            .await?
+            .flatten();
 
         let project_path_override = if let Some(env_id) = base.environment_id {
-            sqlx::query_scalar::<_, String>(
+            sqlx::query_scalar::<_, Option<String>>(
                 "SELECT project_path_override FROM environment_registry_paths WHERE environment_id = $1 AND registry_id = $2 AND role = 'target'",
             )
             .bind(env_id)
             .bind(registry_id)
             .fetch_optional(pool)
             .await?
+            .flatten()
         } else {
             None
         };
 
-        let default_project_path = sqlx::query_scalar::<_, String>(
+        let default_project_path = sqlx::query_scalar::<_, Option<String>>(
             "SELECT default_project_path FROM registries WHERE id = $1",
         )
         .bind(registry_id)
         .fetch_optional(pool)
-        .await?;
+        .await?
+        .flatten();
 
         let project_path = project_path_override
             .or(default_project_path)
