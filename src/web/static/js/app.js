@@ -2317,6 +2317,10 @@ router.on('/argocd-apps/:id', async (params) => {
                                 <i class="ti ti-pencil"></i>
                                 Change Target Revision
                             </button>
+                            <button class="btn btn-outline-secondary btn-sm d-none" id="argocd-select-profile-btn">
+                                <i class="ti ti-stack"></i>
+                                Select Profile
+                            </button>
                         </div>
                     </div>
                     <div class="mt-3" id="argocd-status-card">
@@ -2422,6 +2426,7 @@ router.on('/argocd-apps/:id', async (params) => {
                     </div>
                 ` : ''}
                 ${status?.revision ? `<div class="text-secondary small">Revision: <code class="small">${status.revision}</code></div>` : ''}
+                ${status?.source_path ? `<div class="text-secondary small">Source path: <code class="small">${status.source_path}</code></div>` : ''}
                 ${status?.last_deployed_at || status?.last_deployed_revision || status?.last_deployed_message ? `
                     <div class="text-secondary small mt-1">
                         ${status.last_deployed_at ? `Last deploy: ${status.last_deployed_at}` : ''}
@@ -2699,10 +2704,32 @@ router.on('/argocd-apps/:id', async (params) => {
         }
 
         const changeRevisionBtn = document.getElementById('argocd-change-revision-btn');
+        const selectProfileBtn = document.getElementById('argocd-select-profile-btn');
+        let availableProfiles = [];
+
+        const loadProfiles = async () => {
+            try {
+                const profiles = await api.getArgocdAppProfiles(app.id);
+                availableProfiles = Array.isArray(profiles) ? profiles : [];
+                if (selectProfileBtn) {
+                    selectProfileBtn.classList.toggle('d-none', availableProfiles.length === 0);
+                }
+            } catch {
+                availableProfiles = [];
+                selectProfileBtn?.classList.add('d-none');
+            }
+        };
+
         if (changeRevisionBtn && !canDeploy) {
             changeRevisionBtn.disabled = true;
             changeRevisionBtn.title = 'Deploy role required';
         }
+        if (selectProfileBtn && !canDeploy) {
+            selectProfileBtn.disabled = true;
+            selectProfileBtn.title = 'Deploy role required';
+        }
+        await loadProfiles();
+
         const showChangeRevisionDialog = async () => {
             let tags = [];
             try {
@@ -2779,12 +2806,82 @@ router.on('/argocd-apps/:id', async (params) => {
             });
         };
 
+        const showSelectProfileDialog = async () => {
+            if (availableProfiles.length === 0) {
+                await loadProfiles();
+            }
+            if (availableProfiles.length === 0) {
+                getApp().showError('No profiles available for this app.');
+                return;
+            }
+
+            const modalHtml = `
+                <div class="modal modal-blur fade show" style="display: block;" id="argocd-profile-modal">
+                    <div class="modal-dialog modal-md modal-dialog-centered" role="document">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">Select Profile</h5>
+                                <button type="button" class="btn-close" id="argocd-profile-close"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <label class="form-label">Available profiles</label>
+                                    <select class="form-select" id="argocd-profile-select">
+                                        <option value="">Select profile...</option>
+                                        ${availableProfiles.map((p) => `<option value="${escapeHtml(p.source_path)}">${escapeHtml(p.profile)} (${escapeHtml(p.source_path)})</option>`).join('')}
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-link" id="argocd-profile-cancel">Cancel</button>
+                                <button type="button" class="btn btn-primary" id="argocd-profile-apply" disabled>Apply</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = document.getElementById('argocd-profile-modal');
+            const selectEl = document.getElementById('argocd-profile-select');
+            const applyBtn = document.getElementById('argocd-profile-apply');
+            const closeModal = () => modal?.remove();
+
+            selectEl?.addEventListener('change', () => {
+                const value = (selectEl?.value || '').trim();
+                applyBtn.disabled = value.length === 0;
+            });
+            document.getElementById('argocd-profile-close')?.addEventListener('click', closeModal);
+            document.getElementById('argocd-profile-cancel')?.addEventListener('click', closeModal);
+
+            applyBtn?.addEventListener('click', async () => {
+                const sourcePath = (selectEl?.value || '').trim();
+                if (!sourcePath) return;
+                applyBtn.disabled = true;
+                try {
+                    await api.updateArgocdSourcePath(app.id, sourcePath);
+                    getApp().showSuccess('ArgoCD source path updated');
+                    closeModal();
+                    await loadStatus();
+                } catch (err) {
+                    getApp().showError(`Failed to update source path: ${err.message}`);
+                    applyBtn.disabled = false;
+                }
+            });
+        };
+
         changeRevisionBtn?.addEventListener('click', () => {
             if (!canDeploy) {
                 getApp().showError('Deploy role required.');
                 return;
             }
             showChangeRevisionDialog();
+        });
+        selectProfileBtn?.addEventListener('click', () => {
+            if (!canDeploy) {
+                getApp().showError('Deploy role required.');
+                return;
+            }
+            showSelectProfileDialog();
         });
     } catch (error) {
         console.error(error);

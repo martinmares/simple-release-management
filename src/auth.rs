@@ -257,9 +257,11 @@ fn is_deploy_action(path: &str) -> bool {
 
     if let Some(tail) = path.split("/api/v1/argocd-apps/").nth(1) {
         return tail.ends_with("/sync")
+            || tail.ends_with("/cleanup-sync")
             || tail.ends_with("/refresh")
             || tail.ends_with("/terminate")
-            || tail.ends_with("/target-revision");
+            || tail.ends_with("/target-revision")
+            || tail.ends_with("/source-path");
     }
 
     false
@@ -489,9 +491,11 @@ mod tests {
         assert!(is_deploy_action("/api/v1/deploy/jobs/from-copy"));
         assert!(is_deploy_action("/api/v1/deploy/jobs/123/start"));
         assert!(is_deploy_action("/api/v1/argocd-apps/123/sync"));
+        assert!(is_deploy_action("/api/v1/argocd-apps/123/cleanup-sync"));
         assert!(is_deploy_action("/api/v1/argocd-apps/123/refresh"));
         assert!(is_deploy_action("/api/v1/argocd-apps/123/terminate"));
         assert!(is_deploy_action("/api/v1/argocd-apps/123/target-revision"));
+        assert!(is_deploy_action("/api/v1/argocd-apps/123/source-path"));
         assert!(!is_deploy_action("/api/v1/bundles"));
     }
 

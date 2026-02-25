@@ -38,6 +38,14 @@ use crate::{
     services::release_manifest::{build_release_manifest, ReleaseManifest},
 };
 
+#[derive(Debug, Deserialize)]
+struct KubeBuildInventory {
+    #[serde(default)]
+    profiles: Vec<String>,
+    #[serde(default)]
+    global: serde_json::Value,
+}
+
 async fn ensure_environment(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -3390,6 +3398,41 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     )
     .await?;
 
+    match run_command_capture_logged(
+        &state.kube_build_app_path,
+        &["-e", &environment.slug, "-r", manifest_path.to_string_lossy().as_ref(), "-i"],
+        Some(&env_repo_path),
+        &kube_build_env,
+        &log_tx,
+        "kube_build_app -i",
+    )
+    .await
+    {
+        Ok(raw_inventory) => {
+            let parsed_inventory = parse_json_from_output(&raw_inventory);
+            let generated_profiles = parsed_inventory
+                .as_ref()
+                .map(extract_profiles_from_inventory)
+                .unwrap_or_default();
+            let generated_profiles_json = if generated_profiles.is_empty() {
+                None
+            } else {
+                Some(serde_json::json!(generated_profiles))
+            };
+            sqlx::query(
+                "UPDATE deploy_jobs SET kube_build_inventory = $1, generated_profiles = $2 WHERE id = $3",
+            )
+            .bind(parsed_inventory)
+            .bind(generated_profiles_json)
+            .bind(job_id)
+            .execute(&state.pool)
+            .await?;
+        }
+        Err(err) => {
+            let _ = log_tx.send(format!("kube_build_app -i failed (ignored): {}", err));
+        }
+    }
+
     let env_file_path = temp_dir.path().join("release.env");
     build_env_file(
         &state,
@@ -4266,6 +4309,115 @@ async fn run_command_logged(
     }
 
     Ok(())
+}
+
+async fn run_command_capture_logged(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&FsPath>,
+    envs: &HashMap<String, String>,
+    log_tx: &broadcast::Sender<String>,
+    label: &str,
+) -> anyhow::Result<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.envs(envs);
+    cmd.output().await.map(|output| {
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        for line in stdout.lines() {
+            let _ = log_tx.send(line.to_string());
+        }
+        for line in stderr.lines() {
+            let _ = log_tx.send(line.to_string());
+        }
+
+        if output.status.success() {
+            Ok(stdout)
+        } else {
+            let _ = log_tx.send(format!("{} failed with exit code {:?}", label, output.status.code()));
+            Err(anyhow::anyhow!(
+                "{} failed: {}",
+                label,
+                stderr.trim()
+            ))
+        }
+    })?
+}
+
+fn parse_json_from_output(output: &str) -> Option<serde_json::Value> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return Some(v);
+    }
+
+    let parse_slice = |start: char, end: char| -> Option<serde_json::Value> {
+        let start_idx = trimmed.find(start)?;
+        let end_idx = trimmed.rfind(end)?;
+        if end_idx <= start_idx {
+            return None;
+        }
+        serde_json::from_str::<serde_json::Value>(&trimmed[start_idx..=end_idx]).ok()
+    };
+
+    parse_slice('{', '}').or_else(|| parse_slice('[', ']'))
+}
+
+fn extract_profiles_from_inventory(value: &serde_json::Value) -> Vec<String> {
+    let inventory = serde_json::from_value::<KubeBuildInventory>(value.clone()).ok();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    let mut push_profile = |raw: &str| {
+        let profile = raw.trim();
+        if profile.is_empty() {
+            return;
+        }
+        if seen.insert(profile.to_string()) {
+            out.push(profile.to_string());
+        }
+    };
+
+    if let Some(inv) = &inventory {
+        for profile in &inv.profiles {
+            push_profile(profile);
+        }
+        if let Some(global_profiles) = inv
+            .global
+            .get("profiles")
+            .and_then(|v| v.as_array())
+        {
+            for profile in global_profiles {
+                if let Some(name) = profile.as_str() {
+                    push_profile(name);
+                }
+            }
+        }
+    } else {
+        if let Some(profiles) = value.get("profiles").and_then(|v| v.as_array()) {
+            for profile in profiles {
+                if let Some(name) = profile.as_str() {
+                    push_profile(name);
+                }
+            }
+        }
+        if let Some(profiles) = value.pointer("/global/profiles").and_then(|v| v.as_array()) {
+            for profile in profiles {
+                if let Some(name) = profile.as_str() {
+                    push_profile(name);
+                }
+            }
+        }
+    }
+
+    out
 }
 
 struct DeployDiffSnapshot {

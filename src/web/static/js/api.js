@@ -538,6 +538,16 @@ class ApiClient {
         });
     }
 
+    async getArgocdAppProfiles(id) {
+        return this.get(`/argocd-apps/${id}/profiles`);
+    }
+
+    async updateArgocdSourcePath(id, sourcePath) {
+        return this.post(`/argocd-apps/${id}/source-path`, {
+            source_path: sourcePath,
+        });
+    }
+
     async refreshArgocdApp(id) {
         return this.post(`/argocd-apps/${id}/refresh`, {});
     }

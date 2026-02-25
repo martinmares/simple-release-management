@@ -77,6 +77,7 @@ pub struct ArgocdStatus {
     pub operation_message: Option<String>,
     pub revision: Option<String>,
     pub target_revision: Option<String>,
+    pub source_path: Option<String>,
     pub operation_resources: Option<Vec<ArgocdOperationResource>>,
     pub conditions: Option<Vec<ArgocdCondition>>,
     pub resource_issues: Option<Vec<ArgocdResourceIssue>>,
@@ -166,9 +167,20 @@ pub struct ArgocdEvent {
     pub uid: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct ArgocdProfileOption {
+    pub profile: String,
+    pub source_path: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TargetRevisionRequest {
     pub target_revision: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SourcePathRequest {
+    pub source_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -194,6 +206,8 @@ pub fn router(state: ArgocdApiState) -> Router {
         .route("/argocd-apps/{id}/events", get(get_app_events))
         .route("/argocd-apps/{id}/events/stream", get(stream_app_events))
         .route("/argocd-apps/{id}/deploy-tags", get(list_env_deploy_tags))
+        .route("/argocd-apps/{id}/profiles", get(get_app_profiles))
+        .route("/argocd-apps/{id}/source-path", post(update_source_path))
         .with_state(state)
 }
 
@@ -765,6 +779,25 @@ async fn update_target_revision(
     Ok(StatusCode::ACCEPTED)
 }
 
+async fn update_source_path(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<SourcePathRequest>,
+) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    let source_path = payload.source_path.trim();
+    if source_path.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "source_path is required".to_string(),
+            }),
+        ));
+    }
+    let (instance, app) = load_instance_and_app(&state.pool, id).await?;
+    patch_argocd_source_path(&state, &instance, &app, source_path).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
 async fn stream_app_status(
     State(state): State<ArgocdApiState>,
     Path(id): Path<Uuid>,
@@ -929,6 +962,74 @@ async fn list_env_deploy_tags(
     })?;
 
     Ok(Json(rows))
+}
+
+async fn get_app_profiles(
+    State(state): State<ArgocdApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<ArgocdProfileOption>>, (StatusCode, Json<ErrorResponse>)> {
+    let row = sqlx::query_as::<_, (String, Option<String>, Option<serde_json::Value>)>(
+        r#"
+        SELECT
+            e.slug,
+            NULLIF(TRIM(BOTH FROM e.deploy_repo_path), '') AS deploy_repo_path,
+            (
+                SELECT dj.generated_profiles
+                FROM deploy_jobs dj
+                WHERE dj.environment_id = e.id
+                  AND dj.status = 'success'
+                  AND dj.generated_profiles IS NOT NULL
+                ORDER BY dj.completed_at DESC NULLS LAST, dj.started_at DESC
+                LIMIT 1
+            ) AS generated_profiles
+        FROM environment_argocd_apps a
+        JOIN environments e ON e.id = a.environment_id
+        WHERE a.id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "ArgoCD app not found".to_string(),
+            }),
+        )
+    })?;
+
+    let (env_slug, deploy_repo_path, generated_profiles) = row;
+    let base_path = deploy_repo_path
+        .as_deref()
+        .map(|v| v.trim().trim_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| format!("deploy/{}", env_slug));
+
+    let profiles = generated_profiles
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|v| v.trim().to_string()))
+                .filter(|name| !name.is_empty())
+                .map(|profile| ArgocdProfileOption {
+                    source_path: format!("{}__{}", base_path, profile),
+                    profile,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    Ok(Json(profiles))
 }
 
 async fn load_instance_and_app(
@@ -1263,6 +1364,44 @@ async fn patch_argocd_target_revision(
     Ok(())
 }
 
+async fn patch_argocd_source_path(
+    state: &ArgocdApiState,
+    instance: &ArgocdInstance,
+    app: &EnvironmentArgocdApp,
+    source_path: &str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let url = format!(
+        "{}/api/v1/applications/{}?project={}",
+        instance.base_url,
+        app.application_name,
+        app.project_name
+    );
+    let patch_body = serde_json::json!({
+        "patchType": "merge",
+        "patch": serde_json::json!({
+            "spec": { "source": { "path": source_path } }
+        }).to_string(),
+    });
+    let resp = send_with_auth(state, instance, |client| {
+        client
+            .patch(url.clone())
+            .header("Content-Type", "application/json")
+            .json(&patch_body)
+    })
+    .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: format!("ArgoCD patch failed: {} {}", status, body),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 async fn fetch_argocd_status(
     state: &ArgocdApiState,
     instance: &ArgocdInstance,
@@ -1291,6 +1430,10 @@ async fn fetch_argocd_status(
         .and_then(|v| v.as_str())
         .map(str::to_string);
     let target_revision = value.pointer("/spec/source/targetRevision")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let source_path = value
+        .pointer("/spec/source/path")
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
@@ -1365,6 +1508,7 @@ async fn fetch_argocd_status(
         operation_message,
         revision,
         target_revision,
+        source_path,
         operation_resources,
         conditions,
         resource_issues,
