@@ -677,7 +677,7 @@ router.on('/', async () => {
                                 </div>
                                 <div class="col">
                                     <div class="font-weight-medium">${deployJobs.length}</div>
-                                    <div class="text-secondary">Deploy Jobs</div>
+                                    <div class="text-secondary">Build Jobs</div>
                                 </div>
                             </div>
                         </div>
@@ -769,7 +769,7 @@ router.on('/', async () => {
                                 <div class="col-6 col-md-4">
                                     <a href="#/deployments" class="btn btn-outline-indigo w-100">
                                         <i class="ti ti-rocket me-2"></i>
-                                        Deployments
+                                        Manifest Builds
                                     </a>
                                 </div>
                             </div>
@@ -975,7 +975,7 @@ router.on('/', async () => {
                         <div class="card-header">
                             <h3 class="card-title">
                                 <i class="ti ti-rocket me-2"></i>
-                                Recent Deploy Jobs
+                                Recent Build Jobs
                             </h3>
                             <div class="card-actions">
                                 <a href="#/deployments" class="btn btn-sm btn-outline-primary">View All</a>
@@ -984,8 +984,8 @@ router.on('/', async () => {
                         <div class="card-body p-0">
                             ${recentDeployJobs.length === 0 ? `
                                 <div class="empty p-4">
-                                    <p class="empty-title">No deployments yet</p>
-                                    <p class="empty-subtitle text-secondary">Run a deploy job from a release</p>
+                                    <p class="empty-title">No manifest builds yet</p>
+                                    <p class="empty-subtitle text-secondary">Run a build job from a release</p>
                                 </div>
                             ` : `
                                 <div class="list-group list-group-flush">
@@ -4666,12 +4666,12 @@ router.on('/bundles/:id', async (params) => {
                                                         ${canDeploy ? `
                                                             <button type="button" class="btn btn-sm btn-outline-primary auto-deploy-btn" data-job-id="${job.job_id}" data-target-tag="${job.target_tag}">
                                                                 <i class="ti ti-rocket"></i>
-                                                                Deploy Action
+                                                                Build Manifests
                                                             </button>
                                                         ` : `
                                                             <button type="button" class="btn btn-sm btn-outline-primary" disabled title="Deploy role required">
                                                                 <i class="ti ti-rocket"></i>
-                                                                Deploy Action
+                                                                Build Manifests
                                                             </button>
                                                         `}
                                                     </div>
@@ -4688,7 +4688,7 @@ router.on('/bundles/:id', async (params) => {
                         <div class="card-header">
                             <h3 class="card-title">
                                 <i class="ti ti-rocket me-2"></i>
-                                Deployments
+                                Manifest Builds
                             </h3>
                         </div>
                         <div class="table-responsive">
@@ -4708,7 +4708,7 @@ router.on('/bundles/:id', async (params) => {
                                     ${deployments.length === 0 ? `
                                         <tr>
                                             <td colspan="7" class="text-center text-secondary py-4">
-                                                No deployments yet.
+                                                No manifest builds yet.
                                             </td>
                                         </tr>
                                     ` : deployments.map(row => `
@@ -5691,8 +5691,8 @@ router.on('/releases', async () => {
                                     <th>Tenant</th>
                                     <th>Bundle</th>
                                     <th>
-                                        Deploy Jobs
-                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of deploy jobs (success/failed/running/pending). Image release stays draft until first successful deploy."></i>
+                                        Build Jobs
+                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of build jobs (success/failed/running/pending). Image release stays draft until first successful build job."></i>
                                     </th>
                                     <th>Created</th>
                                 </tr>
@@ -6102,20 +6102,20 @@ router.on('/releases/:id', async (params) => {
 
             <div class="alert alert-info">
                 <i class="ti ti-info-circle"></i>
-                Build Deploy regenerates <code>tsm-deploy/deploy/&lt;env&gt;</code> for this release.
+                Build Manifests builds deployment manifests in <code>tsm-deploy/deploy/&lt;env&gt;</code> for this release.
             </div>
 
             <div class="card mb-3">
                 <div class="card-header">
-                    <h3 class="card-title">Build Deploy</h3>
+                    <h3 class="card-title">Build Manifests</h3>
                 </div>
                 <div class="card-body">
                     <button class="btn btn-primary" id="build-deploy-btn" ${canDeploy ? '' : 'disabled'} title="${canDeploy ? '' : 'Deploy role required'}">
                         <i class="ti ti-rocket"></i>
-                        Build Deploy
+                        Build Manifests
                     </button>
                     ${canDeploy ? '' : `
-                        <div class="text-secondary small mt-2">Deploy role required to run Build Deploy.</div>
+                        <div class="text-secondary small mt-2">Deploy role required to run Build Manifests.</div>
                     `}
                     ${release.tenant_id ? `
                         <div class="text-secondary small mt-2">
@@ -6133,7 +6133,7 @@ router.on('/releases/:id', async (params) => {
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Deploy Jobs</h3>
+                    <h3 class="card-title">Build Jobs</h3>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table">
@@ -6151,7 +6151,7 @@ router.on('/releases/:id', async (params) => {
                             ${deployJobs.length === 0 ? `
                                 <tr>
                                     <td colspan="6" class="text-center text-secondary py-4">
-                                        No deploy jobs yet.
+                                            No build jobs yet.
                                     </td>
                                 </tr>
                             ` : deployJobs.map(job => `
@@ -6216,7 +6216,7 @@ router.on('/releases/:id', async (params) => {
     }
 });
 
-// Deploy Job Monitor
+// Build Job Monitor
 router.on('/deploy-jobs/:id', async (params) => {
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
@@ -6260,14 +6260,14 @@ router.on('/deploy-jobs/:id', async (params) => {
                     <h3 class="card-title">
                         <i class="ti ti-rocket me-2"></i>
                         <i class="ti ti-cloud-upload me-2"></i>
-                        Deploy Job Monitor
+                        Build Job Monitor
                         ${job.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                     </h3>
                     ${job.status === 'pending' ? `
                         <div class="card-actions">
                             <button class="btn btn-primary btn-sm" id="start-deploy-job-btn" ${canDeploy ? '' : 'disabled'} title="${canDeploy ? '' : 'Deploy role required'}">
                                 <i class="ti ti-player-play"></i>
-                                Start Deploy
+                                Start Build
                             </button>
                         </div>
                     ` : ''}
@@ -6406,7 +6406,7 @@ router.on('/deploy-jobs/:id', async (params) => {
                 startBtn.disabled = true;
                 try {
                     await api.startDeployJob(params.id);
-                    getApp().showSuccess('Deploy job started');
+                    getApp().showSuccess('Build job started');
                     router.navigate(`/deploy-jobs/${params.id}`);
                     router.handleRoute();
                 } catch (error) {
@@ -6432,7 +6432,7 @@ router.on('/deploy-jobs/:id', async (params) => {
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">
-                Failed to load deploy job: ${error.message}
+                Failed to load build job: ${error.message}
             </div>
         `;
     }
@@ -7523,12 +7523,12 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                     ${canDeploy ? `
                                         <button class="btn btn-outline-primary" id="auto-deploy-btn">
                                             <i class="ti ti-rocket"></i>
-                                            Deploy Action
+                                            Build Manifests
                                         </button>
                                     ` : `
                                         <button class="btn btn-outline-primary" disabled title="Deploy role required">
                                             <i class="ti ti-rocket"></i>
-                                            Deploy Action
+                                            Build Manifests
                                         </button>
                                     `}
                                 ` : ''}
@@ -8255,7 +8255,7 @@ router.on('/copy-jobs', async () => {
     }
 });
 
-// Deployments List
+// Manifest Builds List
 router.on('/deployments', async () => {
     const content = document.getElementById('app-content');
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
@@ -8289,7 +8289,7 @@ router.on('/deployments', async () => {
                 ${renderScopeNotice()}
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Deployments</h3>
+                        <h3 class="card-title">Manifest Builds</h3>
                     </div>
                     <div class="card-body border-bottom py-3">
                         <div class="row g-2">
@@ -8536,7 +8536,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
                             Cancel
                         </button>
                         <button type="button" class="btn btn-primary" id="auto-deploy-confirm" disabled>
-                            Create Deploy Job
+                            Create Build Job
                         </button>
                     </div>
                 </div>
@@ -8614,7 +8614,7 @@ async function runAutoDeployFromCopyJob(copyJobId, tenantId, targetTag) {
         cleanup();
         try {
             const response = await api.startAutoDeployFromCopyJob(copyJobId, targetEnvId, dryRun);
-            getApp().showSuccess('Deploy job created');
+            getApp().showSuccess('Build job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
             getApp().showError(error.message);
@@ -8792,7 +8792,7 @@ async function runDeployFromRelease(release, environments) {
                             Cancel
                         </button>
                         <button type="button" class="btn btn-primary" id="release-deploy-confirm" disabled>
-                            Create Deploy Job
+                            Create Build Job
                         </button>
                     </div>
                 </div>
@@ -8874,7 +8874,7 @@ async function runDeployFromRelease(release, environments) {
                 environment_id: targetEnvId,
                 dry_run: dryRun,
             });
-            getApp().showSuccess('Deploy job created');
+            getApp().showSuccess('Build job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
             getApp().showError(error.message);
