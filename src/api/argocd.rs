@@ -1129,7 +1129,7 @@ async fn call_argocd_sync(
         payload["prune"] = serde_json::json!(true);
     }
     if !sync_options.is_empty() {
-        payload["syncOptions"] = serde_json::json!(sync_options);
+        payload["syncOptions"] = serde_json::json!({ "items": sync_options });
     }
     let resp = send_with_auth(state, instance, |client| client.post(url.clone()).json(&payload)).await?;
     if !resp.status().is_success() {
