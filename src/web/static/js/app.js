@@ -2298,10 +2298,10 @@ router.on('/argocd-apps/:id', async (params) => {
                             <div>${instance.name}</div>
                             <div class="d-flex align-items-center gap-2 text-secondary small">
                                 <code class="small mb-0">${instance.base_url}</code>
-                                <button type="button" class="btn btn-ghost-secondary btn-sm btn-icon" id="argocd-instance-open-btn" title="Open ArgoCD URL in new tab">
+                                <button type="button" class="btn btn-sm btn-icon text-secondary p-1" style="border:none;background:transparent;box-shadow:none;" id="argocd-instance-open-btn" title="Open ArgoCD URL in new tab">
                                     <i class="ti ti-external-link"></i>
                                 </button>
-                                <button type="button" class="btn btn-ghost-secondary btn-sm btn-icon" id="argocd-instance-copy-btn" title="Copy ArgoCD URL to clipboard">
+                                <button type="button" class="btn btn-sm btn-icon text-secondary p-1" style="border:none;background:transparent;box-shadow:none;" id="argocd-instance-copy-btn" title="Copy ArgoCD URL to clipboard">
                                     <i class="ti ti-copy"></i>
                                 </button>
                             </div>
