@@ -2298,10 +2298,10 @@ router.on('/argocd-apps/:id', async (params) => {
                             <div>${instance.name}</div>
                             <div class="d-flex align-items-center gap-2 text-secondary small">
                                 <code class="small mb-0">${instance.base_url}</code>
-                                <button type="button" class="btn btn-sm btn-icon btn-outline-secondary" id="argocd-instance-open-btn" title="Open ArgoCD URL in new tab">
+                                <button type="button" class="btn btn-ghost-secondary btn-sm btn-icon" id="argocd-instance-open-btn" title="Open ArgoCD URL in new tab">
                                     <i class="ti ti-external-link"></i>
                                 </button>
-                                <button type="button" class="btn btn-sm btn-icon btn-outline-secondary" id="argocd-instance-copy-btn" title="Copy ArgoCD URL to clipboard">
+                                <button type="button" class="btn btn-ghost-secondary btn-sm btn-icon" id="argocd-instance-copy-btn" title="Copy ArgoCD URL to clipboard">
                                     <i class="ti ti-copy"></i>
                                 </button>
                             </div>
@@ -2531,9 +2531,10 @@ router.on('/argocd-apps/:id', async (params) => {
                     getApp().showSuccess('ArgoCD URL copied to clipboard');
                     return;
                 }
-            } catch {}
-
-            window.prompt('Copy ArgoCD URL:', instance.base_url);
+                throw new Error('Clipboard API unavailable');
+            } catch {
+                getApp().showError('Failed to copy ArgoCD URL');
+            }
         });
 
         const setPoll = (seconds) => {
