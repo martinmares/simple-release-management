@@ -2296,7 +2296,15 @@ router.on('/argocd-apps/:id', async (params) => {
                         <div class="col-md-6">
                             <div class="text-secondary">Instance</div>
                             <div>${instance.name}</div>
-                            <div class="text-secondary small"><code class="small">${instance.base_url}</code></div>
+                            <div class="d-flex align-items-center gap-2 text-secondary small">
+                                <code class="small mb-0">${instance.base_url}</code>
+                                <button type="button" class="btn btn-sm btn-icon btn-outline-secondary" id="argocd-instance-open-btn" title="Open ArgoCD URL in new tab">
+                                    <i class="ti ti-external-link"></i>
+                                </button>
+                                <button type="button" class="btn btn-sm btn-icon btn-outline-secondary" id="argocd-instance-copy-btn" title="Copy ArgoCD URL to clipboard">
+                                    <i class="ti ti-copy"></i>
+                                </button>
+                            </div>
                         </div>
                         <div class="col-md-6">
                             <div class="text-secondary">Environment</div>
@@ -2509,6 +2517,25 @@ router.on('/argocd-apps/:id', async (params) => {
         const poll = env.argocd_poll_interval_seconds || 0;
         let pollTimer = null;
         const pollSelect = document.getElementById('argocd-poll-select');
+        const instanceOpenBtn = document.getElementById('argocd-instance-open-btn');
+        const instanceCopyBtn = document.getElementById('argocd-instance-copy-btn');
+
+        instanceOpenBtn?.addEventListener('click', () => {
+            window.open(instance.base_url, '_blank', 'noopener,noreferrer');
+        });
+
+        instanceCopyBtn?.addEventListener('click', async () => {
+            try {
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(instance.base_url);
+                    getApp().showSuccess('ArgoCD URL copied to clipboard');
+                    return;
+                }
+            } catch {}
+
+            window.prompt('Copy ArgoCD URL:', instance.base_url);
+        });
+
         const setPoll = (seconds) => {
             if (pollTimer) {
                 clearInterval(pollTimer);
