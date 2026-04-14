@@ -1787,6 +1787,49 @@ async fn start_selective_copy_job(
         ));
     }
 
+    let environment = sqlx::query_as::<_, Environment>(
+        "SELECT * FROM environments WHERE id = $1",
+    )
+    .bind(environment_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Environment not found".to_string(),
+            }),
+        )
+    })?;
+
+    let source_mappings = sqlx::query_as::<_, ImageMapping>(
+        "SELECT * FROM image_mappings WHERE bundle_version_id = $1 ORDER BY created_at",
+    )
+    .bind(bundle_version_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    let source_mappings: std::collections::HashMap<Uuid, ImageMapping> = source_mappings
+        .into_iter()
+        .map(|mapping| (mapping.id, mapping))
+        .collect();
+
     let job_id = Uuid::new_v4();
     sqlx::query(
         "INSERT INTO copy_jobs
@@ -1814,7 +1857,25 @@ async fn start_selective_copy_job(
     for img in base_images {
         let is_selected = selected.contains(&img.id);
         let (source_image, source_tag, source_registry_override) = if is_selected {
-            (img.source_image.clone(), img.source_tag.clone(), Some(source_registry_id))
+            let mapping = source_mappings.get(&img.image_mapping_id).ok_or_else(|| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!(
+                            "Missing image mapping {} for selective copy",
+                            img.image_mapping_id
+                        ),
+                    }),
+                )
+            })?;
+            (
+                apply_registry_project_path(
+                    &mapping.source_image,
+                    environment.source_project_path.as_deref(),
+                ),
+                mapping.source_tag.clone(),
+                Some(source_registry_id),
+            )
         } else {
             (img.target_image.clone(), img.target_tag.clone(), Some(target_registry_id))
         };
