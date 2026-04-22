@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
     info!("Configuration loaded");
     info!("Server will listen on: {}", config.server_address());
     info!("Base path: {}", if config.base_path.is_empty() { "/" } else { &config.base_path });
+    info!("Image tool: {} ({})", config.image_tool, config.image_path);
     info!(
         "Authorization: {}",
         if config.auth_enabled { "enabled" } else { "DISABLED (development mode)" }
@@ -63,17 +64,24 @@ async fn main() -> Result<()> {
 
     info!("Database migrations completed successfully");
 
-    // Inicializace Skopeo service
-    let skopeo_service = services::SkopeoService::new(config.skopeo_path.clone());
+    // Inicializace image tool service
+    let skopeo_service = services::SkopeoService::new(
+        config.image_tool.clone(),
+        config.image_path.clone(),
+        config.image_src_insecure,
+        config.image_dst_insecure,
+        config.image_extra_inspect_args.clone(),
+        config.image_extra_copy_args.clone(),
+    );
 
-    // Zkontrolovat že skopeo je dostupné
+    // Zkontrolovat že image tool je dostupný
     match skopeo_service.check_available().await {
-        Ok(true) => info!("Skopeo is available"),
+        Ok(true) => info!("Image tool is available"),
         Ok(false) => {
-            tracing::warn!("Skopeo check returned false");
+            tracing::warn!("Image tool check returned false");
         }
         Err(e) => {
-            tracing::warn!("Skopeo is not available: {}. Copy operations will fail.", e);
+            tracing::warn!("Image tool is not available: {}. Copy operations will fail.", e);
         }
     }
 

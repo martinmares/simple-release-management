@@ -28,7 +28,12 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub base_path: String,
-    pub skopeo_path: String,
+    pub image_tool: String,
+    pub image_path: String,
+    pub image_src_insecure: bool,
+    pub image_dst_insecure: bool,
+    pub image_extra_inspect_args: Vec<String>,
+    pub image_extra_copy_args: Vec<String>,
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
@@ -57,6 +62,18 @@ impl Config {
             env_auth_enabled
         };
 
+        let image_tool = env::var("IMAGE_TOOL")
+            .unwrap_or_else(|_| "skopeo".to_string())
+            .trim()
+            .to_ascii_lowercase();
+
+        let image_path = env::var("IMAGE_PATH").unwrap_or_else(|_| {
+            env::var("SKOPEO_PATH").unwrap_or_else(|_| match image_tool.as_str() {
+                "oci-patch" | "oci_patch" => "oci-patch".to_string(),
+                _ => "skopeo".to_string(),
+            })
+        });
+
         let config = Config {
             database_url: env::var("DATABASE_URL")
                 .context("DATABASE_URL must be set")?,
@@ -70,8 +87,12 @@ impl Config {
                 .trim_end_matches('/')
                 .to_string(),
 
-            skopeo_path: env::var("SKOPEO_PATH")
-                .unwrap_or_else(|_| "skopeo".to_string()),
+            image_tool,
+            image_path,
+            image_src_insecure: parse_bool_env("IMAGE_SRC_INSECURE").unwrap_or(false),
+            image_dst_insecure: parse_bool_env("IMAGE_DST_INSECURE").unwrap_or(false),
+            image_extra_inspect_args: parse_command_args_env("IMAGE_EXTRA_INSPECT_ARGS")?,
+            image_extra_copy_args: parse_command_args_env("IMAGE_EXTRA_COPY_ARGS")?,
 
             kube_build_app_path: env::var("KUBE_BUILD_APP_PATH")
                 .unwrap_or_else(|_| "kube_build_app".to_string()),
@@ -138,4 +159,19 @@ fn parse_bool_env(name: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
     }
+}
+
+fn parse_command_args_env(name: &str) -> Result<Vec<String>> {
+    let raw = match env::var(name) {
+        Ok(raw) => raw,
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    shell_words::split(trimmed)
+        .with_context(|| format!("Failed to parse {name} as shell-style arguments"))
 }

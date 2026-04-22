@@ -8,7 +8,7 @@ Simple Release Management is a web app for copying Docker images between registr
 - **Registry**: Source/target registry configuration and credentials.
 - **Bundle**: A named collection of image mappings.
 - **Bundle version**: Immutable snapshot of mappings.
-- **Copy job**: Copies images for a bundle version to a target registry (via `skopeo`).
+- **Copy job**: Copies images for a bundle version to a target registry (via `skopeo` or `oci-patch`).
 - **Image release**: Named target tag for a successful copy job.
 - **Deploy target**: Build/deploy pipeline config (git repos, env paths, keys).
 - **Deploy job**: Regenerates deploy manifests for a release.
@@ -29,7 +29,7 @@ Simple Release Management is a web app for copying Docker images between registr
 
 - Rust 1.75+
 - PostgreSQL 15+ (or Docker Compose)
-- `skopeo` installed and in PATH
+- `skopeo` or `oci-patch` installed and in PATH
 
 ### 2) Setup
 
@@ -68,7 +68,13 @@ Configuration is read from environment variables (see `.env.example`).
 |---|---|---|
 | `DATABASE_URL` | PostgreSQL connection string | (required) |
 | `BASE_PATH` | Base path for reverse proxy | empty |
-| `SKOPEO_PATH` | Path to `skopeo` binary | `skopeo` |
+| `IMAGE_TOOL` | Image backend: `skopeo` or `oci-patch` | `skopeo` |
+| `IMAGE_PATH` | Path to selected image tool binary | `skopeo` |
+| `IMAGE_SRC_INSECURE` | Skip TLS verification for source registry | `false` |
+| `IMAGE_DST_INSECURE` | Skip TLS verification for target registry | `false` |
+| `IMAGE_EXTRA_INSPECT_ARGS` | Extra inspect arguments passed to image tool | empty |
+| `IMAGE_EXTRA_COPY_ARGS` | Extra copy arguments passed to image tool | empty |
+| `SKOPEO_PATH` | Legacy fallback path used when `IMAGE_PATH` is unset | `skopeo` |
 | `KUBE_BUILD_APP_PATH` | Path to `kube_build_app` | `kube_build_app` |
 | `APPLY_ENV_PATH` | Path to `apply-env` | `apply-env` |
 | `ENCJSON_PATH` | Path to `encjson` | `encjson` |
@@ -108,4 +114,3 @@ RUST_LOG=simple_release_management=debug,sqlx=warn cargo run
 ## License
 
 AGPLv3. See `LICENSE`.
-

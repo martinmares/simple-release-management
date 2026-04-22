@@ -20,7 +20,18 @@ pub struct SkopeoCredentials {
 /// Skopeo service pro práci s container images
 #[derive(Clone)]
 pub struct SkopeoService {
-    pub skopeo_path: String,
+    pub tool: ImageTool,
+    pub image_path: String,
+    pub src_insecure: bool,
+    pub dst_insecure: bool,
+    pub extra_inspect_args: Vec<String>,
+    pub extra_copy_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageTool {
+    Skopeo,
+    OciPatch,
 }
 
 /// Informace o image z skopeo inspect
@@ -51,17 +62,31 @@ pub enum CopyStatus {
 }
 
 impl SkopeoService {
-    pub fn new(skopeo_path: String) -> Self {
-        Self { skopeo_path }
+    pub fn new(
+        tool: String,
+        image_path: String,
+        src_insecure: bool,
+        dst_insecure: bool,
+        extra_inspect_args: Vec<String>,
+        extra_copy_args: Vec<String>,
+    ) -> Self {
+        Self {
+            tool: ImageTool::from_env_value(&tool),
+            image_path,
+            src_insecure,
+            dst_insecure,
+            extra_inspect_args,
+            extra_copy_args,
+        }
     }
 
-    /// Zkontroluje že skopeo je dostupné
+    /// Zkontroluje že image tool je dostupný
     pub async fn check_available(&self) -> Result<bool> {
-        let output = Command::new(&self.skopeo_path)
+        let output = Command::new(&self.image_path)
             .arg("--version")
             .output()
             .await
-            .context("Failed to execute skopeo")?;
+            .with_context(|| format!("Failed to execute {}", self.tool.display_name()))?;
 
         Ok(output.status.success())
     }
@@ -75,7 +100,7 @@ impl SkopeoService {
     ) -> Result<ImageInfo> {
         info!("Inspecting image: {}", image_url);
 
-        let mut cmd = Command::new(&self.skopeo_path);
+        let mut cmd = Command::new(&self.image_path);
         cmd.arg("inspect");
 
         // Add credentials if provided
@@ -83,16 +108,18 @@ impl SkopeoService {
             cmd.arg("--creds").arg(format!("{}:{}", user, pass));
         }
 
+        self.append_inspect_insecure_args(&mut cmd);
+        cmd.args(&self.extra_inspect_args);
         cmd.arg(format!("docker://{}", image_url));
 
         let output = cmd
             .output()
             .await
-            .context("Failed to execute skopeo inspect")?;
+            .with_context(|| format!("Failed to execute {} inspect", self.tool.display_name()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Skopeo inspect failed: {}", stderr);
+            anyhow::bail!("{} inspect failed: {}", self.tool.display_name(), stderr);
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -124,7 +151,7 @@ impl SkopeoService {
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
 
-        let mut cmd = Command::new(&self.skopeo_path);
+        let mut cmd = Command::new(&self.image_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
 
@@ -138,12 +165,17 @@ impl SkopeoService {
             cmd.arg("--dest-creds").arg(format!("{}:{}", user, pass));
         }
 
+        self.append_copy_insecure_args(&mut cmd);
+        cmd.args(&self.extra_copy_args);
         cmd.arg(format!("docker://{}", source_url))
             .arg(format!("docker://{}", target_url))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd.output().await.context("Failed to execute skopeo copy")?;
+        let output = cmd
+            .output()
+            .await
+            .with_context(|| format!("Failed to execute {} copy", self.tool.display_name()))?;
 
         if output.status.success() {
             info!(
@@ -185,7 +217,7 @@ impl SkopeoService {
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
 
-        let mut cmd = Command::new(&self.skopeo_path);
+        let mut cmd = Command::new(&self.image_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
 
@@ -201,12 +233,16 @@ impl SkopeoService {
             cmd.arg("--dest-creds").arg(format!("{}:{}", user, pass));
         }
 
+        self.append_copy_insecure_args(&mut cmd);
+        cmd.args(&self.extra_copy_args);
         cmd.arg(format!("docker://{}", source_url))
             .arg(format!("docker://{}", target_url))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().context("Failed to execute skopeo copy")?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Failed to execute {} copy", self.tool.display_name()))?;
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let stderr = child.stderr.take().context("Failed to capture stderr")?;
 
@@ -346,6 +382,60 @@ impl SkopeoService {
     }
 }
 
+impl SkopeoService {
+    fn append_inspect_insecure_args(&self, cmd: &mut Command) {
+        match self.tool {
+            ImageTool::Skopeo => {
+                if self.src_insecure {
+                    cmd.arg("--tls-verify=false");
+                }
+            }
+            ImageTool::OciPatch => {
+                if self.src_insecure {
+                    cmd.arg("--insecure");
+                }
+            }
+        }
+    }
+
+    fn append_copy_insecure_args(&self, cmd: &mut Command) {
+        match self.tool {
+            ImageTool::Skopeo => {
+                if self.src_insecure {
+                    cmd.arg("--src-tls-verify=false");
+                }
+                if self.dst_insecure {
+                    cmd.arg("--dest-tls-verify=false");
+                }
+            }
+            ImageTool::OciPatch => {
+                if self.src_insecure {
+                    cmd.arg("--src-insecure");
+                }
+                if self.dst_insecure {
+                    cmd.arg("--dest-insecure");
+                }
+            }
+        }
+    }
+}
+
+impl ImageTool {
+    fn from_env_value(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "oci-patch" | "oci_patch" => Self::OciPatch,
+            _ => Self::Skopeo,
+        }
+    }
+
+    fn display_name(&self) -> &'static str {
+        match self {
+            Self::Skopeo => "skopeo",
+            Self::OciPatch => "oci-patch",
+        }
+    }
+}
+
 fn is_reuse_blob_error(message: &str) -> bool {
     let msg = message.to_lowercase();
     msg.contains("reuse blob") || msg.contains("reuse-blob") || msg.contains("trying to reuse blob")
@@ -358,7 +448,14 @@ mod tests {
     #[tokio::test]
     #[ignore] // Vyžaduje funkční skopeo v PATH
     async fn test_skopeo_available() {
-        let service = SkopeoService::new("skopeo".to_string());
+        let service = SkopeoService::new(
+            "skopeo".to_string(),
+            "skopeo".to_string(),
+            false,
+            false,
+            Vec::new(),
+            Vec::new(),
+        );
         let available = service.check_available().await.unwrap();
         assert!(available);
     }
