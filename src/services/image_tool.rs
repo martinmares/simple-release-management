@@ -174,8 +174,11 @@ impl ImageToolService {
         info!("Copying image from {} to {}", source_url, target_url);
 
         let mut cmd = Command::new(&self.image_tool_path);
-        cmd.arg("copy")
-            .arg("--debug"); // Enable debug output to see what's happening
+        cmd.arg("copy");
+
+        if self.tool == ImageTool::Skopeo {
+            cmd.arg("--debug"); // Skopeo needs debug output for observability.
+        }
 
         if self.tool == ImageTool::OciPatch {
             cmd.arg("--progress-json");
@@ -244,8 +247,15 @@ impl ImageToolService {
         info!("Copying image from {} to {}", source_url, target_url);
 
         let mut cmd = Command::new(&self.image_tool_path);
-        cmd.arg("copy")
-            .arg("--debug"); // Enable debug output to see what's happening
+        cmd.arg("copy");
+
+        if self.tool == ImageTool::Skopeo {
+            cmd.arg("--debug"); // Skopeo needs debug output for observability.
+        }
+
+        if self.tool == ImageTool::OciPatch {
+            cmd.arg("--progress-json");
+        }
 
         if dest_no_reuse {
             cmd.arg("--dest-no-reuse");
