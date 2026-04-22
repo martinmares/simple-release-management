@@ -45,7 +45,7 @@ pub struct Config {
     pub copy_timeout_seconds: u64,
     pub copy_max_retries: u32,
     pub copy_retry_delay_seconds: u64,
-    pub static_dir: String,
+    pub static_dir: Option<String>,
     pub auth_enabled: bool,
 }
 
@@ -138,7 +138,9 @@ impl Config {
                 .unwrap_or(30),
 
             static_dir: env::var("STATIC_DIR")
-                .unwrap_or_else(|_| "src/web/static".to_string()),
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
 
             auth_enabled,
         };

@@ -7,15 +7,61 @@ mod registry;
 mod services;
 
 use anyhow::{Context, Result};
-use axum::{middleware, routing::get, Extension, Router};
+use axum::{
+    body::Body,
+    http::{header, HeaderValue, StatusCode, Uri},
+    middleware,
+    response::Response,
+    routing::get,
+    Extension, Router,
+};
 use clap::Parser;
 use config::{CliArgs, Config};
+use rust_embed::RustEmbed;
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_http::services::ServeDir;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+#[derive(RustEmbed)]
+#[folder = "src/web/static/"]
+struct EmbeddedWebAssets;
+
+async fn embedded_static_handler(uri: Uri) -> Response {
+    let requested_path = uri.path().trim_start_matches('/');
+    let asset_path = if requested_path.is_empty() {
+        "index.html"
+    } else {
+        requested_path
+    };
+
+    if let Some(response) = embedded_asset_response(asset_path) {
+        return response;
+    }
+
+    if let Some(response) = embedded_asset_response("index.html") {
+        return response;
+    }
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Embedded asset not found"))
+        .unwrap()
+}
+
+fn embedded_asset_response(path: &str) -> Option<Response> {
+    let asset = EmbeddedWebAssets::get(path)?;
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+
+    let mut response = Response::new(Body::from(asset.data.into_owned()));
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(mime.as_ref()).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    Some(response)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -120,20 +166,25 @@ async fn main() -> Result<()> {
 
     let deploy_router = api::deploy::router(deploy_state);
 
-    // Statické soubory
-    let static_dir = config.static_dir.clone();
-    let static_index = std::path::Path::new(&static_dir).join("index.html");
-    let serve_dir = ServeDir::new(&static_dir)
-        .not_found_service(ServeDir::new(static_index));
-
     // Vytvoření kompletního routeru
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(health_handler))
         .merge(api_router)
         .nest("/api/v1", copy_router)
         .nest("/api/v1", deploy_router)
-        .fallback_service(serve_dir)
         .layer(Extension(pool.clone()));
+
+    if let Some(static_dir) = config.static_dir.clone() {
+        info!("Static assets: filesystem ({})", static_dir);
+        let static_index = std::path::Path::new(&static_dir).join("index.html");
+        let serve_dir = ServeDir::new(&static_dir)
+            .not_found_service(ServeDir::new(static_index));
+        app = app.fallback_service(serve_dir);
+    } else {
+        info!("Static assets: embedded");
+        app = app.fallback(get(embedded_static_handler));
+    }
+
     let app = if config.auth_enabled {
         app.layer(middleware::from_fn(auth::auth_middleware))
     } else {
