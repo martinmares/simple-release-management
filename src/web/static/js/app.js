@@ -7457,6 +7457,24 @@ router.on('/copy-jobs/:jobId', async (params) => {
         let lastRenderedImages = initialImages;
         let cancelInFlight = false;
 
+        const hasMeaningfulStatusChange = (next, prev) => {
+            if (!prev) return true;
+            const keys = [
+                'status',
+                'copied_images',
+                'failed_images',
+                'total_images',
+                'current_image',
+                'job_id',
+                'validate_only',
+                'is_release_job',
+                'is_selective',
+                'base_copy_job_id',
+                'target_tag',
+            ];
+            return keys.some((key) => next?.[key] !== prev?.[key]);
+        };
+
         const renderCurrentTransferHtml = (status = lastRenderedStatus) => {
             if (!(status?.status === 'in_progress' && currentTransfer && currentTransfer.total > 0)) {
                 return '';
@@ -7527,6 +7545,16 @@ router.on('/copy-jobs/:jobId', async (params) => {
         const renderLogs = () => {
             const logEl = document.getElementById('copy-job-log');
             if (!logEl) return;
+            const selection = window.getSelection ? window.getSelection() : null;
+            const isSelectingInsideLogs = selection
+                && !selection.isCollapsed
+                && (
+                    (selection.anchorNode && logEl.contains(selection.anchorNode))
+                    || (selection.focusNode && logEl.contains(selection.focusNode))
+                );
+            if (isSelectingInsideLogs) {
+                return;
+            }
             logEl.innerHTML = logLines.map(ansiToHtml).join('\n');
             logEl.scrollTop = logEl.scrollHeight;
         };
@@ -7936,8 +7964,19 @@ router.on('/copy-jobs/:jobId', async (params) => {
             eventSource = api.createCopyJobStream(
                 params.jobId,
                 (data) => {
-                    renderJobStatus(data, initialImages);
-                    attachStartHandler();
+                    if (data.current_transfer_stage || data.current_bytes_copied || data.current_total_bytes || data.current_transfer_message) {
+                        currentTransfer = {
+                            stage: data.current_transfer_stage || currentTransfer?.stage || 'copy',
+                            current: Number(data.current_bytes_copied || 0),
+                            total: Number(data.current_total_bytes || 0),
+                            message: data.current_transfer_message || currentTransfer?.message || null,
+                        };
+                        updateCurrentTransferUi(data);
+                    }
+                    if (hasMeaningfulStatusChange(data, lastRenderedStatus)) {
+                        renderJobStatus(data, lastRenderedImages);
+                        attachStartHandler();
+                    }
                 },
                 (error) => {
                     console.error('SSE error:', error);
