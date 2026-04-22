@@ -27,7 +27,7 @@ const PROGRESS_MARKER_PREFIX: &str = "__PROGRESS__";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct ProgressMarkerEvent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "_type", alias = "event_type")]
     event_type: String,
     #[serde(default)]
     phase: Option<String>,

@@ -65,7 +65,7 @@ pub enum CopyStatus {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct OciPatchProgressEvent {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "_type", alias = "event_type")]
     event_type: String,
     #[serde(default)]
     phase: Option<String>,
@@ -316,27 +316,12 @@ impl ImageToolService {
                                                 bytes_copied = event.current;
                                                 total_bytes = event.total;
                                             }
-                                            "phase" => {
-                                                let message = match (event.phase.as_deref(), event.r#ref.as_deref()) {
-                                                    (Some(phase), Some(reference)) => format!("phase: {} {}", phase, reference),
-                                                    (Some(phase), None) => format!("phase: {}", phase),
-                                                    _ => String::new(),
-                                                };
-                                                if !message.is_empty() {
-                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
-                                                }
-                                            }
                                             "status" | "error" => {
                                                 if let Some(message) = event.message {
-                                                    last_err = message.clone();
-                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
+                                                    last_err = message;
                                                 }
                                             }
-                                            "done" => {
-                                                if let Some(message) = event.message {
-                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
-                                                }
-                                            }
+                                            "phase" | "done" => {}
                                             _ => {}
                                         }
                                     }

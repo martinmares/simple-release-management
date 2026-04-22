@@ -7455,35 +7455,45 @@ router.on('/copy-jobs/:jobId', async (params) => {
             : null;
         let lastRenderedStatus = initialStatus;
         let lastRenderedImages = initialImages;
+        let progressRenderTimer = null;
+
+        const scheduleProgressRender = () => {
+            if (progressRenderTimer) return;
+            progressRenderTimer = window.setTimeout(() => {
+                progressRenderTimer = null;
+                renderJobStatus(lastRenderedStatus, lastRenderedImages);
+            }, 100);
+        };
 
         const handleLogLine = (line, rerender = false) => {
             if (!line) return;
             if (line.startsWith('__PROGRESS__')) {
                 try {
                     const event = JSON.parse(line.slice('__PROGRESS__'.length));
-                    if (event.type === 'progress') {
+                    const eventType = event.type || event._type || event.event_type;
+                    if (eventType === 'progress') {
                         currentTransfer = {
                             stage: event.stage || currentTransfer?.stage || 'copy',
                             current: Number(event.current || 0),
                             total: Number(event.total || 0),
                             message: currentTransfer?.message || null,
                         };
-                    } else if (event.type === 'phase') {
+                    } else if (eventType === 'phase') {
                         currentTransfer = {
                             ...(currentTransfer || {}),
                             stage: event.phase || currentTransfer?.stage || 'copy',
                             message: event.ref || event.message || null,
                         };
-                    } else if (event.type === 'status') {
+                    } else if (eventType === 'status') {
                         currentTransfer = {
                             ...(currentTransfer || {}),
                             message: event.message || null,
                         };
-                    } else if (event.type === 'done' || event.type === 'error') {
+                    } else if (eventType === 'done' || eventType === 'error') {
                         currentTransfer = null;
                     }
                     if (rerender) {
-                        renderJobStatus(lastRenderedStatus, lastRenderedImages);
+                        scheduleProgressRender();
                     }
                 } catch {}
                 return;
@@ -7891,7 +7901,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 renderLogs();
             };
             logSource.addEventListener('log-end', (event) => {
-                if (event?.data) {
+                if (event?.data && event.data !== 'Log stream not available') {
                     handleLogLine(event.data, true);
                     renderLogs();
                 }
