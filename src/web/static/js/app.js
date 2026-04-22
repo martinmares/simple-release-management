@@ -66,17 +66,17 @@ function formatBytes(value) {
 function formatTransferStage(stage) {
     switch ((stage || '').toLowerCase()) {
         case 'pull':
-            return 'Pulling Source Layers';
+            return 'Downloading current image';
         case 'push':
-            return 'Pushing Destination Image';
+            return 'Uploading current image';
         case 'save':
-            return 'Writing Tarball';
+            return 'Writing current image archive';
         case 'recipe':
-            return 'Applying Recipe';
+            return 'Applying image modifications';
         case 'squash':
-            return 'Squashing Layers';
+            return 'Optimizing image layers';
         default:
-            return stage || 'Copy';
+            return stage || 'Processing current image';
     }
 }
 
@@ -7630,13 +7630,15 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         ${status.status === 'in_progress' && currentTransfer && currentTransfer.total > 0 ? `
                             <div class="mb-3">
                                 <div class="d-flex justify-content-between mb-1">
-                                    <span>Current Transfer: ${escapeHtml(formatTransferStage(currentTransfer.stage || 'copy'))}</span>
-                                    <span>${formatBytes(currentTransfer.current)} / ${formatBytes(currentTransfer.total)}</span>
+                                    <span>Current Image Activity</span>
+                                    <span>${escapeHtml(formatTransferStage(currentTransfer.stage || 'copy'))}</span>
                                 </div>
                                 <div class="progress mb-1">
                                     <div class="progress-bar bg-blue" style="width: ${Math.min(100, Math.max(0, (currentTransfer.current / currentTransfer.total) * 100)).toFixed(0)}%"></div>
                                 </div>
-                                ${currentTransfer.message ? `<div class="text-secondary small">${escapeHtml(currentTransfer.message)}</div>` : ''}
+                                <div class="text-secondary small">
+                                    Image: <code>${escapeHtml(status.current_image || currentTransfer.message || 'unknown')}</code>
+                                </div>
                             </div>
                         ` : ''}
 
