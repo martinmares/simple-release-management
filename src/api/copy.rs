@@ -530,6 +530,14 @@ fn parse_progress_marker(line: &str) -> Option<ProgressMarkerEvent> {
         .and_then(|json| serde_json::from_str::<ProgressMarkerEvent>(json).ok())
 }
 
+fn is_missing_target_manifest_error(err: &str) -> bool {
+    let err = err.to_ascii_lowercase();
+    err.contains("manifest_unknown")
+        || err.contains("manifest unknown")
+        || err.contains("name unknown")
+        || err.contains("not found")
+}
+
 /// POST /api/v1/bundles/{bundle_id}/versions/{version}/copy - Spustí copy operaci
 async fn copy_bundle_version(
     State(state): State<CopyApiState>,
@@ -2567,6 +2575,7 @@ async fn start_copy_job(
             }
 
             if let Some(ref src_digest) = source_sha {
+                emit_log(&log_tx, format!("Checking whether target tag already exists: {}", target_url));
                 match skopeo_clone.inspect_image(
                     &target_url,
                     credentials.target_username.as_deref(),
@@ -2645,7 +2654,17 @@ async fn start_copy_job(
                         }
                     }
                     Err(err) => {
-                        emit_log(&log_tx, format!("WARN target inspect failed for {} ({}) - copying anyway", target_url, err));
+                        if is_missing_target_manifest_error(&err.to_string()) {
+                            emit_log(
+                                &log_tx,
+                                format!("Target tag does not exist yet: {} - starting copy", target_url),
+                            );
+                        } else {
+                            emit_log(
+                                &log_tx,
+                                format!("WARN failed to inspect target tag {} ({}) - starting copy anyway", target_url, err),
+                            );
+                        }
                     }
                 }
             }

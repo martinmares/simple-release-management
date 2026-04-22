@@ -7455,14 +7455,33 @@ router.on('/copy-jobs/:jobId', async (params) => {
             : null;
         let lastRenderedStatus = initialStatus;
         let lastRenderedImages = initialImages;
-        let progressRenderTimer = null;
+        let cancelInFlight = false;
 
-        const scheduleProgressRender = () => {
-            if (progressRenderTimer) return;
-            progressRenderTimer = window.setTimeout(() => {
-                progressRenderTimer = null;
-                renderJobStatus(lastRenderedStatus, lastRenderedImages);
-            }, 100);
+        const renderCurrentTransferHtml = (status = lastRenderedStatus) => {
+            if (!(status?.status === 'in_progress' && currentTransfer && currentTransfer.total > 0)) {
+                return '';
+            }
+
+            return `
+                <div class="mb-3" id="copy-job-current-transfer-inner">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>Current Image Activity</span>
+                        <span>${escapeHtml(formatTransferStage(currentTransfer.stage || 'copy'))}</span>
+                    </div>
+                    <div class="progress mb-1">
+                        <div class="progress-bar bg-blue" style="width: ${Math.min(100, Math.max(0, (currentTransfer.current / currentTransfer.total) * 100)).toFixed(0)}%"></div>
+                    </div>
+                    <div class="text-secondary small">
+                        Image: <code>${escapeHtml(status.current_image || currentTransfer.message || 'unknown')}</code>
+                    </div>
+                </div>
+            `;
+        };
+
+        const updateCurrentTransferUi = (status = lastRenderedStatus) => {
+            const container = document.getElementById('copy-job-current-transfer');
+            if (!container) return;
+            container.innerHTML = renderCurrentTransferHtml(status);
         };
 
         const handleLogLine = (line, rerender = false) => {
@@ -7493,7 +7512,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         currentTransfer = null;
                     }
                     if (rerender) {
-                        scheduleProgressRender();
+                        updateCurrentTransferUi();
                     }
                 } catch {}
                 return;
@@ -7627,20 +7646,9 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             ` : ''}
                         </div>
 
-                        ${status.status === 'in_progress' && currentTransfer && currentTransfer.total > 0 ? `
-                            <div class="mb-3">
-                                <div class="d-flex justify-content-between mb-1">
-                                    <span>Current Image Activity</span>
-                                    <span>${escapeHtml(formatTransferStage(currentTransfer.stage || 'copy'))}</span>
-                                </div>
-                                <div class="progress mb-1">
-                                    <div class="progress-bar bg-blue" style="width: ${Math.min(100, Math.max(0, (currentTransfer.current / currentTransfer.total) * 100)).toFixed(0)}%"></div>
-                                </div>
-                                <div class="text-secondary small">
-                                    Image: <code>${escapeHtml(status.current_image || currentTransfer.message || 'unknown')}</code>
-                                </div>
-                            </div>
-                        ` : ''}
+                        <div id="copy-job-current-transfer">
+                            ${renderCurrentTransferHtml(status)}
+                        </div>
 
                         <div class="alert ${
                             status.status === 'success' ? 'alert-success' :
@@ -7725,9 +7733,9 @@ router.on('/copy-jobs/:jobId', async (params) => {
                             </div>
                         ` : status.status === 'in_progress' ? `
                             <div class="d-grid gap-2">
-                                <button class="btn btn-outline-danger" id="cancel-copy-job" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
+                                <button class="btn btn-outline-danger" id="cancel-copy-job" ${(canWrite && !cancelInFlight) ? '' : 'disabled'} title="${canWrite ? '' : 'Write role required'}">
                                     <i class="ti ti-x"></i>
-                                    Cancel Copy Job
+                                    ${cancelInFlight ? 'Cancelling...' : 'Cancel Copy Job'}
                                 </button>
                             </div>
                         ` : ''}
@@ -7845,14 +7853,19 @@ router.on('/copy-jobs/:jobId', async (params) => {
                     );
                     if (!confirmed) return;
                     try {
+                        cancelInFlight = true;
+                        renderJobStatus(lastRenderedStatus, lastRenderedImages);
                         await api.cancelCopyJob(params.jobId);
                         getApp().showSuccess('Cancel requested');
                         const [newStatus, newImages] = await Promise.all([
                             api.getCopyJobStatus(params.jobId),
                             api.getCopyJobImages(params.jobId),
                         ]);
+                        cancelInFlight = false;
                         renderJobStatus(newStatus, newImages);
                     } catch (error) {
+                        cancelInFlight = false;
+                        renderJobStatus(lastRenderedStatus, lastRenderedImages);
                         getApp().showError(error.message);
                     }
                 });
