@@ -17,10 +17,20 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Vytvoří router s všemi API endpointy
-pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
+pub fn create_api_router(
+    pool: PgPool,
+    encryption_secret: String,
+    image_tool: String,
+    image_path: String,
+) -> Router {
     let registry_state = registries::RegistryApiState {
         pool: pool.clone(),
         encryption_secret,
+    };
+    let version_response = VersionResponse {
+        version: env!("CARGO_PKG_VERSION"),
+        image_tool,
+        image_path,
     };
 
     let git_repo_state = git_repos::GitRepoApiState {
@@ -70,18 +80,20 @@ pub fn create_api_router(pool: PgPool, encryption_secret: String) -> Router {
         .merge(kubernetes::router(kubernetes_state))
         .merge(bundles::router(pool.clone()))
         .merge(releases::router(pool.clone()))
-        .route("/version", get(get_version));
+        .route(
+            "/version",
+            get({
+                let version_response = version_response.clone();
+                move || async move { Json(version_response.clone()) }
+            }),
+        );
 
     Router::new().nest("/api/v1", api_v1)
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct VersionResponse {
     version: &'static str,
-}
-
-async fn get_version() -> Json<VersionResponse> {
-    Json(VersionResponse {
-        version: env!("CARGO_PKG_VERSION"),
-    })
+    image_tool: String,
+    image_path: String,
 }

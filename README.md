@@ -87,6 +87,10 @@ Configuration is read from environment variables (see `.env.example`).
 
 Host/port are CLI flags (`--host`, `--port`) and take precedence.
 
+Server rollout note:
+
+- See `docs/ENV_MIGRATION.md` for migrating from `SKOPEO_PATH` to the new `IMAGE_*` configuration.
+
 ## Migrations
 
 Migrations run automatically on startup. For manual runs:

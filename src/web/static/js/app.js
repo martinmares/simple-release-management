@@ -323,11 +323,20 @@ document.addEventListener('alpine:init', () => {
             });
 
             const versionBadge = document.getElementById('app-version');
+            const imageToolBadge = document.getElementById('app-image-tool');
+            const imageToolText = document.getElementById('app-image-tool-text');
             if (versionBadge) {
                 api.getVersion()
                     .then((res) => {
                         if (res?.version) {
                             versionBadge.textContent = `v${res.version}`;
+                        }
+                        if (imageToolBadge && imageToolText && res?.image_tool) {
+                            imageToolText.textContent = `image: ${res.image_tool}`;
+                            if (res?.image_path) {
+                                imageToolBadge.title = res.image_path;
+                            }
+                            imageToolBadge.style.display = '';
                         }
                     })
                     .catch(() => {});

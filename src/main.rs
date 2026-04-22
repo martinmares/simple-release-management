@@ -86,7 +86,12 @@ async fn main() -> Result<()> {
     }
 
     // Vytvoření API routeru
-    let api_router = api::create_api_router(pool.clone(), config.encryption_secret.clone());
+    let api_router = api::create_api_router(
+        pool.clone(),
+        config.encryption_secret.clone(),
+        config.image_tool.clone(),
+        config.image_path.clone(),
+    );
 
     // Vytvoření copy API state
     let copy_state = api::copy::CopyApiState {
