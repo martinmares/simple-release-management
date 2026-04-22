@@ -29,11 +29,11 @@ pub struct Config {
     pub port: u16,
     pub base_path: String,
     pub image_tool: String,
-    pub image_path: String,
-    pub image_src_insecure: bool,
-    pub image_dst_insecure: bool,
-    pub image_extra_inspect_args: Vec<String>,
-    pub image_extra_copy_args: Vec<String>,
+    pub image_tool_path: String,
+    pub image_tool_src_insecure: bool,
+    pub image_tool_dst_insecure: bool,
+    pub image_tool_extra_inspect_args: Vec<String>,
+    pub image_tool_extra_copy_args: Vec<String>,
     pub kube_build_app_path: String,
     pub apply_env_path: String,
     pub encjson_path: String,
@@ -67,7 +67,7 @@ impl Config {
             .trim()
             .to_ascii_lowercase();
 
-        let image_path = env::var("IMAGE_PATH").unwrap_or_else(|_| {
+        let image_tool_path = env::var("IMAGE_TOOL_PATH").unwrap_or_else(|_| {
             env::var("SKOPEO_PATH").unwrap_or_else(|_| match image_tool.as_str() {
                 "oci-patch" | "oci_patch" => "oci-patch".to_string(),
                 _ => "skopeo".to_string(),
@@ -88,11 +88,11 @@ impl Config {
                 .to_string(),
 
             image_tool,
-            image_path,
-            image_src_insecure: parse_bool_env("IMAGE_SRC_INSECURE").unwrap_or(false),
-            image_dst_insecure: parse_bool_env("IMAGE_DST_INSECURE").unwrap_or(false),
-            image_extra_inspect_args: parse_command_args_env("IMAGE_EXTRA_INSPECT_ARGS")?,
-            image_extra_copy_args: parse_command_args_env("IMAGE_EXTRA_COPY_ARGS")?,
+            image_tool_path,
+            image_tool_src_insecure: parse_bool_env("IMAGE_TOOL_SRC_INSECURE").unwrap_or(false),
+            image_tool_dst_insecure: parse_bool_env("IMAGE_TOOL_DST_INSECURE").unwrap_or(false),
+            image_tool_extra_inspect_args: parse_command_args_env("IMAGE_TOOL_EXTRA_INSPECT_ARGS")?,
+            image_tool_extra_copy_args: parse_command_args_env("IMAGE_TOOL_EXTRA_COPY_ARGS")?,
 
             kube_build_app_path: env::var("KUBE_BUILD_APP_PATH")
                 .unwrap_or_else(|_| "kube_build_app".to_string()),

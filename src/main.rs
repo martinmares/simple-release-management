@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
     info!("Configuration loaded");
     info!("Server will listen on: {}", config.server_address());
     info!("Base path: {}", if config.base_path.is_empty() { "/" } else { &config.base_path });
-    info!("Image tool: {} ({})", config.image_tool, config.image_path);
+    info!("Image tool: {} ({})", config.image_tool, config.image_tool_path);
     info!(
         "Authorization: {}",
         if config.auth_enabled { "enabled" } else { "DISABLED (development mode)" }
@@ -67,11 +67,11 @@ async fn main() -> Result<()> {
     // Inicializace image tool service
     let skopeo_service = services::SkopeoService::new(
         config.image_tool.clone(),
-        config.image_path.clone(),
-        config.image_src_insecure,
-        config.image_dst_insecure,
-        config.image_extra_inspect_args.clone(),
-        config.image_extra_copy_args.clone(),
+        config.image_tool_path.clone(),
+        config.image_tool_src_insecure,
+        config.image_tool_dst_insecure,
+        config.image_tool_extra_inspect_args.clone(),
+        config.image_tool_extra_copy_args.clone(),
     );
 
     // Zkontrolovat že image tool je dostupný
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
         pool.clone(),
         config.encryption_secret.clone(),
         config.image_tool.clone(),
-        config.image_path.clone(),
+        config.image_tool_path.clone(),
     );
 
     // Vytvoření copy API state

@@ -21,7 +21,7 @@ pub fn create_api_router(
     pool: PgPool,
     encryption_secret: String,
     image_tool: String,
-    image_path: String,
+    image_tool_path: String,
 ) -> Router {
     let registry_state = registries::RegistryApiState {
         pool: pool.clone(),
@@ -30,7 +30,7 @@ pub fn create_api_router(
     let version_response = VersionResponse {
         version: env!("CARGO_PKG_VERSION"),
         image_tool,
-        image_path,
+        image_tool_path,
     };
 
     let git_repo_state = git_repos::GitRepoApiState {
@@ -95,5 +95,5 @@ pub fn create_api_router(
 struct VersionResponse {
     version: &'static str,
     image_tool: String,
-    image_path: String,
+    image_tool_path: String,
 }

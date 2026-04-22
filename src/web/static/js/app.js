@@ -333,8 +333,8 @@ document.addEventListener('alpine:init', () => {
                         }
                         if (imageToolBadge && imageToolText && res?.image_tool) {
                             imageToolText.textContent = `image: ${res.image_tool}`;
-                            if (res?.image_path) {
-                                imageToolBadge.title = res.image_path;
+                            if (res?.image_tool_path) {
+                                imageToolBadge.title = res.image_tool_path;
                             }
                             imageToolBadge.style.display = '';
                         }

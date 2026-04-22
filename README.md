@@ -69,12 +69,12 @@ Configuration is read from environment variables (see `.env.example`).
 | `DATABASE_URL` | PostgreSQL connection string | (required) |
 | `BASE_PATH` | Base path for reverse proxy | empty |
 | `IMAGE_TOOL` | Image backend: `skopeo` or `oci-patch` | `skopeo` |
-| `IMAGE_PATH` | Path to selected image tool binary | `skopeo` |
-| `IMAGE_SRC_INSECURE` | Skip TLS verification for source registry | `false` |
-| `IMAGE_DST_INSECURE` | Skip TLS verification for target registry | `false` |
-| `IMAGE_EXTRA_INSPECT_ARGS` | Extra inspect arguments passed to image tool | empty |
-| `IMAGE_EXTRA_COPY_ARGS` | Extra copy arguments passed to image tool | empty |
-| `SKOPEO_PATH` | Legacy fallback path used when `IMAGE_PATH` is unset | `skopeo` |
+| `IMAGE_TOOL_PATH` | Path to selected image tool binary | `skopeo` |
+| `IMAGE_TOOL_SRC_INSECURE` | Skip TLS verification for source registry | `false` |
+| `IMAGE_TOOL_DST_INSECURE` | Skip TLS verification for target registry | `false` |
+| `IMAGE_TOOL_EXTRA_INSPECT_ARGS` | Extra inspect arguments passed to image tool | empty |
+| `IMAGE_TOOL_EXTRA_COPY_ARGS` | Extra copy arguments passed to image tool | empty |
+| `SKOPEO_PATH` | Legacy fallback path used when `IMAGE_TOOL_PATH` is unset | `skopeo` |
 | `KUBE_BUILD_APP_PATH` | Path to `kube_build_app` | `kube_build_app` |
 | `APPLY_ENV_PATH` | Path to `apply-env` | `apply-env` |
 | `ENCJSON_PATH` | Path to `encjson` | `encjson` |

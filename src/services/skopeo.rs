@@ -21,7 +21,7 @@ pub struct SkopeoCredentials {
 #[derive(Clone)]
 pub struct SkopeoService {
     pub tool: ImageTool,
-    pub image_path: String,
+    pub image_tool_path: String,
     pub src_insecure: bool,
     pub dst_insecure: bool,
     pub extra_inspect_args: Vec<String>,
@@ -64,7 +64,7 @@ pub enum CopyStatus {
 impl SkopeoService {
     pub fn new(
         tool: String,
-        image_path: String,
+        image_tool_path: String,
         src_insecure: bool,
         dst_insecure: bool,
         extra_inspect_args: Vec<String>,
@@ -72,7 +72,7 @@ impl SkopeoService {
     ) -> Self {
         Self {
             tool: ImageTool::from_env_value(&tool),
-            image_path,
+            image_tool_path,
             src_insecure,
             dst_insecure,
             extra_inspect_args,
@@ -82,7 +82,7 @@ impl SkopeoService {
 
     /// Zkontroluje že image tool je dostupný
     pub async fn check_available(&self) -> Result<bool> {
-        let output = Command::new(&self.image_path)
+        let output = Command::new(&self.image_tool_path)
             .arg("--version")
             .output()
             .await
@@ -100,7 +100,7 @@ impl SkopeoService {
     ) -> Result<ImageInfo> {
         info!("Inspecting image: {}", image_url);
 
-        let mut cmd = Command::new(&self.image_path);
+        let mut cmd = Command::new(&self.image_tool_path);
         cmd.arg("inspect");
 
         // Add credentials if provided
@@ -151,7 +151,7 @@ impl SkopeoService {
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
 
-        let mut cmd = Command::new(&self.image_path);
+        let mut cmd = Command::new(&self.image_tool_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
 
@@ -217,7 +217,7 @@ impl SkopeoService {
     ) -> Result<CopyProgress> {
         info!("Copying image from {} to {}", source_url, target_url);
 
-        let mut cmd = Command::new(&self.image_path);
+        let mut cmd = Command::new(&self.image_tool_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
 
