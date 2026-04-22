@@ -65,7 +65,7 @@ async fn main() -> Result<()> {
     info!("Database migrations completed successfully");
 
     // Inicializace image tool service
-    let skopeo_service = services::SkopeoService::new(
+    let skopeo_service = services::ImageToolService::new(
         config.image_tool.clone(),
         config.image_tool_path.clone(),
         config.image_tool_src_insecure,

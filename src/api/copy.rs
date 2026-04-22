@@ -20,8 +20,8 @@ use uuid::Uuid;
 use crate::auth::AuthContext;
 use crate::crypto;
 use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registry};
-use crate::services::skopeo::SkopeoCredentials;
-use crate::services::SkopeoService;
+use crate::services::image_tool::SkopeoCredentials;
+use crate::services::ImageToolService;
 
 /// Request pro spuštění copy operace
 #[derive(Debug, Deserialize)]
@@ -180,7 +180,7 @@ pub struct ImageOverride {
 #[derive(Clone)]
 pub struct CopyApiState {
     pub pool: PgPool,
-    pub skopeo: SkopeoService,
+    pub skopeo: ImageToolService,
     pub encryption_secret: String,
     pub job_logs: Arc<RwLock<std::collections::HashMap<Uuid, broadcast::Sender<String>>>>,
     pub cancel_flags: Arc<RwLock<HashSet<Uuid>>>,
@@ -2548,7 +2548,7 @@ async fn start_copy_job(
                                         )
                                         .await
                                     {
-                                        Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
+                                        Ok(progress) if progress.status == crate::services::image_tool::CopyStatus::Success => {
                                             emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
                                         }
                                         Ok(progress) => {
@@ -2600,7 +2600,7 @@ async fn start_copy_job(
                 )
                 .await
             {
-                Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
+                Ok(progress) if progress.status == crate::services::image_tool::CopyStatus::Success => {
                     let target_sha = match skopeo_clone.inspect_image(
                         &target_url,
                         credentials.target_username.as_deref(),
@@ -2644,7 +2644,7 @@ async fn start_copy_job(
                                 )
                                 .await
                             {
-                                Ok(progress) if progress.status == crate::services::skopeo::CopyStatus::Success => {
+                                Ok(progress) if progress.status == crate::services::image_tool::CopyStatus::Success => {
                                     emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
                                 }
                                 Ok(progress) => {

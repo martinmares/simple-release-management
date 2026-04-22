@@ -19,7 +19,7 @@ pub struct SkopeoCredentials {
 
 /// Skopeo service pro práci s container images
 #[derive(Clone)]
-pub struct SkopeoService {
+pub struct ImageToolService {
     pub tool: ImageTool,
     pub image_tool_path: String,
     pub src_insecure: bool,
@@ -61,7 +61,7 @@ pub enum CopyStatus {
     Failed,
 }
 
-impl SkopeoService {
+impl ImageToolService {
     pub fn new(
         tool: String,
         image_tool_path: String,
@@ -382,7 +382,7 @@ impl SkopeoService {
     }
 }
 
-impl SkopeoService {
+impl ImageToolService {
     fn append_inspect_insecure_args(&self, cmd: &mut Command) {
         match self.tool {
             ImageTool::Skopeo => {
@@ -448,7 +448,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // Vyžaduje funkční skopeo v PATH
     async fn test_skopeo_available() {
-        let service = SkopeoService::new(
+        let service = ImageToolService::new(
             "skopeo".to_string(),
             "skopeo".to_string(),
             false,

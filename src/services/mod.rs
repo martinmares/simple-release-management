@@ -1,4 +1,4 @@
-pub mod skopeo;
+pub mod image_tool;
 pub mod release_manifest;
 
-pub use skopeo::SkopeoService;
+pub use image_tool::ImageToolService;

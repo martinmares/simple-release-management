@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::auth::AuthContext;
 use crate::crypto;
 use crate::db::models::Registry;
-use crate::services::skopeo::SkopeoCredentials;
+use crate::services::image_tool::SkopeoCredentials;
 
 #[derive(Clone)]
 pub struct RegistryApiState {
