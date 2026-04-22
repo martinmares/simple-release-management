@@ -23,6 +23,28 @@ use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registr
 use crate::services::image_tool::SkopeoCredentials;
 use crate::services::ImageToolService;
 
+const PROGRESS_MARKER_PREFIX: &str = "__PROGRESS__";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct ProgressMarkerEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    r#ref: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    current: Option<u64>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
 /// Request pro spuštění copy operace
 #[derive(Debug, Deserialize)]
 pub struct CopyBundleRequest {
@@ -119,6 +141,10 @@ pub struct CopyJobStatus {
     pub copied_images: usize,
     pub failed_images: usize,
     pub current_image: Option<String>,
+    pub current_transfer_stage: Option<String>,
+    pub current_transfer_message: Option<String>,
+    pub current_bytes_copied: Option<u64>,
+    pub current_total_bytes: Option<u64>,
 }
 
 /// Shrnutý záznam copy jobu
@@ -497,6 +523,11 @@ fn emit_log(
     line: String,
 ) {
     let _ = log_tx.send(line.clone());
+}
+
+fn parse_progress_marker(line: &str) -> Option<ProgressMarkerEvent> {
+    line.strip_prefix(PROGRESS_MARKER_PREFIX)
+        .and_then(|json| serde_json::from_str::<ProgressMarkerEvent>(json).ok())
 }
 
 /// POST /api/v1/bundles/{bundle_id}/versions/{version}/copy - Spustí copy operaci
@@ -2301,6 +2332,28 @@ async fn start_copy_job(
     let mut log_rx = log_tx.subscribe();
     tokio::spawn(async move {
         while let Ok(line) = log_rx.recv().await {
+            if let Some(progress) = parse_progress_marker(&line) {
+                let stage = progress.phase.or(progress.stage);
+                let message = progress.message.or(progress.r#ref);
+                let bytes_copied = progress.current.map(|v| v as i64);
+                let total_bytes = progress.total.map(|v| v as i64);
+                let _ = sqlx::query(
+                    "UPDATE copy_jobs
+                     SET current_transfer_stage = $2,
+                         current_transfer_message = $3,
+                         current_bytes_copied = $4,
+                         current_total_bytes = $5
+                     WHERE id = $1",
+                )
+                .bind(job_id)
+                .bind(stage)
+                .bind(message)
+                .bind(bytes_copied)
+                .bind(total_bytes)
+                .execute(&pool_for_log)
+                .await;
+                continue;
+            }
             let _ = sqlx::query(
                 "INSERT INTO copy_job_logs (copy_job_id, line) VALUES ($1, $2)",
             )
@@ -2403,7 +2456,15 @@ async fn start_copy_job(
             emit_log(&log_tx, "Cancel requested, stopping job".to_string());
         }
 
-        let _ = sqlx::query("UPDATE copy_jobs SET status = 'in_progress' WHERE id = $1")
+        let _ = sqlx::query(
+            "UPDATE copy_jobs
+             SET status = 'in_progress',
+                 current_transfer_stage = NULL,
+                 current_transfer_message = NULL,
+                 current_bytes_copied = NULL,
+                 current_total_bytes = NULL
+             WHERE id = $1"
+        )
             .bind(job_id)
             .execute(&pool_clone)
             .await;
@@ -2841,9 +2902,23 @@ async fn get_copy_job_status(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<CopyJobStatus>, (StatusCode, Json<ErrorResponse>)> {
-    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool)>(
+    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
         r#"
-        SELECT bv.bundle_id, bv.version, cj.status, cj.source_registry_id, cj.target_registry_id, cj.environment_id, cj.target_tag, cj.is_release_job, cj.is_selective, cj.base_copy_job_id, cj.validate_only
+        SELECT bv.bundle_id,
+               bv.version,
+               cj.status,
+               cj.source_registry_id,
+               cj.target_registry_id,
+               cj.environment_id,
+               cj.target_tag,
+               cj.is_release_job,
+               cj.is_selective,
+               cj.base_copy_job_id,
+               cj.validate_only,
+               cj.current_transfer_stage,
+               cj.current_transfer_message,
+               cj.current_bytes_copied,
+               cj.current_total_bytes
         FROM copy_jobs cj
         JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
         WHERE cj.id = $1
@@ -2861,7 +2936,7 @@ async fn get_copy_job_status(
         )
     })?;
 
-    let Some((bundle_id, version, status, source_registry_id, target_registry_id, environment_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only)) = row else {
+    let Some((bundle_id, version, status, source_registry_id, target_registry_id, environment_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only, current_transfer_stage, current_transfer_message, current_bytes_copied, current_total_bytes)) = row else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2931,6 +3006,10 @@ async fn get_copy_job_status(
         copied_images: totals.1 as usize,
         failed_images: totals.2 as usize,
         current_image,
+        current_transfer_stage,
+        current_transfer_message,
+        current_bytes_copied: current_bytes_copied.map(|v| v as u64),
+        current_total_bytes: current_total_bytes.map(|v| v as u64),
     }))
 }
 

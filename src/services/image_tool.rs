@@ -8,6 +8,8 @@ use tokio::process::Command;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
+const PROGRESS_MARKER_PREFIX: &str = "__PROGRESS__";
+
 /// Skopeo credentials pro autentizaci
 #[derive(Debug, Clone)]
 pub struct SkopeoCredentials {
@@ -59,6 +61,26 @@ pub enum CopyStatus {
     InProgress,
     Success,
     Failed,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OciPatchProgressEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(default)]
+    phase: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    r#ref: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    current: Option<u64>,
+    #[serde(default)]
+    total: Option<u64>,
+    #[serde(default)]
+    status: Option<String>,
 }
 
 impl ImageToolService {
@@ -154,6 +176,10 @@ impl ImageToolService {
         let mut cmd = Command::new(&self.image_tool_path);
         cmd.arg("copy")
             .arg("--debug"); // Enable debug output to see what's happening
+
+        if self.tool == ImageTool::OciPatch {
+            cmd.arg("--progress-json");
+        }
 
         // Add source credentials if provided
         if let (Some(user), Some(pass)) = (&creds.source_username, &creds.source_password) {
@@ -252,6 +278,8 @@ impl ImageToolService {
         let mut stderr_done = false;
         let mut status: Option<std::process::ExitStatus> = None;
         let mut last_err = String::new();
+        let mut bytes_copied: Option<u64> = None;
+        let mut total_bytes: Option<u64> = None;
 
         loop {
             if stdout_done && stderr_done && status.is_some() {
@@ -262,7 +290,53 @@ impl ImageToolService {
                 line = stdout_lines.next_line(), if !stdout_done => {
                     match line {
                         Ok(Some(line)) => {
-                            if let Some(tx) = log_tx { let _ = tx.send(line); }
+                            if self.tool == ImageTool::OciPatch {
+                                match serde_json::from_str::<OciPatchProgressEvent>(&line) {
+                                    Ok(event) => {
+                                        if let Some(tx) = log_tx {
+                                            let _ = tx.send(format!(
+                                                "{}{}",
+                                                PROGRESS_MARKER_PREFIX,
+                                                serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+                                            ));
+                                        }
+
+                                        match event.event_type.as_str() {
+                                            "progress" => {
+                                                bytes_copied = event.current;
+                                                total_bytes = event.total;
+                                            }
+                                            "phase" => {
+                                                let message = match (event.phase.as_deref(), event.r#ref.as_deref()) {
+                                                    (Some(phase), Some(reference)) => format!("phase: {} {}", phase, reference),
+                                                    (Some(phase), None) => format!("phase: {}", phase),
+                                                    _ => String::new(),
+                                                };
+                                                if !message.is_empty() {
+                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
+                                                }
+                                            }
+                                            "status" | "error" => {
+                                                if let Some(message) = event.message {
+                                                    last_err = message.clone();
+                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
+                                                }
+                                            }
+                                            "done" => {
+                                                if let Some(message) = event.message {
+                                                    if let Some(tx) = log_tx { let _ = tx.send(message); }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    Err(_) => {
+                                        if let Some(tx) = log_tx { let _ = tx.send(line); }
+                                    }
+                                }
+                            } else if let Some(tx) = log_tx {
+                                let _ = tx.send(line);
+                            }
                         }
                         Ok(None) => stdout_done = true,
                         Err(err) => {
@@ -307,8 +381,8 @@ impl ImageToolService {
             Ok(CopyProgress {
                 status: CopyStatus::Success,
                 message: "Image copied successfully".to_string(),
-                bytes_copied: None,
-                total_bytes: None,
+                bytes_copied,
+                total_bytes,
             })
         } else {
             let message = if last_err.is_empty() {
@@ -320,8 +394,8 @@ impl ImageToolService {
             Ok(CopyProgress {
                 status: CopyStatus::Failed,
                 message,
-                bytes_copied: None,
-                total_bytes: None,
+                bytes_copied,
+                total_bytes,
             })
         }
     }

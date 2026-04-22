@@ -54,6 +54,32 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function formatBytes(value) {
+    const num = Number(value || 0);
+    if (!Number.isFinite(num) || num < 0) return '-';
+    if (num >= 1024 ** 3) return `${(num / (1024 ** 3)).toFixed(2)} GB`;
+    if (num >= 1024 ** 2) return `${(num / (1024 ** 2)).toFixed(2)} MB`;
+    if (num >= 1024) return `${(num / 1024).toFixed(2)} KB`;
+    return `${num} B`;
+}
+
+function formatTransferStage(stage) {
+    switch ((stage || '').toLowerCase()) {
+        case 'pull':
+            return 'Pulling Source Layers';
+        case 'push':
+            return 'Pushing Destination Image';
+        case 'save':
+            return 'Writing Tarball';
+        case 'recipe':
+            return 'Applying Recipe';
+        case 'squash':
+            return 'Squashing Layers';
+        default:
+            return stage || 'Copy';
+    }
+}
+
 function ansiToHtml(line) {
     const ansiRegex = /\x1b\[([0-9;]*)m/g;
     const colors = {
@@ -7419,6 +7445,55 @@ router.on('/copy-jobs/:jobId', async (params) => {
             initialStatus.environment_id ? api.getEnvironment(initialStatus.environment_id).catch(() => null) : null,
             baseJob?.environment_id ? api.getEnvironment(baseJob.environment_id).catch(() => null) : null,
         ]);
+        let currentTransfer = initialStatus.current_transfer_stage || initialStatus.current_bytes_copied || initialStatus.current_total_bytes || initialStatus.current_transfer_message
+            ? {
+                stage: initialStatus.current_transfer_stage || 'copy',
+                current: Number(initialStatus.current_bytes_copied || 0),
+                total: Number(initialStatus.current_total_bytes || 0),
+                message: initialStatus.current_transfer_message || null,
+            }
+            : null;
+        let lastRenderedStatus = initialStatus;
+        let lastRenderedImages = initialImages;
+
+        const handleLogLine = (line, rerender = false) => {
+            if (!line) return;
+            if (line.startsWith('__PROGRESS__')) {
+                try {
+                    const event = JSON.parse(line.slice('__PROGRESS__'.length));
+                    if (event.type === 'progress') {
+                        currentTransfer = {
+                            stage: event.stage || currentTransfer?.stage || 'copy',
+                            current: Number(event.current || 0),
+                            total: Number(event.total || 0),
+                            message: currentTransfer?.message || null,
+                        };
+                    } else if (event.type === 'phase') {
+                        currentTransfer = {
+                            ...(currentTransfer || {}),
+                            stage: event.phase || currentTransfer?.stage || 'copy',
+                            message: event.ref || event.message || null,
+                        };
+                    } else if (event.type === 'status') {
+                        currentTransfer = {
+                            ...(currentTransfer || {}),
+                            message: event.message || null,
+                        };
+                    } else if (event.type === 'done' || event.type === 'error') {
+                        currentTransfer = null;
+                    }
+                    if (rerender) {
+                        renderJobStatus(lastRenderedStatus, lastRenderedImages);
+                    }
+                } catch {}
+                return;
+            }
+
+            logLines.push(line);
+            if (logLines.length > 1000) {
+                logLines.shift();
+            }
+        };
 
         const renderLogs = () => {
             const logEl = document.getElementById('copy-job-log');
@@ -7428,6 +7503,18 @@ router.on('/copy-jobs/:jobId', async (params) => {
         };
 
         const renderJobStatus = (status, images = []) => {
+            lastRenderedStatus = status;
+            lastRenderedImages = images;
+            if (status.current_transfer_stage || status.current_bytes_copied || status.current_total_bytes || status.current_transfer_message) {
+                currentTransfer = {
+                    stage: status.current_transfer_stage || currentTransfer?.stage || 'copy',
+                    current: Number(status.current_bytes_copied || 0),
+                    total: Number(status.current_total_bytes || 0),
+                    message: status.current_transfer_message || currentTransfer?.message || null,
+                };
+            } else if (status.status !== 'in_progress') {
+                currentTransfer = null;
+            }
             const progress = status.total_images > 0
                 ? ((status.copied_images + status.failed_images) / status.total_images * 100).toFixed(0)
                 : 0;
@@ -7529,6 +7616,19 @@ router.on('/copy-jobs/:jobId', async (params) => {
                                 </div>
                             ` : ''}
                         </div>
+
+                        ${status.status === 'in_progress' && currentTransfer && currentTransfer.total > 0 ? `
+                            <div class="mb-3">
+                                <div class="d-flex justify-content-between mb-1">
+                                    <span>Current Transfer: ${escapeHtml(formatTransferStage(currentTransfer.stage || 'copy'))}</span>
+                                    <span>${formatBytes(currentTransfer.current)} / ${formatBytes(currentTransfer.total)}</span>
+                                </div>
+                                <div class="progress mb-1">
+                                    <div class="progress-bar bg-blue" style="width: ${Math.min(100, Math.max(0, (currentTransfer.current / currentTransfer.total) * 100)).toFixed(0)}%"></div>
+                                </div>
+                                ${currentTransfer.message ? `<div class="text-secondary small">${escapeHtml(currentTransfer.message)}</div>` : ''}
+                            </div>
+                        ` : ''}
 
                         <div class="alert ${
                             status.status === 'success' ? 'alert-success' :
@@ -7750,7 +7850,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
         };
 
         if (Array.isArray(logHistory)) {
-            logLines.push(...logHistory);
+            logHistory.forEach((line) => handleLogLine(line, false));
         }
 
         // Initial render
@@ -7787,15 +7887,12 @@ router.on('/copy-jobs/:jobId', async (params) => {
             logSource = new EventSource(`${apiBase}/copy/jobs/${params.jobId}/logs`);
             logSource.onmessage = (event) => {
                 if (!event.data) return;
-                logLines.push(event.data);
-                if (logLines.length > 1000) {
-                    logLines.shift();
-                }
+                handleLogLine(event.data, true);
                 renderLogs();
             };
             logSource.addEventListener('log-end', (event) => {
                 if (event?.data) {
-                    logLines.push(event.data);
+                    handleLogLine(event.data, true);
                     renderLogs();
                 }
                 logSource.close();
