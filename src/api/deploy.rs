@@ -628,6 +628,7 @@ pub fn router(state: DeployApiState) -> Router {
         .route("/deploy/jobs", get(list_deploy_jobs).post(create_deploy_job))
         .route("/deploy/jobs/from-copy", post(auto_deploy_from_copy_job))
         .route("/deploy/jobs/{id}", get(get_deploy_job))
+        .route("/deploy/jobs/{id}/inventory", get(get_deploy_job_inventory))
         .route("/deploy/jobs/{id}/start", post(start_deploy_job))
         .route("/deploy/jobs/{id}/logs", get(deploy_job_logs_sse))
         .route("/deploy/jobs/{id}/logs/history", get(deploy_job_logs_history))
@@ -2605,6 +2606,42 @@ async fn get_deploy_job(
 
     match job {
         Some(job) => Ok(Json(job)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Deploy job with id {} not found", id),
+            }),
+        )),
+    }
+}
+
+async fn get_deploy_job_inventory(
+    State(state): State<DeployApiState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let inventory = sqlx::query_scalar::<_, Option<serde_json::Value>>(
+        "SELECT kube_build_inventory FROM deploy_jobs WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    match inventory {
+        Some(Some(inventory)) => Ok(Json(inventory)),
+        Some(None) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Deploy job inventory not available".to_string(),
+            }),
+        )),
         None => Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {

@@ -716,6 +716,10 @@ class ApiClient {
         return this.get(`/deploy/jobs/${id}`);
     }
 
+    async getDeployJobInventory(id) {
+        return this.get(`/deploy/jobs/${id}/inventory`);
+    }
+
     async getReleaseDeployJobs(releaseId) {
         return this.get(`/releases/${releaseId}/deploy-jobs`);
     }

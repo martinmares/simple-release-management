@@ -6319,11 +6319,12 @@ router.on('/deploy-jobs/:id', async (params) => {
 
     try {
         const canDeploy = getApp()?.canDeploy?.() || false;
-        const [job, logHistory, diffInfo, imageRows] = await Promise.all([
+        const [job, logHistory, diffInfo, imageRows, inventory] = await Promise.all([
             api.getDeployJob(params.id),
             api.getDeployJobLogHistory(params.id),
             api.getDeployJobDiff(params.id),
             api.getDeployJobImages(params.id),
+            api.getDeployJobInventory(params.id).catch(() => null),
         ]);
         const environment = job.environment_id
             ? await api.getEnvironment(job.environment_id).catch(() => null)
@@ -6414,6 +6415,42 @@ router.on('/deploy-jobs/:id', async (params) => {
                     </div>
                 </div>
             </div>
+
+            ${inventory ? `
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">Inventory</h3>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <div class="text-secondary small">Environment</div>
+                            <div><code>${escapeHtml(inventory.env || '-') }</code></div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-secondary small">Apps</div>
+                            <div>${escapeHtml(String(inventory.apps_count ?? '-'))}</div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="text-secondary small">Containers</div>
+                            <div>${escapeHtml(String(inventory.containers_count ?? '-'))}</div>
+                        </div>
+                    </div>
+                    ${inventory.profiles?.profiles ? `
+                        <div class="mb-3">
+                            <div class="text-secondary small mb-1">Profiles</div>
+                            <div class="d-flex flex-wrap gap-2">
+                                ${Object.keys(inventory.profiles.profiles).map(name => `<span class="badge bg-azure-lt text-azure-fg">${escapeHtml(name)}</span>`).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    <details>
+                        <summary class="text-secondary small" style="cursor:pointer;">Show Raw Inventory JSON</summary>
+                        <pre class="terminal-body mt-3" style="max-height: 420px; white-space: pre;">${escapeHtml(JSON.stringify(inventory, null, 2))}</pre>
+                    </details>
+                </div>
+            </div>
+            ` : ''}
 
             ${diffInfo ? `
             <div class="card mt-3">
