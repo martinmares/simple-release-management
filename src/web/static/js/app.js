@@ -6423,17 +6423,21 @@ router.on('/deploy-jobs/:id', async (params) => {
                 </div>
                 <div class="card-body">
                     <div class="row g-3 mb-3">
-                        <div class="col-md-4">
-                            <div class="text-secondary small">Environment</div>
-                            <div><code>${escapeHtml(inventory.env || '-') }</code></div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="text-secondary small">Apps</div>
-                            <div>${escapeHtml(String(inventory.apps_count ?? '-'))}</div>
-                        </div>
-                        <div class="col-md-4">
-                            <div class="text-secondary small">Containers</div>
-                            <div>${escapeHtml(String(inventory.containers_count ?? '-'))}</div>
+                        <div class="col-md-12">
+                            <div class="d-flex flex-wrap gap-4 align-items-center">
+                                <div>
+                                    <span class="text-secondary small me-2">Environment</span>
+                                    <code>${escapeHtml(inventory.env || '-')}</code>
+                                </div>
+                                <div>
+                                    <span class="text-secondary small me-2">Apps</span>
+                                    <span>${escapeHtml(String(inventory.apps_count ?? '-'))}</span>
+                                </div>
+                                <div>
+                                    <span class="text-secondary small me-2">Containers</span>
+                                    <span>${escapeHtml(String(inventory.containers_count ?? '-'))}</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     ${inventory.profiles?.profiles ? `
