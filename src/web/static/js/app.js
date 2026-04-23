@@ -7456,6 +7456,67 @@ router.on('/copy-jobs/:jobId', async (params) => {
         let lastRenderedStatus = initialStatus;
         let lastRenderedImages = initialImages;
         let cancelInFlight = false;
+        let logShouldAutoScroll = true;
+        let latestLiveTransferAt = 0;
+
+        const stageRank = (stage) => {
+            switch ((stage || '').toLowerCase()) {
+                case 'pull':
+                    return 1;
+                case 'recipe':
+                case 'squash':
+                    return 2;
+                case 'push':
+                case 'save':
+                case 'load':
+                    return 3;
+                default:
+                    return 0;
+            }
+        };
+
+        const applyTransferSnapshot = (nextTransfer, { source = 'snapshot' } = {}) => {
+            if (!nextTransfer) {
+                currentTransfer = null;
+                return;
+            }
+
+            const normalized = {
+                stage: nextTransfer.stage || currentTransfer?.stage || 'copy',
+                current: Number(nextTransfer.current || 0),
+                total: Number(nextTransfer.total || 0),
+                message: nextTransfer.message || currentTransfer?.message || null,
+            };
+
+            if (!currentTransfer) {
+                currentTransfer = normalized;
+                if (source === 'live') latestLiveTransferAt = Date.now();
+                return;
+            }
+
+            const currentStage = currentTransfer.stage || 'copy';
+            const nextStage = normalized.stage || 'copy';
+            const currentImage = lastRenderedStatus?.current_image || currentTransfer.message || '';
+            const nextImage = lastRenderedStatus?.current_image || normalized.message || '';
+            const sameImage = currentImage === nextImage;
+            const sameStage = currentStage === nextStage;
+
+            if (source === 'snapshot' && (Date.now() - latestLiveTransferAt) < 5000) {
+                if (sameImage && stageRank(nextStage) < stageRank(currentStage)) {
+                    return;
+                }
+            }
+
+            if (sameStage && sameImage) {
+                normalized.current = Math.max(Number(currentTransfer.current || 0), normalized.current);
+                normalized.total = Math.max(Number(currentTransfer.total || 0), normalized.total);
+            }
+
+            currentTransfer = normalized;
+            if (source === 'live') {
+                latestLiveTransferAt = Date.now();
+            }
+        };
 
         const hasMeaningfulStatusChange = (next, prev) => {
             if (!prev) return true;
@@ -7509,23 +7570,25 @@ router.on('/copy-jobs/:jobId', async (params) => {
                     const event = JSON.parse(line.slice('__PROGRESS__'.length));
                     const eventType = event.type || event._type || event.event_type;
                     if (eventType === 'progress') {
-                        currentTransfer = {
+                        applyTransferSnapshot({
                             stage: event.stage || currentTransfer?.stage || 'copy',
                             current: Number(event.current || 0),
                             total: Number(event.total || 0),
                             message: currentTransfer?.message || null,
-                        };
+                        }, { source: 'live' });
                     } else if (eventType === 'phase') {
-                        currentTransfer = {
+                        applyTransferSnapshot({
                             ...(currentTransfer || {}),
                             stage: event.phase || currentTransfer?.stage || 'copy',
                             message: event.ref || event.message || null,
-                        };
+                            current: 0,
+                            total: 0,
+                        }, { source: 'live' });
                     } else if (eventType === 'status') {
-                        currentTransfer = {
+                        applyTransferSnapshot({
                             ...(currentTransfer || {}),
                             message: event.message || null,
-                        };
+                        }, { source: 'live' });
                     } else if (eventType === 'done' || eventType === 'error') {
                         currentTransfer = null;
                     }
@@ -7555,20 +7618,27 @@ router.on('/copy-jobs/:jobId', async (params) => {
             if (isSelectingInsideLogs) {
                 return;
             }
+            const previousScrollTop = logEl.scrollTop;
+            const wasNearBottom = (logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop) < 24;
             logEl.innerHTML = logLines.map(ansiToHtml).join('\n');
-            logEl.scrollTop = logEl.scrollHeight;
+            if (logShouldAutoScroll || wasNearBottom) {
+                logEl.scrollTop = logEl.scrollHeight;
+                logShouldAutoScroll = true;
+            } else {
+                logEl.scrollTop = previousScrollTop;
+            }
         };
 
         const renderJobStatus = (status, images = []) => {
             lastRenderedStatus = status;
             lastRenderedImages = images;
             if (status.current_transfer_stage || status.current_bytes_copied || status.current_total_bytes || status.current_transfer_message) {
-                currentTransfer = {
+                applyTransferSnapshot({
                     stage: status.current_transfer_stage || currentTransfer?.stage || 'copy',
                     current: Number(status.current_bytes_copied || 0),
                     total: Number(status.current_total_bytes || 0),
                     message: status.current_transfer_message || currentTransfer?.message || null,
-                };
+                }, { source: 'snapshot' });
             } else if (status.status !== 'in_progress') {
                 currentTransfer = null;
             }
@@ -7899,6 +7969,14 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 });
             }
 
+            const logEl = document.getElementById('copy-job-log');
+            if (logEl) {
+                logEl.addEventListener('scroll', () => {
+                    const nearBottom = (logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop) < 24;
+                    logShouldAutoScroll = nearBottom;
+                });
+            }
+
             renderLogs();
         };
 
@@ -7965,12 +8043,12 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 params.jobId,
                 (data) => {
                     if (data.current_transfer_stage || data.current_bytes_copied || data.current_total_bytes || data.current_transfer_message) {
-                        currentTransfer = {
+                        applyTransferSnapshot({
                             stage: data.current_transfer_stage || currentTransfer?.stage || 'copy',
                             current: Number(data.current_bytes_copied || 0),
                             total: Number(data.current_total_bytes || 0),
                             message: data.current_transfer_message || currentTransfer?.message || null,
-                        };
+                        }, { source: 'snapshot' });
                         updateCurrentTransferUi(data);
                     }
                     if (hasMeaningfulStatusChange(data, lastRenderedStatus)) {
