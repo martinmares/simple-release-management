@@ -2737,6 +2737,27 @@ async fn start_copy_job(
                                     }
                                     let extra_target_url =
                                         format!("{}/{}:{}", target_base_url, img.target_image, tag);
+                                    let mut tagged = false;
+                                    if skopeo_clone.supports_digest_retag() {
+                                        let target_digest_url =
+                                            format!("{}/{}@{}", target_base_url, img.target_image, src_digest);
+                                        emit_log(&log_tx, format!("Tagging existing manifest: {} -> {}", target_digest_url, extra_target_url));
+                                        match skopeo_clone
+                                            .tag_existing_manifest(&target_digest_url, &extra_target_url, &credentials)
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                tagged = true;
+                                                emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
+                                            }
+                                            Err(err) => {
+                                                emit_log(&log_tx, format!("WARN failed to tag existing manifest for extra tag {} ({}) - falling back to copy", tag, err));
+                                            }
+                                        }
+                                    }
+                                    if tagged {
+                                        continue;
+                                    }
                                     emit_log(&log_tx, format!("Tagging {} -> {}", source_url, extra_target_url));
                                     match skopeo_clone
                                         .copy_image_with_retry(
@@ -2910,6 +2931,29 @@ async fn start_copy_job(
                             }
                             let extra_target_url =
                                 format!("{}/{}:{}", target_base_url, img.target_image, tag);
+                            let mut tagged = false;
+                            if let Some(ref src_digest) = source_sha {
+                                if skopeo_clone.supports_digest_retag() {
+                                    let target_digest_url =
+                                        format!("{}/{}@{}", target_base_url, img.target_image, src_digest);
+                                    emit_log(&log_tx, format!("Tagging existing manifest: {} -> {}", target_digest_url, extra_target_url));
+                                    match skopeo_clone
+                                        .tag_existing_manifest(&target_digest_url, &extra_target_url, &credentials)
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            tagged = true;
+                                            emit_log(&log_tx, format!("TAGGED {}", extra_target_url));
+                                        }
+                                        Err(err) => {
+                                            emit_log(&log_tx, format!("WARN failed to tag existing manifest for extra tag {} ({}) - falling back to copy", tag, err));
+                                        }
+                                    }
+                                }
+                            }
+                            if tagged {
+                                continue;
+                            }
                             emit_log(&log_tx, format!("Tagging {} -> {}", source_url, extra_target_url));
                             match skopeo_clone
                                 .copy_image_with_retry(
