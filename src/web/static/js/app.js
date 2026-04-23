@@ -6523,7 +6523,20 @@ router.on('/deploy-jobs/:id', async (params) => {
                         router.handleRoute();
                     }, 800);
                 }
-            }, (err) => {
+            }, async (err) => {
+                try {
+                    const latestJob = await api.getDeployJob(params.id);
+                    if (!refreshScheduled && ['success', 'failed', 'cancelled', 'canceled'].includes(latestJob.status)) {
+                        refreshScheduled = true;
+                        setTimeout(() => {
+                            router.navigate(`/deploy-jobs/${params.id}`);
+                            router.handleRoute();
+                        }, 300);
+                        return;
+                    }
+                } catch (_) {
+                    // Fall through to user-visible log message below.
+                }
                 deployLines.push(`[Log stream error] ${err}`);
                 renderDeployLogs();
             });
