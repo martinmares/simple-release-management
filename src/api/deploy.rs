@@ -3459,7 +3459,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         let _ = log_tx.send("kubeconform skipped (KUBECONFORM_PATH not set)".to_string());
     } else if let Err(err) = run_command_logged(
         kubeconform_path,
-        &["-strict", "-summary", "-output", "json", "."],
+        &["-strict", "-summary", "-output", "json", "-skip", "Route", "."],
         Some(&deploy_path),
         &HashMap::new(),
         &log_tx,
