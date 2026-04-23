@@ -3415,6 +3415,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         &mapped_vars,
         &extra_env_rows,
     )?;
+    let _ = log_tx.send("== kube_build_app generate ==".to_string());
     run_command_logged(
         &state.kube_build_app_path,
         &["-e", &environment.slug, "-t", deploy_path.to_string_lossy().as_ref(), "-r", manifest_path.to_string_lossy().as_ref()],
@@ -3425,6 +3426,7 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     )
     .await?;
 
+    let _ = log_tx.send("== kube_build_app summary (-s) ==".to_string());
     run_command_logged(
         &state.kube_build_app_path,
         &["-e", &environment.slug, "-s"],
@@ -3435,12 +3437,13 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
     )
     .await?;
 
-    match run_command_capture_logged(
+    let _ = log_tx.send("== kube_build_app inventory (-i) ==".to_string());
+    let _ = log_tx.send("Collecting inventory...".to_string());
+    match run_command_capture(
         &state.kube_build_app_path,
         &["-e", &environment.slug, "-r", manifest_path.to_string_lossy().as_ref(), "-i"],
         Some(&env_repo_path),
         &kube_build_env,
-        &log_tx,
         "kube_build_app -i",
     )
     .await
@@ -3451,6 +3454,12 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
                 .as_ref()
                 .map(extract_profiles_from_inventory)
                 .unwrap_or_default();
+            if let Some(inventory) = &parsed_inventory {
+                let summary = summarize_inventory(inventory);
+                let _ = log_tx.send(summary);
+            } else {
+                let _ = log_tx.send("Inventory parse failed: output was not valid JSON".to_string());
+            }
             let generated_profiles_json = if generated_profiles.is_empty() {
                 None
             } else {
@@ -4386,6 +4395,31 @@ async fn run_command_capture_logged(
     })?
 }
 
+async fn run_command_capture(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&FsPath>,
+    envs: &HashMap<String, String>,
+    label: &str,
+) -> anyhow::Result<String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    cmd.envs(envs);
+
+    let output = cmd.output().await?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Err(anyhow::anyhow!("{} failed: {}", label, stderr.trim()))
+    }
+}
+
 fn parse_json_from_output(output: &str) -> Option<serde_json::Value> {
     let trimmed = output.trim();
     if trimmed.is_empty() {
@@ -4405,6 +4439,36 @@ fn parse_json_from_output(output: &str) -> Option<serde_json::Value> {
     };
 
     parse_slice('{', '}').or_else(|| parse_slice('[', ']'))
+}
+
+fn summarize_inventory(value: &serde_json::Value) -> String {
+    let env = value
+        .get("env")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-");
+    let apps = value
+        .get("apps_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let containers = value
+        .get("containers_count")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let profiles = extract_profiles_from_inventory(value);
+    if profiles.is_empty() {
+        format!(
+            "Inventory parsed successfully: env={}, apps={}, containers={}",
+            env, apps, containers
+        )
+    } else {
+        format!(
+            "Inventory parsed successfully: env={}, apps={}, containers={}, profiles={}",
+            env,
+            apps,
+            containers,
+            profiles.join(", ")
+        )
+    }
 }
 
 fn extract_profiles_from_inventory(value: &serde_json::Value) -> Vec<String> {
