@@ -449,6 +449,54 @@ impl ImageToolService {
             tokio::time::sleep(tokio::time::Duration::from_secs(retry_delay_secs)).await;
         }
     }
+
+    pub fn supports_digest_retag(&self) -> bool {
+        self.tool == ImageTool::OciPatch
+    }
+
+    pub async fn tag_existing_manifest(
+        &self,
+        source_digest_url: &str,
+        target_tag_url: &str,
+        creds: &SkopeoCredentials,
+    ) -> Result<()> {
+        if self.tool != ImageTool::OciPatch {
+            anyhow::bail!("{} does not support digest retagging", self.tool.display_name());
+        }
+
+        info!(
+            "Tagging existing manifest from {} to {}",
+            source_digest_url, target_tag_url
+        );
+
+        let mut cmd = Command::new(&self.image_tool_path);
+        cmd.arg("tag-existing");
+
+        if let (Some(user), Some(pass)) = (&creds.target_username, &creds.target_password) {
+            cmd.arg("--creds").arg(format!("{}:{}", user, pass));
+        }
+
+        if self.dst_insecure {
+            cmd.arg("--insecure");
+        }
+
+        cmd.arg(format!("docker://{}", source_digest_url))
+            .arg(format!("docker://{}", target_tag_url))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let output = cmd
+            .output()
+            .await
+            .with_context(|| format!("Failed to execute {} tag-existing", self.tool.display_name()))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("{} tag-existing failed: {}", self.tool.display_name(), stderr.trim());
+        }
+
+        Ok(())
+    }
 }
 
 impl ImageToolService {

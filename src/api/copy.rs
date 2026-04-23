@@ -2798,6 +2798,73 @@ async fn start_copy_job(
                         }
                     }
                 }
+
+                if skopeo_clone.supports_digest_retag() {
+                    let target_digest_url = format!("{}/{}@{}", target_base_url, img.target_image, src_digest);
+                    emit_log(
+                        &log_tx,
+                        format!("Checking whether target repository already contains source digest: {}", src_digest),
+                    );
+                    match skopeo_clone.inspect_image(
+                        &target_digest_url,
+                        credentials.target_username.as_deref(),
+                        credentials.target_password.as_deref(),
+                    ).await {
+                        Ok(info) => {
+                            emit_log(
+                                &log_tx,
+                                format!("Found existing manifest by digest in target repo: {}", info.digest),
+                            );
+                            emit_log(
+                                &log_tx,
+                                format!("Tagging existing manifest: {} -> {}", target_digest_url, target_url),
+                            );
+                            match skopeo_clone
+                                .tag_existing_manifest(&target_digest_url, &target_url, &credentials)
+                                .await
+                            {
+                                Ok(()) => {
+                                    let _ = sqlx::query(
+                                        "UPDATE copy_job_images
+                                         SET copy_status = 'success',
+                                             source_sha256 = $1,
+                                             target_sha256 = $2,
+                                             copied_at = NOW(),
+                                             bytes_copied = 0
+                                         WHERE id = $3"
+                                    )
+                                    .bind(&source_sha)
+                                    .bind(&info.digest)
+                                    .bind(img.id)
+                                    .execute(&pool_clone)
+                                    .await;
+
+                                    emit_log(&log_tx, format!("TAGGED {}", target_url));
+                                    continue;
+                                }
+                                Err(err) => {
+                                    emit_log(
+                                        &log_tx,
+                                        format!("WARN failed to tag existing manifest ({}) - starting full copy", err),
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            if is_missing_target_manifest_error(&err.to_string()) {
+                                emit_log(
+                                    &log_tx,
+                                    format!("Source digest not found in target repo: {} - starting full copy", src_digest),
+                                );
+                            } else {
+                                emit_log(
+                                    &log_tx,
+                                    format!("WARN failed to inspect target repo by digest {} ({}) - starting full copy", src_digest, err),
+                                );
+                            }
+                        }
+                    }
+                }
             }
 
             match skopeo_clone
