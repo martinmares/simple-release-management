@@ -63,6 +63,21 @@ function formatBytes(value) {
     return `${num} B`;
 }
 
+function formatDurationHuman(totalSeconds) {
+    const seconds = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+
+    if (hours > 0) {
+        return `${hours}h ${minutes}min ${secs}s`;
+    }
+    if (minutes > 0) {
+        return `${minutes}min ${secs}s`;
+    }
+    return `${secs}s`;
+}
+
 function formatTransferStage(stage) {
     switch ((stage || '').toLowerCase()) {
         case 'pull':
@@ -7418,9 +7433,8 @@ router.on('/copy-jobs/:jobId', async (params) => {
     content.innerHTML = '<div class="text-center py-5"><div class="spinner-border"></div></div>';
 
     let eventSource = null;
-    let logSource = null;
+    let durationTimer = null;
     const logLines = [];
-    const apiBase = `${window.BASE_PATH || ''}/api/v1`;
     const canWrite = getApp()?.canWrite?.() || false;
     const canDeploy = getApp()?.canDeploy?.() || false;
 
@@ -7458,6 +7472,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
         let cancelInFlight = false;
         let logShouldAutoScroll = true;
         let latestLiveTransferAt = 0;
+        let liveCurrentImage = initialStatus.current_image || null;
 
         const stageRank = (stage) => {
             switch ((stage || '').toLowerCase()) {
@@ -7518,6 +7533,23 @@ router.on('/copy-jobs/:jobId', async (params) => {
             }
         };
 
+        const updateDurationUi = (status = lastRenderedStatus) => {
+            const el = document.getElementById('copy-job-duration');
+            if (!el || !status) return;
+            const label = status.status === 'success' || status.status === 'failed' || status.status === 'cancelled'
+                ? 'Duration'
+                : 'Elapsed';
+            const seconds = Number(status.duration_seconds || 0);
+            el.textContent = `${label}: ${formatDurationHuman(seconds)}`;
+        };
+
+        const updateFollowLogsUi = () => {
+            const btn = document.getElementById('copy-job-follow-logs');
+            if (!btn) return;
+            btn.className = logShouldAutoScroll ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline-secondary';
+            btn.innerHTML = `<i class="ti ti-arrow-autofit-down"></i> Follow Logs: ${logShouldAutoScroll ? 'On' : 'Off'}`;
+        };
+
         const hasMeaningfulStatusChange = (next, prev) => {
             if (!prev) return true;
             const keys = [
@@ -7540,6 +7572,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
             if (!(status?.status === 'in_progress' && currentTransfer && currentTransfer.total > 0)) {
                 return '';
             }
+            const displayImage = liveCurrentImage || status.current_image || currentTransfer.message || 'unknown';
 
             return `
                 <div class="mb-3" id="copy-job-current-transfer-inner">
@@ -7551,7 +7584,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         <div class="progress-bar bg-blue" style="width: ${Math.min(100, Math.max(0, (currentTransfer.current / currentTransfer.total) * 100)).toFixed(0)}%"></div>
                     </div>
                     <div class="text-secondary small">
-                        Image: <code>${escapeHtml(status.current_image || currentTransfer.message || 'unknown')}</code>
+                        Image: <code>${escapeHtml(displayImage)}</code>
                     </div>
                 </div>
             `;
@@ -7599,6 +7632,14 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 return;
             }
 
+            if (line.startsWith('Copying ')) {
+                const match = line.match(/^Copying\s+(.+?)\s+->\s+/);
+                if (match) {
+                    liveCurrentImage = match[1];
+                    updateCurrentTransferUi();
+                }
+            }
+
             logLines.push(line);
             if (logLines.length > 1000) {
                 logLines.shift();
@@ -7632,6 +7673,11 @@ router.on('/copy-jobs/:jobId', async (params) => {
         const renderJobStatus = (status, images = []) => {
             lastRenderedStatus = status;
             lastRenderedImages = images;
+            if (status.current_image) {
+                liveCurrentImage = status.current_image;
+            } else if (status.status !== 'in_progress') {
+                liveCurrentImage = null;
+            }
             if (status.current_transfer_stage || status.current_bytes_copied || status.current_total_bytes || status.current_transfer_message) {
                 applyTransferSnapshot({
                     stage: status.current_transfer_stage || currentTransfer?.stage || 'copy',
@@ -7777,6 +7823,7 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         <div class="text-secondary small mb-3">
                             Auto-release: ${autoRelease ? `created (<a href="#/releases/${autoRelease.id}">${autoRelease.release_id}</a>)` : 'not created'}
                             ${status.validate_only ? ' • Validate-only run (no copy)' : ''}
+                            <span class="ms-2" id="copy-job-duration">${status.status === 'success' || status.status === 'failed' || status.status === 'cancelled' ? 'Duration' : 'Elapsed'}: ${formatDurationHuman(status.duration_seconds || 0)}</span>
                         </div>
 
                         ${isComplete ? `
@@ -7841,8 +7888,12 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 </div>
 
                 <div class="card mt-3">
-                    <div class="card-header">
+                    <div class="card-header d-flex justify-content-between align-items-center gap-2">
                         <h3 class="card-title">${isComplete ? 'Audit Logs' : 'Live Logs'}</h3>
+                        <button type="button" class="btn btn-sm ${logShouldAutoScroll ? 'btn-primary' : 'btn-outline-secondary'}" id="copy-job-follow-logs">
+                            <i class="ti ti-arrow-autofit-down"></i>
+                            Follow Logs: ${logShouldAutoScroll ? 'On' : 'Off'}
+                        </button>
                     </div>
                     <div class="card-body">
                         <div class="terminal-shell">
@@ -7974,8 +8025,23 @@ router.on('/copy-jobs/:jobId', async (params) => {
                 logEl.addEventListener('scroll', () => {
                     const nearBottom = (logEl.scrollHeight - logEl.clientHeight - logEl.scrollTop) < 24;
                     logShouldAutoScroll = nearBottom;
+                    updateFollowLogsUi();
                 });
             }
+
+            const followBtn = document.getElementById('copy-job-follow-logs');
+            if (followBtn) {
+                followBtn.addEventListener('click', () => {
+                    logShouldAutoScroll = !logShouldAutoScroll;
+                    updateFollowLogsUi();
+                    if (logShouldAutoScroll) {
+                        renderLogs();
+                    }
+                });
+            }
+
+            updateDurationUi(status);
+            updateFollowLogsUi();
 
             renderLogs();
         };
@@ -7986,6 +8052,28 @@ router.on('/copy-jobs/:jobId', async (params) => {
 
         // Initial render
         renderJobStatus(initialStatus, initialImages);
+        durationTimer = window.setInterval(async () => {
+            if (!lastRenderedStatus) return;
+            if (lastRenderedStatus.status === 'success' || lastRenderedStatus.status === 'failed' || lastRenderedStatus.status === 'cancelled') {
+                updateDurationUi(lastRenderedStatus);
+                return;
+            }
+            lastRenderedStatus = {
+                ...lastRenderedStatus,
+                duration_seconds: Number(lastRenderedStatus.duration_seconds || 0) + 1,
+            };
+            updateDurationUi(lastRenderedStatus);
+        }, 1000);
+        window.addEventListener('hashchange', () => {
+            if (durationTimer) {
+                clearInterval(durationTimer);
+                durationTimer = null;
+            }
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+            }
+        }, { once: true });
 
         const attachStartHandler = () => {
             const startBtn = document.getElementById('start-copy-job');
@@ -8001,7 +8089,6 @@ router.on('/copy-jobs/:jobId', async (params) => {
                     await api.startPendingCopyJob(params.jobId);
                     const refreshed = await api.getCopyJobStatus(params.jobId);
                     renderJobStatus(refreshed, initialImages);
-                    startLogStream();
                 } catch (error) {
                     getApp().showError(error.message);
                     startBtn.disabled = false;
@@ -8011,37 +8098,55 @@ router.on('/copy-jobs/:jobId', async (params) => {
         };
         attachStartHandler();
 
-        const startLogStream = () => {
-            if (logSource) {
-                logSource.close();
-            }
-            logSource = new EventSource(`${apiBase}/copy/jobs/${params.jobId}/logs`);
-            logSource.onmessage = (event) => {
-                if (!event.data) return;
-                handleLogLine(event.data, true);
-                renderLogs();
-            };
-            logSource.addEventListener('log-end', (event) => {
-                if (event?.data && event.data !== 'Log stream not available') {
-                    handleLogLine(event.data, true);
-                    renderLogs();
-                }
-                logSource.close();
-            });
-            logSource.onerror = (error) => {
-                console.error('Log SSE error:', error);
-            };
-        };
-
-        if (initialStatus.status === 'in_progress') {
-            startLogStream();
-        }
-
         // Start SSE stream if not complete
         if (initialStatus.status !== 'success' && initialStatus.status !== 'failed') {
-            eventSource = api.createCopyJobStream(
+            eventSource = api.createCopyJobMonitorStream(
                 params.jobId,
-                (data) => {
+                (event) => {
+                    if (event.type === 'transfer' && event.transfer) {
+                        const transfer = event.transfer;
+                        const eventType = transfer.type || transfer._type || transfer.event_type;
+                        if (eventType === 'progress') {
+                            applyTransferSnapshot({
+                                stage: transfer.stage || currentTransfer?.stage || 'copy',
+                                current: Number(transfer.current || 0),
+                                total: Number(transfer.total || 0),
+                                message: currentTransfer?.message || null,
+                            }, { source: 'live' });
+                        } else if (eventType === 'phase') {
+                            applyTransferSnapshot({
+                                ...(currentTransfer || {}),
+                                stage: transfer.phase || currentTransfer?.stage || 'copy',
+                                message: transfer.ref || transfer.message || null,
+                                current: 0,
+                                total: currentTransfer?.total || 0,
+                            }, { source: 'live' });
+                        } else if (eventType === 'status') {
+                            applyTransferSnapshot({
+                                ...(currentTransfer || {}),
+                                message: transfer.message || null,
+                            }, { source: 'live' });
+                        } else if (eventType === 'done' || eventType === 'error') {
+                            currentTransfer = null;
+                        }
+                        updateCurrentTransferUi();
+                        return;
+                    }
+
+                    if (event.type === 'log' && event.line) {
+                        handleLogLine(event.line, true);
+                        renderLogs();
+                        return;
+                    }
+
+                    const data = event.status;
+                    if (!data) {
+                        if (event.type === 'error') {
+                            getApp().showError(event.line || 'Connection lost');
+                        }
+                        return;
+                    }
+
                     if (data.current_transfer_stage || data.current_bytes_copied || data.current_total_bytes || data.current_transfer_message) {
                         applyTransferSnapshot({
                             stage: data.current_transfer_stage || currentTransfer?.stage || 'copy',
@@ -8055,24 +8160,25 @@ router.on('/copy-jobs/:jobId', async (params) => {
                         renderJobStatus(data, lastRenderedImages);
                         attachStartHandler();
                     }
+                    if (event.type === 'completed') {
+                        api.getCopyJobImages(params.jobId).then((images) => {
+                            renderJobStatus(data, images);
+                            attachStartHandler();
+                        }).catch(() => {
+                            renderJobStatus(data, initialImages);
+                            attachStartHandler();
+                        });
+                        if (data.failed_images === 0 && data.status === 'success') {
+                            getApp().showSuccess('Copy job completed successfully!');
+                        } else if (data.status === 'failed') {
+                            getApp().showWarning(`Copy job completed with ${data.failed_images} errors`);
+                        }
+                        eventSource?.close();
+                    }
                 },
                 (error) => {
                     console.error('SSE error:', error);
                     getApp().showError('Connection lost');
-                },
-                (data) => {
-                    api.getCopyJobImages(params.jobId).then((images) => {
-                        renderJobStatus(data, images);
-                        attachStartHandler();
-                    }).catch(() => {
-                        renderJobStatus(data, initialImages);
-                        attachStartHandler();
-                    });
-                    if (data.failed_images === 0 && data.status === 'success') {
-                        getApp().showSuccess('Copy job completed successfully!');
-                    } else if (data.status === 'failed') {
-                        getApp().showWarning(`Copy job completed with ${data.failed_images} errors`);
-                    }
                 }
             );
         }

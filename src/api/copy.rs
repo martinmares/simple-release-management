@@ -145,6 +145,9 @@ pub struct CopyJobStatus {
     pub current_transfer_message: Option<String>,
     pub current_bytes_copied: Option<u64>,
     pub current_total_bytes: Option<u64>,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub duration_seconds: i64,
 }
 
 /// Shrnutý záznam copy jobu
@@ -386,6 +389,7 @@ pub fn router(state: CopyApiState) -> Router {
         .route("/copy/jobs/{job_id}/cancel", post(cancel_copy_job))
         .route("/copy/jobs/{job_id}", get(get_copy_job_status))
         .route("/copy/jobs/{job_id}/images", get(get_copy_job_images))
+        .route("/copy/jobs/{job_id}/stream", get(copy_job_stream_sse))
         .route("/copy/jobs/{job_id}/logs", get(copy_job_logs_sse))
         .route("/copy/jobs/{job_id}/logs/history", get(copy_job_logs_history))
         .route("/copy/jobs/{job_id}/progress", get(copy_job_progress_sse))
@@ -536,6 +540,133 @@ fn is_missing_target_manifest_error(err: &str) -> bool {
         || err.contains("manifest unknown")
         || err.contains("name unknown")
         || err.contains("not found")
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CopyJobStreamEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<CopyJobStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transfer: Option<ProgressMarkerEvent>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct CopyJobStatusRow {
+    bundle_id: Uuid,
+    version: i32,
+    status: String,
+    source_registry_id: Option<Uuid>,
+    target_registry_id: Option<Uuid>,
+    environment_id: Option<Uuid>,
+    target_tag: String,
+    is_release_job: bool,
+    is_selective: bool,
+    base_copy_job_id: Option<Uuid>,
+    validate_only: bool,
+    current_transfer_stage: Option<String>,
+    current_transfer_message: Option<String>,
+    current_bytes_copied: Option<i64>,
+    current_total_bytes: Option<i64>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn fetch_copy_job_status_from_db(pool: &PgPool, job_id: Uuid) -> Result<Option<CopyJobStatus>, sqlx::Error> {
+    let row = sqlx::query_as::<_, CopyJobStatusRow>(
+        r#"
+        SELECT bv.bundle_id,
+               bv.version,
+               cj.status,
+               cj.source_registry_id,
+               cj.target_registry_id,
+               cj.environment_id,
+               cj.target_tag,
+               cj.is_release_job,
+               cj.is_selective,
+               cj.base_copy_job_id,
+               cj.validate_only,
+               cj.current_transfer_stage,
+               cj.current_transfer_message,
+               cj.current_bytes_copied,
+               cj.current_total_bytes,
+               cj.started_at,
+               cj.completed_at
+        FROM copy_jobs cj
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        WHERE cj.id = $1
+        "#
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+
+    let totals = sqlx::query_as::<_, (i64, i64, i64)>(
+        r#"
+        SELECT
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE copy_status = 'success') AS copied,
+            COUNT(*) FILTER (WHERE copy_status = 'failed') AS failed
+        FROM copy_job_images
+        WHERE copy_job_id = $1
+        "#
+    )
+    .bind(job_id)
+    .fetch_one(pool)
+    .await?;
+
+    let current_image = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT CONCAT(source_image, ':', source_tag)
+        FROM copy_job_images
+        WHERE copy_job_id = $1 AND copy_status = 'in_progress'
+        ORDER BY created_at
+        LIMIT 1
+        "#
+    )
+    .bind(job_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+
+    let duration_seconds = row.completed_at
+        .unwrap_or_else(Utc::now)
+        .signed_duration_since(row.started_at)
+        .num_seconds()
+        .max(0);
+
+    Ok(Some(CopyJobStatus {
+        job_id,
+        bundle_id: row.bundle_id,
+        version: row.version,
+        status: row.status,
+        source_registry_id: row.source_registry_id,
+        target_registry_id: row.target_registry_id,
+        environment_id: row.environment_id,
+        target_tag: row.target_tag,
+        is_release_job: row.is_release_job,
+        is_selective: row.is_selective,
+        base_copy_job_id: row.base_copy_job_id,
+        validate_only: row.validate_only,
+        total_images: totals.0 as usize,
+        copied_images: totals.1 as usize,
+        failed_images: totals.2 as usize,
+        current_image,
+        current_transfer_stage: row.current_transfer_stage,
+        current_transfer_message: row.current_transfer_message,
+        current_bytes_copied: row.current_bytes_copied.map(|v| v as u64),
+        current_total_bytes: row.current_total_bytes.map(|v| v as u64),
+        started_at: row.started_at,
+        completed_at: row.completed_at,
+        duration_seconds,
+    }))
 }
 
 /// POST /api/v1/bundles/{bundle_id}/versions/{version}/copy - Spustí copy operaci
@@ -2921,41 +3052,18 @@ async fn get_copy_job_status(
     State(state): State<CopyApiState>,
     Path(job_id): Path<Uuid>,
 ) -> Result<Json<CopyJobStatus>, (StatusCode, Json<ErrorResponse>)> {
-    let row = sqlx::query_as::<_, (Uuid, i32, String, Option<Uuid>, Option<Uuid>, Option<Uuid>, String, bool, bool, Option<Uuid>, bool, Option<String>, Option<String>, Option<i64>, Option<i64>)>(
-        r#"
-        SELECT bv.bundle_id,
-               bv.version,
-               cj.status,
-               cj.source_registry_id,
-               cj.target_registry_id,
-               cj.environment_id,
-               cj.target_tag,
-               cj.is_release_job,
-               cj.is_selective,
-               cj.base_copy_job_id,
-               cj.validate_only,
-               cj.current_transfer_stage,
-               cj.current_transfer_message,
-               cj.current_bytes_copied,
-               cj.current_total_bytes
-        FROM copy_jobs cj
-        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
-        WHERE cj.id = $1
-        "#
-    )
-    .bind(job_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Database error: {}", e),
-            }),
-        )
-    })?;
+    let status = fetch_copy_job_status_from_db(&state.pool, job_id)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?;
 
-    let Some((bundle_id, version, status, source_registry_id, target_registry_id, environment_id, target_tag, is_release_job, is_selective, base_copy_job_id, validate_only, current_transfer_stage, current_transfer_message, current_bytes_copied, current_total_bytes)) = row else {
+    let Some(status) = status else {
         return Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -2964,72 +3072,7 @@ async fn get_copy_job_status(
         ));
     };
 
-    let totals = sqlx::query_as::<_, (i64, i64, i64)>(
-        r#"
-        SELECT
-            COUNT(*) AS total,
-            COUNT(*) FILTER (WHERE copy_status = 'success') AS copied,
-            COUNT(*) FILTER (WHERE copy_status = 'failed') AS failed
-        FROM copy_job_images
-        WHERE copy_job_id = $1
-        "#
-    )
-    .bind(job_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Database error: {}", e),
-            }),
-        )
-    })?;
-
-    let current_image = sqlx::query_scalar::<_, Option<String>>(
-        r#"
-        SELECT CONCAT(source_image, ':', source_tag)
-        FROM copy_job_images
-        WHERE copy_job_id = $1 AND copy_status = 'in_progress'
-        ORDER BY created_at
-        LIMIT 1
-        "#
-    )
-    .bind(job_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Database error: {}", e),
-            }),
-        )
-    })?
-    .flatten();
-
-    Ok(Json(CopyJobStatus {
-        job_id,
-        bundle_id,
-        version,
-        status,
-        source_registry_id,
-        target_registry_id,
-        environment_id,
-        target_tag,
-        is_release_job,
-        is_selective,
-        base_copy_job_id,
-        validate_only,
-        total_images: totals.0 as usize,
-        copied_images: totals.1 as usize,
-        failed_images: totals.2 as usize,
-        current_image,
-        current_transfer_stage,
-        current_transfer_message,
-        current_bytes_copied: current_bytes_copied.map(|v| v as u64),
-        current_total_bytes: current_total_bytes.map(|v| v as u64),
-    }))
+    Ok(Json(status))
 }
 
 /// GET /api/v1/copy/jobs/{job_id}/progress - SSE stream pro real-time progress
@@ -3058,6 +3101,128 @@ async fn copy_job_progress_sse(
             }
         }
     });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// GET /api/v1/copy/jobs/{job_id}/stream - unified SSE stream for status, transfer and logs
+async fn copy_job_stream_sse(
+    State(state): State<CopyApiState>,
+    Path(job_id): Path<Uuid>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = async_stream::stream! {
+        let mut ticker = tokio::time::interval(tokio::time::Duration::from_secs(1));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut rx: Option<broadcast::Receiver<String>> = None;
+
+        loop {
+            if rx.is_none() {
+                let sender = {
+                    let logs = state.job_logs.read().await;
+                    logs.get(&job_id).cloned()
+                };
+                if let Some(sender) = sender {
+                    rx = Some(sender.subscribe());
+                }
+            }
+
+            tokio::select! {
+                _ = ticker.tick() => {
+                    match fetch_copy_job_status_from_db(&state.pool, job_id).await {
+                        Ok(Some(status)) => {
+                            let done = matches!(status.status.as_str(), "success" | "failed" | "cancelled");
+                            let event = CopyJobStreamEvent {
+                                event_type: if done { "completed".to_string() } else { "job_status".to_string() },
+                                status: Some(status),
+                                line: None,
+                                transfer: None,
+                            };
+                            if let Ok(data) = serde_json::to_string(&event) {
+                                yield Ok(Event::default().data(data));
+                            }
+                            if done {
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            let event = CopyJobStreamEvent {
+                                event_type: "error".to_string(),
+                                status: None,
+                                line: Some("Job not found".to_string()),
+                                transfer: None,
+                            };
+                            if let Ok(data) = serde_json::to_string(&event) {
+                                yield Ok(Event::default().data(data));
+                            }
+                            break;
+                        }
+                        Err(err) => {
+                            let event = CopyJobStreamEvent {
+                                event_type: "error".to_string(),
+                                status: None,
+                                line: Some(format!("Failed to load job status: {}", err)),
+                                transfer: None,
+                            };
+                            if let Ok(data) = serde_json::to_string(&event) {
+                                yield Ok(Event::default().data(data));
+                            }
+                            break;
+                        }
+                    }
+                }
+                recv = async {
+                    match &mut rx {
+                        Some(rx) => Some(rx.recv().await),
+                        None => None,
+                    }
+                } => {
+                    let Some(recv) = recv else {
+                        continue;
+                    };
+                    match recv {
+                        Ok(line) => {
+                            if let Some(transfer) = parse_progress_marker(&line) {
+                                let event = CopyJobStreamEvent {
+                                    event_type: "transfer".to_string(),
+                                    status: None,
+                                    line: None,
+                                    transfer: Some(transfer),
+                                };
+                                if let Ok(data) = serde_json::to_string(&event) {
+                                    yield Ok(Event::default().data(data));
+                                }
+                            } else {
+                                let event = CopyJobStreamEvent {
+                                    event_type: "log".to_string(),
+                                    status: None,
+                                    line: Some(line),
+                                    transfer: None,
+                                };
+                                if let Ok(data) = serde_json::to_string(&event) {
+                                    yield Ok(Event::default().data(data));
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            let event = CopyJobStreamEvent {
+                                event_type: "log".to_string(),
+                                status: None,
+                                line: Some("[log] ...".to_string()),
+                                transfer: None,
+                            };
+                            if let Ok(data) = serde_json::to_string(&event) {
+                                yield Ok(Event::default().data(data));
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            rx = None;
+                        }
+                    }
+                }
+            }
+        }
+    };
 
     Sse::new(stream).keep_alive(KeepAlive::default())
 }

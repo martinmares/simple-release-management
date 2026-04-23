@@ -427,6 +427,29 @@ class ApiClient {
         return eventSource;
     }
 
+    createCopyJobMonitorStream(jobId, onMessage, onError) {
+        const url = `${this.baseUrl}/copy/jobs/${jobId}/stream`;
+        const eventSource = new EventSource(url);
+
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (onMessage) onMessage(data);
+            } catch (error) {
+                console.error('Failed to parse unified copy SSE message:', error);
+                if (onError) onError(error.message);
+            }
+        };
+
+        eventSource.onerror = (error) => {
+            console.error('Unified copy SSE error:', error);
+            eventSource.close();
+            if (onError) onError('Connection lost');
+        };
+
+        return eventSource;
+    }
+
     /**
      * Jednoduchý SSE stream pro textové logy
      */
