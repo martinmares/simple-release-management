@@ -1308,6 +1308,19 @@ router.on('/tenants/:id', async (params) => {
                 .terminal-dot.red { background: #ff5f57; }
                 .terminal-dot.yellow { background: #febc2e; }
                 .terminal-dot.green { background: #28c840; }
+                .tenant-config-accordion summary {
+                    cursor: pointer;
+                    list-style: none;
+                }
+                .tenant-config-accordion summary::-webkit-details-marker {
+                    display: none;
+                }
+                .tenant-config-chevron {
+                    transition: transform 0.16s ease;
+                }
+                .tenant-config-accordion[open] .tenant-config-chevron {
+                    transform: rotate(90deg);
+                }
             </style>
             <div class="row mb-3">
                 <div class="col">
@@ -1381,21 +1394,42 @@ router.on('/tenants/:id', async (params) => {
                                         const targetRegistry = env.target_registry_id ? registryById.get(env.target_registry_id) : null;
                                         const envRepo = env.env_repo_id ? gitRepoById.get(env.env_repo_id) : null;
                                         const deployRepo = env.deploy_repo_id ? gitRepoById.get(env.deploy_repo_id) : null;
+                                        const targetLabel = targetRegistry?.name || targetRegistry?.base_url || '-';
+                                        const deployLabel = env.deploy_repo_path || '-';
                                         return `
-                                        <a href="#/environments/${env.id}/edit" class="list-group-item list-group-item-action">
-                                            <div class="d-flex align-items-center gap-2">
-                                                <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
-                                                <span class="text-secondary small">${env.slug}</span>
-                                            </div>
-                                            <div class="text-secondary small mt-2">
+                                        <div class="list-group-item">
+                                            <div class="d-flex align-items-start gap-2">
+                                                <details class="tenant-config-accordion flex-fill">
+                                                    <summary>
+                                                        <div class="d-flex align-items-start justify-content-between gap-2">
+                                                            <div class="flex-fill">
+                                                                <div class="d-flex align-items-center gap-2">
+                                                                    <i class="ti ti-chevron-right tenant-config-chevron text-secondary"></i>
+                                                                    <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
+                                                                    <span class="text-secondary small">${env.slug}</span>
+                                                                </div>
+                                                                <div class="text-secondary small mt-2">
+                                                                    <span>Target:</span>
+                                                                    <strong class="text-body">${targetLabel}</strong>
+                                                                    <span class="ms-1">path:</span>
+                                                                    <code class="small">${env.target_project_path || '-'}</code>
+                                                                    <span class="ms-2">Deploy:</span>
+                                                                    <code class="small">${deployLabel}</code>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </summary>
+                                                    <div class="text-secondary small mt-3 ps-4">
                                                         <div class="d-flex flex-wrap gap-2">
                                                             <span class="text-secondary small">Source Reg</span>
+                                                            <strong class="text-body">${sourceRegistry?.name || '-'}</strong>
                                                             <code class="small text-wrap">${sourceRegistry?.base_url || '-'}</code>
                                                             <span class="text-secondary small">path:</span>
                                                             <code class="small text-wrap">${env.source_project_path || '-'}</code>
                                                         </div>
                                                         <div class="d-flex flex-wrap gap-2 mt-1">
                                                             <span class="text-secondary small">Target Reg</span>
+                                                            <strong class="text-body">${targetRegistry?.name || '-'}</strong>
                                                             <code class="small text-wrap">${targetRegistry?.base_url || '-'}</code>
                                                             <span class="text-secondary small">path:</span>
                                                             <code class="small text-wrap">${env.target_project_path || '-'}</code>
@@ -1412,8 +1446,15 @@ router.on('/tenants/:id', async (params) => {
                                                             <span class="text-secondary small">path:</span>
                                                             <code class="small text-wrap">${env.deploy_repo_path || '-'}</code>
                                                         </div>
+                                                    </div>
+                                                </details>
+                                                ${canWrite ? `
+                                                    <a href="#/environments/${env.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                        Edit
+                                                    </a>
+                                                ` : ''}
                                             </div>
-                                        </a>
+                                        </div>
                                     `;
                                     }).join('')}
                                 </div>
@@ -1444,53 +1485,87 @@ router.on('/tenants/:id', async (params) => {
                                         const linkedEnvs = environments.filter(env =>
                                             env.source_registry_id === reg.id || env.target_registry_id === reg.id
                                         );
+                                        const envPathRows = linkedEnvs
+                                            .map(env => {
+                                                const parts = [];
+                                                if (env.source_registry_id === reg.id && env.source_project_path) {
+                                                    parts.push(`<span class="text-secondary">src:</span><code class="small">${env.source_project_path}</code>`);
+                                                }
+                                                if (env.target_registry_id === reg.id && env.target_project_path) {
+                                                    parts.push(`<span class="text-secondary">trg:</span><code class="small">${env.target_project_path}</code>`);
+                                                }
+                                                return { env, parts };
+                                            })
+                                            .filter(row => row.parts.length > 0);
+                                        const linkedEnvBadges = linkedEnvs.slice(0, 4).map(env => `
+                                            <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
+                                        `).join('');
+                                        const hiddenEnvCount = Math.max(0, linkedEnvs.length - 4);
                                         return `
-                                        <a href="#/registries/${reg.id}/edit" class="list-group-item list-group-item-action">
+                                        <div class="list-group-item">
                                             <div class="d-flex align-items-start gap-2">
                                                 <span class="avatar avatar-sm">
                                                     <i class="ti ${window.Alpine?.$data?.app?.getRegistryTypeIcon(reg.registry_type) || 'ti-database'}"></i>
                                                 </span>
-                                                <div class="flex-fill">
-                                                    <div class="d-flex align-items-center justify-content-between gap-2">
-                                                        <div>
-                                                            <div class="fw-semibold">${reg.name}</div>
-                                                            <div class="text-secondary small">${reg.registry_type}</div>
-                                                        </div>
-                                                        <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
-                                                    </div>
-                                                    <div class="row g-2 mt-2">
-                                                        <div class="col-md-6">
-                                                            <div class="text-secondary small">Base URL</div>
-                                                            <div><code class="small">${reg.base_url || '-'}</code></div>
-                                                            <div class="text-secondary small mt-1">Default project path</div>
-                                                            <div><code class="small">${reg.default_project_path || '-'}</code></div>
-                                                        </div>
-                                                        <div class="col-md-6">
-                                                            ${linkedEnvs.length > 0 ? `
-                                                                <div class="text-secondary small mb-1">Environment paths</div>
-                                                                <div class="d-flex flex-column gap-1">
-                                                                    ${linkedEnvs.map(env => {
-                                                                        const src = env.source_registry_id === reg.id ? (env.source_project_path || '-') : '-';
-                                                                        const trg = env.target_registry_id === reg.id ? (env.target_project_path || '-') : '-';
-                                                                        return `
-                                                                            <div class="d-flex align-items-center gap-2 small">
-                                                                                <span class="badge" style="${env.color ? `background:${env.color};color:#fff;` : ''}">${env.name}</span>
-                                                                                <span class="text-secondary">src:</span>
-                                                                                <code class="small">${src}</code>
-                                                                                <span class="text-secondary">trg:</span>
-                                                                                <code class="small">${trg}</code>
-                                                                            </div>
-                                                                        `;
-                                                                    }).join('')}
+                                                <details class="tenant-config-accordion flex-fill">
+                                                    <summary>
+                                                        <div class="d-flex align-items-start justify-content-between gap-2">
+                                                            <div class="flex-fill">
+                                                                <div class="d-flex align-items-center gap-2">
+                                                                    <i class="ti ti-chevron-right tenant-config-chevron text-secondary"></i>
+                                                                    <div>
+                                                                        <div class="fw-semibold">${reg.name}</div>
+                                                                        <div class="text-secondary small">${reg.registry_type}</div>
+                                                                    </div>
                                                                 </div>
-                                                            ` : `
-                                                                <div class="text-secondary small">No environments</div>
-                                                            `}
+                                                                <div class="text-secondary small mt-2">
+                                                                    <code class="small">${reg.base_url || '-'}</code>
+                                                                    ${reg.default_project_path ? `<span class="ms-2">default:</span> <code class="small">${reg.default_project_path}</code>` : ''}
+                                                                </div>
+                                                                ${linkedEnvs.length > 0 ? `
+                                                                    <div class="d-flex align-items-center gap-1 flex-wrap mt-2">
+                                                                        <span class="text-secondary small">Used by:</span>
+                                                                        ${linkedEnvBadges}
+                                                                        ${hiddenEnvCount > 0 ? `<span class="badge bg-secondary-lt text-secondary-fg">+${hiddenEnvCount}</span>` : ''}
+                                                                    </div>
+                                                                ` : ''}
+                                                            </div>
+                                                            <span class="badge ${getApp().getRegistryRoleBadge(reg.role) || 'bg-secondary text-secondary-fg'}">${reg.role}</span>
+                                                        </div>
+                                                    </summary>
+                                                    <div class="mt-3 ps-4">
+                                                        <div class="row g-2">
+                                                            <div class="col-md-6">
+                                                                <div class="text-secondary small">Base URL</div>
+                                                                <div><code class="small text-wrap">${reg.base_url || '-'}</code></div>
+                                                                <div class="text-secondary small mt-1">Default project path</div>
+                                                                <div><code class="small">${reg.default_project_path || '-'}</code></div>
+                                                            </div>
+                                                            <div class="col-md-6">
+                                                                ${envPathRows.length > 0 ? `
+                                                                    <div class="text-secondary small mb-1">Environment path overrides</div>
+                                                                    <div class="d-flex flex-column gap-1">
+                                                                        ${envPathRows.map(row => `
+                                                                            <div class="d-flex align-items-center gap-2 small flex-wrap">
+                                                                                <span class="badge" style="${row.env.color ? `background:${row.env.color};color:#fff;` : ''}">${row.env.name}</span>
+                                                                                ${row.parts.join('')}
+                                                                            </div>
+                                                                        `).join('')}
+                                                                    </div>
+                                                                ` : `
+                                                                    <div class="text-secondary small">No path overrides</div>
+                                                                `}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
+                                                </details>
+                                                ${canWrite ? `
+                                                    <a href="#/registries/${reg.id}/edit" class="btn btn-outline-primary btn-sm">
+                                                        Edit
+                                                    </a>
+                                                ` : ''}
                                             </div>
-                                        </a>
+                                        </div>
                                     `;
                                     }).join('')}
                                 </div>
