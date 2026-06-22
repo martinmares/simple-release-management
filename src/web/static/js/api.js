@@ -242,6 +242,10 @@ class ApiClient {
         return this.delete(`/bundles/${id}`);
     }
 
+    async setBundleArchived(id, isArchived) {
+        return this.put(`/bundles/${id}/archive`, { is_archived: isArchived });
+    }
+
     // Bundle versions
     async getBundleVersions(bundleId) {
         return this.get(`/bundles/${bundleId}/versions`);

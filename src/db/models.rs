@@ -87,6 +87,7 @@ pub struct Bundle {
     pub description: Option<String>,
     pub auto_tag_enabled: bool,
     pub current_version: i32,
+    pub is_archived: bool,
     pub created_at: DateTime<Utc>,
 }
 

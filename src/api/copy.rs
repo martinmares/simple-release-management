@@ -706,6 +706,15 @@ async fn copy_bundle_version(
             )
         })?;
 
+    if bundle.is_archived {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Bundle is archived. Restore it before starting a copy job.".to_string(),
+            }),
+        ));
+    }
+
     // Získat bundle_version_id
     let bundle_version_id: Uuid = sqlx::query_scalar(
         "SELECT id FROM bundle_versions WHERE bundle_id = $1 AND version = $2",

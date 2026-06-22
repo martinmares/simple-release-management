@@ -647,8 +647,10 @@ router.on('/', async () => {
 
         // Získat poslední bundles (top 5) s detaily
         const recentBundles = bundles
+            .filter(bundle => !bundle.is_archived)
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 5);
+        const activeBundlesCount = bundles.filter(bundle => !bundle.is_archived).length;
 
         const registryMap = {};
         registries.forEach(r => {
@@ -697,7 +699,7 @@ router.on('/', async () => {
                                     </span>
                                 </div>
                                 <div class="col">
-                                    <div class="font-weight-medium">${bundles.length}</div>
+                                    <div class="font-weight-medium">${activeBundlesCount}</div>
                                     <div class="text-secondary">Bundles</div>
                                 </div>
                             </div>
@@ -1670,6 +1672,7 @@ router.on('/tenants/:id', async (params) => {
                                             <div class="row align-items-center">
                                                 <div class="col">
                                                     <strong>${bundle.name}</strong>
+                                                    ${bundle.is_archived ? '<span class="badge bg-secondary text-secondary-fg ms-2">archived</span>' : ''}
                                                     <div class="text-secondary small">${bundle.description || ''}</div>
                                                 </div>
                                                 <div class="col-auto">
@@ -4287,7 +4290,7 @@ router.on('/bundles', async () => {
         const registryMap = {};
         registries.forEach(r => registryMap[r.id] = r);
 
-        const renderBundles = (rows, searchQuery = '', selectedTenant = '') => `
+        const renderBundles = (rows, searchQuery = '', selectedTenant = '', selectedArchive = 'active') => `
             ${renderScopeNotice()}
             <div class="card">
                 <div class="card-header">
@@ -4324,6 +4327,13 @@ router.on('/bundles', async () => {
                                 `).join('')}
                             </select>
                         </div>
+                        <div class="col-md-2">
+                            <select class="form-select" id="bundles-archive">
+                                <option value="active" ${selectedArchive === 'active' ? 'selected' : ''}>Active</option>
+                                <option value="archived" ${selectedArchive === 'archived' ? 'selected' : ''}>Archived</option>
+                                <option value="all" ${selectedArchive === 'all' ? 'selected' : ''}>All</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
                 <div class="table-responsive">
@@ -4351,7 +4361,10 @@ router.on('/bundles', async () => {
                                 return `
                                 <tr>
                                     <td>
-                                        <div><a href="#/bundles/${bundle.id}"><strong>${bundle.name}</strong></a></div>
+                                        <div>
+                                            <a href="#/bundles/${bundle.id}"><strong>${bundle.name}</strong></a>
+                                            ${bundle.is_archived ? '<span class="badge bg-secondary text-secondary-fg ms-2">archived</span>' : ''}
+                                        </div>
                                         <div class="small text-secondary" style="line-height: 1.2;">
                                             <div class="mt-1">
                                                 <i class="ti ti-download" style="font-size: 0.8em;"></i>
@@ -4377,24 +4390,29 @@ router.on('/bundles', async () => {
         content.innerHTML = renderBundles(bundles);
         const searchEl = document.getElementById('bundles-search');
         const tenantEl = document.getElementById('bundles-tenant');
+        const archiveEl = document.getElementById('bundles-archive');
 
         const applyFilters = () => {
-            const q = searchEl.value.trim().toLowerCase();
-            const tenantId = tenantEl.value;
+            const q = document.getElementById('bundles-search').value.trim().toLowerCase();
+            const tenantId = document.getElementById('bundles-tenant').value;
+            const archiveMode = document.getElementById('bundles-archive').value;
             const filtered = bundles.filter(b => {
                 const nameOk = !q || b.name.toLowerCase().includes(q);
                 const tenantOk = !tenantId || b.tenant_id === tenantId;
-                return nameOk && tenantOk;
+                const archiveOk = archiveMode === 'all'
+                    || (archiveMode === 'archived' ? b.is_archived : !b.is_archived);
+                return nameOk && tenantOk && archiveOk;
             });
-            content.innerHTML = renderBundles(filtered, q, tenantId);
-            document.getElementById('bundles-search').value = q;
-            document.getElementById('bundles-tenant').value = tenantId;
+            content.innerHTML = renderBundles(filtered, q, tenantId, archiveMode);
             document.getElementById('bundles-search').addEventListener('input', applyFilters);
             document.getElementById('bundles-tenant').addEventListener('change', applyFilters);
+            document.getElementById('bundles-archive').addEventListener('change', applyFilters);
         };
 
         searchEl.addEventListener('input', applyFilters);
         tenantEl.addEventListener('change', applyFilters);
+        archiveEl.addEventListener('change', applyFilters);
+        applyFilters();
     } catch (error) {
         content.innerHTML = `
             <div class="alert alert-danger">
@@ -4639,7 +4657,10 @@ router.on('/bundles/:id', async (params) => {
                     <div class="card mb-3">
                         <div class="card-header">
                             <div>
-                                <h3 class="card-title mb-1">${bundle.name}</h3>
+                                <h3 class="card-title mb-1">
+                                    ${bundle.name}
+                                    ${bundle.is_archived ? '<span class="badge bg-secondary text-secondary-fg ms-2">archived</span>' : ''}
+                                </h3>
                                 <div class="text-secondary small">
                                     <div>${tenant?.name ? `Tenant: <strong>${tenant.name}</strong>` : 'Tenant: -'}</div>
                                     <div>${sourceRegistry?.base_url ? `Source: <code>${sourceRegistry.base_url}${sourceRegistry.default_project_path ? ` (path: ${sourceRegistry.default_project_path})` : ''}</code>` : 'Source: -'}</div>
@@ -4647,21 +4668,23 @@ router.on('/bundles/:id', async (params) => {
                             </div>
                             <div class="card-actions">
                                 ${canWrite ? `
-                                    <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary btn-sm">
-                                        <i class="ti ti-plus"></i>
-                                        New Version
-                                    </a>
-                                    <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
-                                        <i class="ti ti-copy"></i>
-                                        Duplicate Bundle
-                                    </a>
+                                    ${!bundle.is_archived ? `
+                                        <a href="#/bundles/${bundle.id}/versions/new" class="btn btn-primary btn-sm">
+                                            <i class="ti ti-plus"></i>
+                                            New Version
+                                        </a>
+                                        <a href="#/bundles/${bundle.id}/copy" class="btn btn-success btn-sm">
+                                            <i class="ti ti-copy"></i>
+                                            Duplicate Bundle
+                                        </a>
+                                    ` : ''}
                                     <a href="#/bundles/${bundle.id}/edit" class="btn btn-ghost-secondary btn-sm">
                                         <i class="ti ti-pencil"></i>
                                         Edit
                                     </a>
-                                    <button class="btn btn-danger btn-sm" id="delete-bundle-btn">
-                                        <i class="ti ti-trash"></i>
-                                        Delete
+                                    <button class="btn ${bundle.is_archived ? 'btn-primary' : 'btn-outline-warning'} btn-sm" id="archive-bundle-btn" data-archived="${bundle.is_archived ? 'true' : 'false'}">
+                                        <i class="ti ${bundle.is_archived ? 'ti-archive-off' : 'ti-archive'}"></i>
+                                        ${bundle.is_archived ? 'Restore' : 'Archive'}
                                     </button>
                                 ` : `
                                     <span class="text-secondary small">Write access required</span>
@@ -4669,6 +4692,12 @@ router.on('/bundles/:id', async (params) => {
                             </div>
                         </div>
                         <div class="card-body">
+                            ${bundle.is_archived ? `
+                                <div class="alert alert-warning">
+                                    <i class="ti ti-archive"></i>
+                                    This bundle is archived. Restore it before creating a new version or starting a copy job.
+                                </div>
+                            ` : ''}
                             <dl class="row mb-0">
                                 <dt class="col-4">Description:</dt>
                                 <dd class="col-8">${bundle.description || '-'}</dd>
@@ -4691,12 +4720,12 @@ router.on('/bundles/:id', async (params) => {
                                 <li class="mb-2">
                                     Start a copy job from the latest bundle version.
                                     ${latestVersion ? `
-                                        ${canWrite ? `
+                                        ${canWrite && !bundle.is_archived ? `
                                             <a href="#/bundles/${bundle.id}/versions/${latestVersion}/copy" class="btn btn-sm btn-outline-primary ms-2">
                                                 Start Copy Job
                                             </a>
                                         ` : `
-                                            <button class="btn btn-sm btn-outline-primary ms-2" disabled title="Write role required">Start Copy Job</button>
+                                            <button class="btn btn-sm btn-outline-primary ms-2" disabled title="${bundle.is_archived ? 'Bundle is archived' : 'Write role required'}">Start Copy Job</button>
                                         `}
                                     ` : ''}
                                 </li>
@@ -5017,24 +5046,27 @@ router.on('/bundles/:id', async (params) => {
             });
         });
 
-        // Delete handler
-        document.getElementById('delete-bundle-btn').addEventListener('click', async () => {
+        document.getElementById('archive-bundle-btn')?.addEventListener('click', async (event) => {
             if (!getApp()?.canWrite?.()) {
                 getApp().showError('Write role required.');
                 return;
             }
+            const isArchived = event.currentTarget.getAttribute('data-archived') === 'true';
+            const nextArchived = !isArchived;
             const confirmed = await showConfirmDialog(
-                'Delete Bundle?',
-                `Are you sure you want to delete "${bundle.name}"? This will delete all versions and image mappings.`,
-                'Delete',
+                nextArchived ? 'Archive Bundle?' : 'Restore Bundle?',
+                nextArchived
+                    ? `Archive "${bundle.name}"? It will stay visible in history, but new versions and copy jobs will be blocked.`
+                    : `Restore "${bundle.name}"? It will become available for new versions and copy jobs again.`,
+                nextArchived ? 'Archive' : 'Restore',
                 'Cancel'
             );
 
             if (confirmed) {
                 try {
-                    await api.deleteBundle(bundle.id);
-                    getApp().showSuccess('Bundle deleted successfully');
-                    router.navigate('/bundles');
+                    await api.setBundleArchived(bundle.id, nextArchived);
+                    getApp().showSuccess(`Bundle ${nextArchived ? 'archived' : 'restored'} successfully`);
+                    router.navigate(`/bundles/${bundle.id}`);
                 } catch (error) {
                     getApp().showError(error.message);
                 }
@@ -5216,6 +5248,16 @@ router.on('/bundles/:id/copy', async (params) => {
             api.getRegistries(),
             api.getBundleVersions(params.id),
         ]);
+        if (bundle.is_archived) {
+            content.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="ti ti-archive"></i>
+                    Bundle "${bundle.name}" is archived. Restore it before duplicating it.
+                </div>
+                <a href="#/bundles/${bundle.id}" class="btn btn-secondary">Back to Bundle</a>
+            `;
+            return;
+        }
 
         const latestVersion = versions.length > 0
             ? Math.max(...versions.map(v => v.version))
@@ -5461,6 +5503,16 @@ router.on('/bundles/:id/versions/new', async (params) => {
 
     try {
         const bundle = await api.getBundle(params.id);
+        if (bundle.is_archived) {
+            content.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="ti ti-archive"></i>
+                    Bundle "${bundle.name}" is archived. Restore it before creating a new version.
+                </div>
+                <a href="#/bundles/${bundle.id}" class="btn btn-secondary">Back to Bundle</a>
+            `;
+            return;
+        }
         const versions = await api.getBundleVersions(params.id);
         const latestVersion = versions.length > 0
             ? Math.max(...versions.map(v => v.version))
@@ -7411,6 +7463,16 @@ router.on('/bundles/:id/versions/:version/copy', async (params) => {
     try {
         const canWrite = getApp()?.canWrite?.() || false;
         const bundle = await api.getBundle(params.id);
+        if (bundle.is_archived) {
+            content.innerHTML = `
+                <div class="alert alert-warning">
+                    <i class="ti ti-archive"></i>
+                    Bundle "${bundle.name}" is archived. Restore it before starting a copy job.
+                </div>
+                <a href="#/bundles/${bundle.id}" class="btn btn-secondary">Back to Bundle</a>
+            `;
+            return;
+        }
         const [mappings, environments, registries] = await Promise.all([
             api.getImageMappings(params.id, params.version),
             bundle.tenant_id ? api.getEnvironments(bundle.tenant_id) : Promise.resolve([]),

@@ -108,7 +108,12 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Request pro archivaci verze
+/// Request pro archivaci bundle/verze
+#[derive(Debug, Deserialize)]
+pub struct ArchiveBundleRequest {
+    pub is_archived: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ArchiveBundleVersionRequest {
     pub is_archived: bool,
@@ -125,6 +130,7 @@ pub struct BundleWithStats {
     pub description: Option<String>,
     pub auto_tag_enabled: bool,
     pub current_version: i32,
+    pub is_archived: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     // Stats
     pub image_count: i64,
@@ -137,6 +143,7 @@ pub fn router(pool: PgPool) -> Router {
         .route("/bundles", get(list_all_bundles))
         .route("/tenants/{tenant_id}/bundles", get(list_bundles).post(create_bundle))
         .route("/bundles/{id}", get(get_bundle).put(update_bundle).delete(delete_bundle))
+        .route("/bundles/{id}/archive", put(set_bundle_archive))
 
         // Bundle versions
         .route("/bundles/{bundle_id}/versions", get(list_bundle_versions).post(create_bundle_version))
@@ -373,7 +380,7 @@ async fn create_bundle(
     let bundle = sqlx::query_as::<_, Bundle>(
         "INSERT INTO bundles (tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version)
          VALUES ($1, $2, $3, $4, $5, 1)
-         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, created_at",
+         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, is_archived, created_at",
     )
     .bind(tenant_id)
     .bind(payload.source_registry_id)
@@ -454,7 +461,7 @@ async fn update_bundle(
         "UPDATE bundles
          SET name = $1, description = $2, source_registry_id = $3, auto_tag_enabled = $4
          WHERE id = $5
-         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, created_at",
+         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, is_archived, created_at",
     )
     .bind(&payload.name)
     .bind(&payload.description)
@@ -475,6 +482,42 @@ async fn update_bundle(
             }
         }
 
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    match bundle {
+        Some(bundle) => Ok(Json(bundle)),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Bundle with id {} not found", id),
+            }),
+        )),
+    }
+}
+
+/// PUT /api/v1/bundles/{id}/archive - Archive/restore bundle
+async fn set_bundle_archive(
+    State(pool): State<PgPool>,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<ArchiveBundleRequest>,
+) -> Result<Json<Bundle>, (StatusCode, Json<ErrorResponse>)> {
+    let bundle = sqlx::query_as::<_, Bundle>(
+        "UPDATE bundles
+         SET is_archived = $1
+         WHERE id = $2
+         RETURNING id, tenant_id, source_registry_id, name, description, auto_tag_enabled, current_version, is_archived, created_at",
+    )
+    .bind(payload.is_archived)
+    .bind(id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -756,8 +799,8 @@ async fn create_bundle_version(
     })?;
 
     // Získat aktuální verzi a inkrementovat
-    let current_version: i32 = sqlx::query_scalar(
-        "SELECT current_version FROM bundles WHERE id = $1 FOR UPDATE"
+    let current_bundle: (i32, bool) = sqlx::query_as(
+        "SELECT current_version, is_archived FROM bundles WHERE id = $1 FOR UPDATE"
     )
     .bind(bundle_id)
     .fetch_optional(&mut *tx)
@@ -778,6 +821,16 @@ async fn create_bundle_version(
             }),
         )
     })?;
+
+    let (current_version, is_archived) = current_bundle;
+    if is_archived {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Bundle is archived. Restore it before creating a new version.".to_string(),
+            }),
+        ));
+    }
 
     let new_version = current_version + 1;
 
