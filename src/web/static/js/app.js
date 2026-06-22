@@ -6137,6 +6137,7 @@ router.on('/releases/:id', async (params) => {
             copyJob?.target_registry_id ? api.getRegistry(copyJob.target_registry_id).catch(() => null) : null,
         ]);
 
+        const canWrite = getApp()?.canWrite?.() || false;
         const canDeploy = getApp()?.canDeploy?.() || false;
         content.innerHTML = `
             <div class="row mb-3">
@@ -6155,6 +6156,12 @@ router.on('/releases/:id', async (params) => {
                         ${release.release_id}
                         ${release.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
                     </h3>
+                    <div class="card-actions">
+                        <button class="btn btn-sm btn-outline-primary" id="copy-release-images-btn" ${canWrite ? '' : 'disabled'} title="${canWrite ? '' : 'Developer or admin role required'}">
+                            <i class="ti ti-copy"></i>
+                            Copy Images to Environment
+                        </button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="text-secondary small mb-3">
@@ -6300,6 +6307,14 @@ router.on('/releases/:id', async (params) => {
                     return;
                 }
                 await runDeployFromRelease(release, environments);
+            });
+        }
+
+        const copyReleaseImagesBtn = document.getElementById('copy-release-images-btn');
+        if (copyReleaseImagesBtn) {
+            copyReleaseImagesBtn.addEventListener('click', async () => {
+                if (!requireWriteAccess('Copy release images')) return;
+                await runCopyImagesFromRelease(release, environments);
             });
         }
 
@@ -9331,6 +9346,109 @@ async function runDeployFromRelease(release, environments) {
             getApp().showSuccess('Build job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);
         } catch (error) {
+            getApp().showError(error.message);
+        }
+    });
+}
+
+async function runCopyImagesFromRelease(release, environments) {
+    const eligible = environments || [];
+    if (eligible.length === 0) {
+        getApp().showError('No environments available for this image release');
+        return;
+    }
+
+    const dialogHtml = `
+        <div class="modal modal-blur fade show" style="display: block;" id="release-copy-images-modal">
+            <div class="modal-dialog modal-sm modal-dialog-centered" role="document">
+                <div class="modal-content">
+                    <div class="modal-body">
+                        <div class="modal-title">Copy Images to Environment</div>
+                        <div class="text-secondary small mt-2">
+                            Creates a copy job from image release <code>${escapeHtml(release.release_id || '')}</code>.
+                            No new Image Release will be created.
+                        </div>
+                        <div class="mt-3">
+                            <label class="form-label">Target Environment</label>
+                            <select class="form-select" id="release-copy-env-select">
+                                <option value="">Select...</option>
+                                ${eligible.map(env => `
+                                    <option value="${env.id}" ${release.environment_id === env.id ? 'selected' : ''}>
+                                        ${escapeHtml(env.name)} (${escapeHtml(env.slug)})
+                                    </option>
+                                `).join('')}
+                            </select>
+                            <div class="form-hint" id="release-copy-env-hint"></div>
+                        </div>
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" id="release-copy-validate-only">
+                            <label class="form-check-label" for="release-copy-validate-only">
+                                Validate only (no copy, no tag write)
+                            </label>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-link link-secondary" id="release-copy-cancel">
+                            Cancel
+                        </button>
+                        <button type="button" class="btn btn-primary" id="release-copy-confirm">
+                            Create Copy Job
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-backdrop fade show"></div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', dialogHtml);
+
+    const modal = document.getElementById('release-copy-images-modal');
+    const backdrop = document.querySelector('.modal-backdrop');
+    const select = document.getElementById('release-copy-env-select');
+    const hint = document.getElementById('release-copy-env-hint');
+    const validateOnly = document.getElementById('release-copy-validate-only');
+    const confirmBtn = document.getElementById('release-copy-confirm');
+    const cancelBtn = document.getElementById('release-copy-cancel');
+
+    const cleanup = () => {
+        modal.remove();
+        backdrop.remove();
+    };
+
+    const update = () => {
+        const env = eligible.find(item => item.id === select.value);
+        confirmBtn.disabled = !env;
+        if (!env) {
+            hint.textContent = 'Target tag will be the image release ID.';
+            return;
+        }
+        const targetPath = (env.target_project_path || '').trim() || '-';
+        hint.textContent = `Target path: ${targetPath}; target tag: ${release.release_id}`;
+    };
+
+    select.addEventListener('change', update);
+    cancelBtn.addEventListener('click', cleanup);
+    update();
+
+    confirmBtn.addEventListener('click', async () => {
+        const environmentId = select.value;
+        if (!environmentId) return;
+
+        confirmBtn.disabled = true;
+        confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
+        try {
+            const response = await api.startCopyFromReleaseJob({
+                release_id: release.id,
+                environment_id: environmentId,
+                validate_only: validateOnly.checked,
+            });
+            cleanup();
+            getApp().showSuccess('Copy job created from image release');
+            router.navigate(`/copy-jobs/${response.job_id}`);
+        } catch (error) {
+            confirmBtn.disabled = false;
+            confirmBtn.innerHTML = 'Create Copy Job';
             getApp().showError(error.message);
         }
     });

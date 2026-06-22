@@ -380,6 +380,10 @@ class ApiClient {
         return this.post('/copy/jobs/release', payload);
     }
 
+    async startCopyFromReleaseJob(payload) {
+        return this.post('/copy/jobs/from-release', payload);
+    }
+
     async startSelectiveCopyJob(payload) {
         return this.post('/copy/jobs/selective', payload);
     }

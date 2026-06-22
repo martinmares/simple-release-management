@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::crypto;
-use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registry};
+use crate::db::models::{Bundle, CopyJobImage, Environment, ImageMapping, Registry, Release};
 use crate::services::image_tool::SkopeoCredentials;
 use crate::services::ImageToolService;
 
@@ -183,6 +183,14 @@ pub struct ReleaseCopyRequest {
     pub extra_tags: Option<Vec<String>>,
     pub rename_rules: Vec<RenameRule>,
     pub overrides: Vec<ImageOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CopyFromReleaseRequest {
+    pub release_id: Uuid,
+    pub environment_id: Uuid,
+    pub validate_only: Option<bool>,
+    pub extra_tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,6 +392,7 @@ pub fn router(state: CopyApiState) -> Router {
         .route("/copy/jobs/compare", get(compare_copy_jobs))
         .route("/copy/jobs/release/precheck", post(precheck_release_copy_images))
         .route("/copy/jobs/release", post(start_release_copy_job))
+        .route("/copy/jobs/from-release", post(start_copy_from_release_job))
         .route("/copy/jobs/selective", post(start_selective_copy_job))
         .route("/copy/jobs/{job_id}/start", post(start_copy_job))
         .route("/copy/jobs/{job_id}/cancel", post(cancel_copy_job))
@@ -1785,6 +1794,266 @@ async fn start_release_copy_job(
         Json(CopyJobResponse {
             job_id,
             message: format!("Release copy job started for {} images", source_images.len()),
+        }),
+    ))
+}
+
+/// POST /api/v1/copy/jobs/from-release - vytvoří copy job ze stávajícího image release manifestu
+async fn start_copy_from_release_job(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<CopyApiState>,
+    Json(payload): Json<CopyFromReleaseRequest>,
+) -> Result<(StatusCode, Json<CopyJobResponse>), (StatusCode, Json<ErrorResponse>)> {
+    let release = sqlx::query_as::<_, Release>("SELECT * FROM releases WHERE id = $1")
+        .bind(payload.release_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Database error: {}", e),
+                }),
+            )
+        })?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "Image release not found".to_string(),
+                }),
+            )
+        })?;
+
+    let source_job = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, Uuid)>(
+        r#"
+        SELECT cj.bundle_version_id, cj.status, cj.target_registry_id, cj.environment_id, b.tenant_id
+        FROM copy_jobs cj
+        JOIN bundle_versions bv ON bv.id = cj.bundle_version_id
+        JOIN bundles b ON b.id = bv.bundle_id
+        WHERE cj.id = $1
+        "#,
+    )
+    .bind(release.copy_job_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Source copy job for image release not found".to_string(),
+            }),
+        )
+    })?;
+
+    let (bundle_version_id, source_job_status, source_registry_id, _source_env_id, tenant_id) =
+        source_job;
+
+    if !auth.is_tenant_allowed(tenant_id) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Tenant access denied".to_string(),
+            }),
+        ));
+    }
+
+    if source_job_status != "success" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source image release copy job must be successful".to_string(),
+            }),
+        ));
+    }
+
+    let source_registry_id = source_registry_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Source image release copy job has no target registry".to_string(),
+            }),
+        )
+    })?;
+
+    let environment =
+        sqlx::query_as::<_, Environment>("SELECT * FROM environments WHERE id = $1")
+            .bind(payload.environment_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: format!("Database error: {}", e),
+                    }),
+                )
+            })?
+            .ok_or_else(|| {
+                (
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse {
+                        error: "Target environment not found".to_string(),
+                    }),
+                )
+            })?;
+
+    if environment.tenant_id != tenant_id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Target environment belongs to a different tenant".to_string(),
+            }),
+        ));
+    }
+
+    let target_registry_id = environment.target_registry_id.ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Target environment is missing target registry".to_string(),
+            }),
+        )
+    })?;
+
+    let source_images = sqlx::query_as::<_, CopyJobImage>(
+        "SELECT * FROM copy_job_images WHERE copy_job_id = $1 ORDER BY created_at",
+    )
+    .bind(release.copy_job_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Database error: {}", e),
+            }),
+        )
+    })?;
+
+    if source_images.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Image release manifest contains no images".to_string(),
+            }),
+        ));
+    }
+
+    let missing_digest = source_images
+        .iter()
+        .filter(|img| img.target_sha256.as_deref().unwrap_or("").trim().is_empty())
+        .count();
+    if missing_digest > 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Image release manifest has {} images without digest; cannot copy by manifest",
+                    missing_digest
+                ),
+            }),
+        ));
+    }
+
+    let mut extra_tags = payload
+        .extra_tags
+        .unwrap_or_else(|| release.extra_tags.clone().unwrap_or_default())
+        .into_iter()
+        .map(|tag| tag.trim().to_string())
+        .filter(|tag| !tag.is_empty() && tag != &release.release_id)
+        .collect::<Vec<String>>();
+    extra_tags.sort();
+    extra_tags.dedup();
+
+    let job_id = Uuid::new_v4();
+    let validate_only = payload.validate_only.unwrap_or(false);
+    let note = format!(
+        "Copy images from image release {} ({})",
+        release.release_id, release.id
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO copy_jobs
+            (id, bundle_version_id, target_tag, status, source_registry_id, target_registry_id,
+             source_ref_mode, is_release_job, release_id, release_notes, validate_only,
+             environment_id, extra_tags, base_copy_job_id)
+        VALUES
+            ($1, $2, $3, 'pending', $4, $5,
+             'digest', TRUE, NULL, $6, $7,
+             $8, $9, $10)
+        "#,
+    )
+    .bind(job_id)
+    .bind(bundle_version_id)
+    .bind(&release.release_id)
+    .bind(source_registry_id)
+    .bind(target_registry_id)
+    .bind(&note)
+    .bind(validate_only)
+    .bind(Some(environment.id))
+    .bind(&extra_tags)
+    .bind(release.copy_job_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to create copy job from image release: {}", e),
+            }),
+        )
+    })?;
+
+    for img in &source_images {
+        let target_path =
+            apply_registry_project_path(&img.target_image, environment.target_project_path.as_deref());
+        let _: Uuid = sqlx::query_scalar(
+            r#"
+            INSERT INTO copy_job_images
+                (copy_job_id, image_mapping_id, source_image, source_tag, target_image, target_tag, source_sha256)
+            VALUES
+                ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+            "#,
+        )
+        .bind(job_id)
+        .bind(img.image_mapping_id)
+        .bind(&img.target_image)
+        .bind(&img.target_tag)
+        .bind(&target_path)
+        .bind(&release.release_id)
+        .bind(&img.target_sha256)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to snapshot image release manifest: {}", e),
+                }),
+            )
+        })?;
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CopyJobResponse {
+            job_id,
+            message: format!(
+                "Copy job created from image release {} for {} images",
+                release.release_id,
+                source_images.len()
+            ),
         }),
     ))
 }
