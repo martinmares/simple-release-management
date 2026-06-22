@@ -5987,7 +5987,7 @@ router.on('/releases', async () => {
                                         || release.isAuto === true
                                         || release.auto === true;
                                     return `
-                                        <tr>
+                                        <tr class="cursor-pointer release-row" data-release-id="${release.id}">
                                             <td>
                                                 <input class="form-check-input release-select" type="checkbox" value="${release.id}" ${selectedReleases.has(release.id) ? 'checked' : ''}>
                                             </td>
@@ -6243,6 +6243,18 @@ router.on('/releases', async () => {
             document.getElementById('releases-tenant').addEventListener('change', () => applyFilters(true));
             document.getElementById('releases-env').addEventListener('change', () => applyFilters(true));
             document.getElementById('releases-bundle').addEventListener('change', () => applyFilters(true));
+
+            document.querySelectorAll('.release-row').forEach(row => {
+                row.addEventListener('click', (event) => {
+                    if (event.target.closest('a, button, input, select, label')) {
+                        return;
+                    }
+                    const releaseId = row.getAttribute('data-release-id');
+                    if (releaseId) {
+                        router.navigate(`/releases/${releaseId}`);
+                    }
+                });
+            });
 
             document.getElementById('releases-page-size')?.addEventListener('change', (event) => {
                 releasesPageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
@@ -9040,6 +9052,7 @@ router.on('/deployments', async () => {
                         <table class="table table-vcenter card-table table-hover">
                             <thead>
                                 <tr>
+                                    <th>Build Job</th>
                                     <th>Release</th>
                                     <th>Bundle</th>
                                     <th>Target</th>
@@ -9047,7 +9060,6 @@ router.on('/deployments', async () => {
                                     <th>Started</th>
                                     <th>Completed</th>
                                     <th>Tag</th>
-                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -9058,7 +9070,8 @@ router.on('/deployments', async () => {
                                         </td>
                                     </tr>
                                 ` : visibleRows.map(row => `
-                                    <tr>
+                                    <tr class="cursor-pointer deployment-row" data-deployment-id="${row.id}">
+                                        <td><a href="#/deploy-jobs/${row.id}"><code class="small">${row.id}</code></a></td>
                                         <td>
                                             <a href="#/releases/${row.release_db_id}"><strong>${row.release_id}</strong></a>
                                             ${row.is_auto ? '<span class="badge bg-azure-lt text-azure-fg ms-2">auto</span>' : ''}
@@ -9081,9 +9094,6 @@ router.on('/deployments', async () => {
                                         <td>${new Date(row.started_at).toLocaleString('cs-CZ')}</td>
                                         <td>${row.completed_at ? new Date(row.completed_at).toLocaleString('cs-CZ') : '-'}</td>
                                         <td>${row.tag_name ? `<code class="small">${row.tag_name}</code>` : '-'}</td>
-                                        <td>
-                                            <a href="#/deploy-jobs/${row.id}" class="btn btn-sm btn-outline-primary">View</a>
-                                        </td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -9143,6 +9153,17 @@ router.on('/deployments', async () => {
             document.getElementById('deployments-tenant')?.addEventListener('change', () => applyFilters(true));
             document.getElementById('deployments-bundle')?.addEventListener('change', () => applyFilters(true));
             document.getElementById('deployments-status')?.addEventListener('change', () => applyFilters(true));
+            document.querySelectorAll('.deployment-row').forEach(row => {
+                row.addEventListener('click', (event) => {
+                    if (event.target.closest('a, button, input, select, label')) {
+                        return;
+                    }
+                    const deploymentId = row.getAttribute('data-deployment-id');
+                    if (deploymentId) {
+                        router.navigate(`/deploy-jobs/${deploymentId}`);
+                    }
+                });
+            });
             document.getElementById('deployments-page-size')?.addEventListener('change', (event) => {
                 deploymentsPageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
                 deploymentsPage = 1;
