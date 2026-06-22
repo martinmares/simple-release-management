@@ -1327,9 +1327,9 @@ router.on('/tenants/:id', async (params) => {
                 }
                 .tenant-config-detail-row {
                     display: grid;
-                    grid-template-columns: 78px minmax(0, 1fr) auto auto;
+                    grid-template-columns: 78px minmax(0, 1fr);
                     gap: 8px;
-                    align-items: baseline;
+                    align-items: start;
                 }
                 .tenant-config-detail-label {
                     color: var(--tblr-secondary);
@@ -1342,12 +1342,8 @@ router.on('/tenants/:id', async (params) => {
                     white-space: normal;
                     word-break: break-all;
                 }
-                .tenant-config-detail-path-label {
-                    color: var(--tblr-secondary);
-                    white-space: nowrap;
-                }
-                .tenant-config-detail-path code {
-                    white-space: nowrap;
+                .tenant-config-detail-path {
+                    margin-top: 2px;
                 }
             </style>
             <div class="row mb-3">
@@ -1453,34 +1449,42 @@ router.on('/tenants/:id', async (params) => {
                                                             <div class="tenant-config-detail-main">
                                                                 <strong class="text-body">${sourceRegistry?.name || '-'}</strong>
                                                                 <code class="small ms-1">${sourceRegistry?.base_url || '-'}</code>
+                                                                <div class="tenant-config-detail-path">
+                                                                    <span class="text-secondary">path:</span>
+                                                                    <code class="small">${env.source_project_path || '-'}</code>
+                                                                </div>
                                                             </div>
-                                                            <div class="tenant-config-detail-path-label">path:</div>
-                                                            <div class="tenant-config-detail-path"><code class="small">${env.source_project_path || '-'}</code></div>
                                                         </div>
                                                         <div class="tenant-config-detail-row">
                                                             <div class="tenant-config-detail-label">Target Reg</div>
                                                             <div class="tenant-config-detail-main">
                                                                 <strong class="text-body">${targetRegistry?.name || '-'}</strong>
                                                                 <code class="small ms-1">${targetRegistry?.base_url || '-'}</code>
+                                                                <div class="tenant-config-detail-path">
+                                                                    <span class="text-secondary">path:</span>
+                                                                    <code class="small">${env.target_project_path || '-'}</code>
+                                                                </div>
                                                             </div>
-                                                            <div class="tenant-config-detail-path-label">path:</div>
-                                                            <div class="tenant-config-detail-path"><code class="small">${env.target_project_path || '-'}</code></div>
                                                         </div>
                                                         <div class="tenant-config-detail-row">
                                                             <div class="tenant-config-detail-label">Env Git</div>
                                                             <div class="tenant-config-detail-main">
                                                                 <code class="small">${envRepo?.repo_url || '-'}</code>
+                                                                <div class="tenant-config-detail-path">
+                                                                    <span class="text-secondary">path:</span>
+                                                                    <code class="small">${env.env_repo_path || '-'}</code>
+                                                                </div>
                                                             </div>
-                                                            <div class="tenant-config-detail-path-label">path:</div>
-                                                            <div class="tenant-config-detail-path"><code class="small">${env.env_repo_path || '-'}</code></div>
                                                         </div>
                                                         <div class="tenant-config-detail-row">
                                                             <div class="tenant-config-detail-label">Deploy Git</div>
                                                             <div class="tenant-config-detail-main">
                                                                 <code class="small">${deployRepo?.repo_url || '-'}</code>
+                                                                <div class="tenant-config-detail-path">
+                                                                    <span class="text-secondary">path:</span>
+                                                                    <code class="small">${env.deploy_repo_path || '-'}</code>
+                                                                </div>
                                                             </div>
-                                                            <div class="tenant-config-detail-path-label">path:</div>
-                                                            <div class="tenant-config-detail-path"><code class="small">${env.deploy_repo_path || '-'}</code></div>
                                                         </div>
                                                     </div>
                                                 </details>
