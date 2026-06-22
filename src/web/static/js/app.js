@@ -1423,6 +1423,9 @@ router.on('/tenants/:id', async (params) => {
                                         return `
                                         <div class="list-group-item">
                                             <div class="d-flex align-items-start gap-2">
+                                                <span class="avatar avatar-sm" style="${envColor ? `color:${envColor};` : ''}">
+                                                    <i class="ti ti-map-pin"></i>
+                                                </span>
                                                 <details class="tenant-config-accordion flex-fill">
                                                     <summary>
                                                         <div class="d-flex align-items-start justify-content-between gap-2">
