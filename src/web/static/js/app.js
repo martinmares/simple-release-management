@@ -78,6 +78,59 @@ function formatDurationHuman(totalSeconds) {
     return `${secs}s`;
 }
 
+const DEFAULT_PAGE_SIZE = 25;
+const PAGE_SIZE_OPTIONS = [25, 50, 100];
+
+function getPageInfo(totalRows, page = 1, pageSize = DEFAULT_PAGE_SIZE) {
+    const size = PAGE_SIZE_OPTIONS.includes(Number(pageSize)) ? Number(pageSize) : DEFAULT_PAGE_SIZE;
+    const totalPages = Math.max(1, Math.ceil(totalRows / size));
+    const currentPage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+    const startIndex = totalRows === 0 ? 0 : (currentPage - 1) * size;
+    const endIndex = totalRows === 0 ? 0 : Math.min(startIndex + size, totalRows);
+
+    return {
+        page: currentPage,
+        pageSize: size,
+        totalPages,
+        startIndex,
+        endIndex,
+    };
+}
+
+function renderPaginationControls(idPrefix, totalRows, pageInfo) {
+    if (totalRows === 0) {
+        return '';
+    }
+
+    const from = pageInfo.startIndex + 1;
+    const to = pageInfo.endIndex;
+
+    return `
+        <div class="card-footer d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2">
+            <div class="text-secondary small">
+                Showing <strong>${from}-${to}</strong> of <strong>${totalRows}</strong>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <label class="text-secondary small mb-0" for="${idPrefix}-page-size">Rows</label>
+                <select class="form-select form-select-sm" id="${idPrefix}-page-size" style="width: auto;">
+                    ${PAGE_SIZE_OPTIONS.map(size => `
+                        <option value="${size}" ${size === pageInfo.pageSize ? 'selected' : ''}>${size}</option>
+                    `).join('')}
+                </select>
+                <button class="btn btn-sm btn-outline-secondary" id="${idPrefix}-prev" ${pageInfo.page <= 1 ? 'disabled' : ''}>
+                    Prev
+                </button>
+                <span class="text-secondary small text-nowrap">
+                    Page <strong>${pageInfo.page}</strong> / ${pageInfo.totalPages}
+                </span>
+                <button class="btn btn-sm btn-outline-secondary" id="${idPrefix}-next" ${pageInfo.page >= pageInfo.totalPages ? 'disabled' : ''}>
+                    Next
+                </button>
+            </div>
+        </div>
+    `;
+}
+
 function formatTransferStage(stage) {
     switch ((stage || '').toLowerCase()) {
         case 'pull':
@@ -5827,13 +5880,17 @@ router.on('/releases', async () => {
         });
 
         let selectedReleases = new Set();
+        let releasesPage = 1;
+        let releasesPageSize = DEFAULT_PAGE_SIZE;
         const releaseById = new Map(releases.map(r => [r.id, r]));
 
-        const renderReleases = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedEnv = '') => {
+        const renderReleases = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedEnv = '', page = 1, pageSize = DEFAULT_PAGE_SIZE) => {
             const filteredBundles = bundles.filter(b => !selectedTenant || b.tenant_id === selectedTenant);
             const filteredEnvs = Array.from(environmentMap.values())
                 .filter(env => !selectedTenant || env.tenant_id === selectedTenant)
                 .sort((a, b) => a.name.localeCompare(b.name));
+            const pageInfo = getPageInfo(rows.length, page, pageSize);
+            const visibleRows = rows.slice(pageInfo.startIndex, pageInfo.endIndex);
             return `
                 ${renderScopeNotice()}
                 <div class="card">
@@ -5913,7 +5970,7 @@ router.on('/releases', async () => {
                                             No image releases yet. Create one from a successful copy job.
                                         </td>
                                     </tr>
-                                ` : rows.map(release => {
+                                ` : visibleRows.map(release => {
                                     const total = Number(release.deploy_total || 0);
                                     const parts = [];
                                     if (release.deploy_success) parts.push(`<span class="badge bg-success-lt text-success-fg">success ${release.deploy_success}</span>`);
@@ -5960,6 +6017,7 @@ router.on('/releases', async () => {
                             </tbody>
                         </table>
                     </div>
+                    ${renderPaginationControls('releases', rows.length, pageInfo)}
                 </div>
             `;
         };
@@ -6147,7 +6205,11 @@ router.on('/releases', async () => {
             });
         };
 
-        const applyFilters = () => {
+        const applyFilters = (resetPage = false) => {
+            if (resetPage) {
+                releasesPage = 1;
+            }
+
             const searchEl = document.getElementById('releases-search');
             const tenantEl = document.getElementById('releases-tenant');
             const envEl = document.getElementById('releases-env');
@@ -6173,11 +6235,28 @@ router.on('/releases', async () => {
                 return nameOk && tenantOk && envOk && bundleOk;
             });
 
-            content.innerHTML = renderReleases(filtered, q, tenantId, bundleId, envId);
-            document.getElementById('releases-search').addEventListener('input', applyFilters);
-            document.getElementById('releases-tenant').addEventListener('change', applyFilters);
-            document.getElementById('releases-env').addEventListener('change', applyFilters);
-            document.getElementById('releases-bundle').addEventListener('change', applyFilters);
+            const pageInfo = getPageInfo(filtered.length, releasesPage, releasesPageSize);
+            releasesPage = pageInfo.page;
+
+            content.innerHTML = renderReleases(filtered, q, tenantId, bundleId, envId, releasesPage, releasesPageSize);
+            document.getElementById('releases-search').addEventListener('input', () => applyFilters(true));
+            document.getElementById('releases-tenant').addEventListener('change', () => applyFilters(true));
+            document.getElementById('releases-env').addEventListener('change', () => applyFilters(true));
+            document.getElementById('releases-bundle').addEventListener('change', () => applyFilters(true));
+
+            document.getElementById('releases-page-size')?.addEventListener('change', (event) => {
+                releasesPageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
+                releasesPage = 1;
+                applyFilters();
+            });
+            document.getElementById('releases-prev')?.addEventListener('click', () => {
+                releasesPage = Math.max(1, releasesPage - 1);
+                applyFilters();
+            });
+            document.getElementById('releases-next')?.addEventListener('click', () => {
+                releasesPage += 1;
+                applyFilters();
+            });
 
             const compareBtn = document.getElementById('releases-compare');
             document.querySelectorAll('.release-select').forEach(cb => {
@@ -6192,13 +6271,13 @@ router.on('/releases', async () => {
                     } else {
                         selectedReleases.delete(cb.value);
                     }
-                    compareBtn.disabled = selectedReleases.size !== 2;
+                    if (compareBtn) compareBtn.disabled = selectedReleases.size !== 2;
                     const label = document.getElementById('releases-compare-label');
                     if (label) label.textContent = `Compare (${selectedReleases.size}/2)`;
                 });
             });
 
-            compareBtn.addEventListener('click', async () => {
+            compareBtn?.addEventListener('click', async () => {
                 if (selectedReleases.size !== 2) return;
                 const [releaseAId, releaseBId] = Array.from(selectedReleases);
                 try {
@@ -8419,10 +8498,16 @@ router.on('/copy-jobs', async () => {
         const allEnvironments = Array.from(environmentMap.values()).sort((a, b) => a.name.localeCompare(b.name));
         let selectedJobs = new Set();
         let activeTab = 'copy';
+        let copyJobsPage = 1;
+        let copyJobsPageSize = DEFAULT_PAGE_SIZE;
 
-        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '', tab = 'copy') => `
-            ${renderScopeNotice()}
-            <div class="card">
+        const renderJobs = (rows, searchQuery = '', selectedStatus = '', selectedTenant = '', selectedEnv = '', tab = 'copy', page = 1, pageSize = DEFAULT_PAGE_SIZE) => {
+            const pageInfo = getPageInfo(rows.length, page, pageSize);
+            const visibleRows = rows.slice(pageInfo.startIndex, pageInfo.endIndex);
+
+            return `
+                ${renderScopeNotice()}
+                <div class="card">
                 <div class="card-header">
                     <h3 class="card-title">Copy Jobs</h3>
                     <div class="card-actions">
@@ -8484,7 +8569,7 @@ router.on('/copy-jobs', async () => {
                     </div>
                 </div>
                 <div class="table-responsive">
-                    <table class="table table-vcenter card-table">
+                    <table class="table table-vcenter card-table table-hover">
                         <thead>
                             <tr>
                                     <th class="w-1"></th>
@@ -8504,8 +8589,8 @@ router.on('/copy-jobs', async () => {
                                         ${tab === 'copy' ? 'No copy jobs yet.' : 'No release jobs yet.'}
                                     </td>
                                 </tr>
-                            ` : rows.map(job => `
-                                <tr>
+                            ` : visibleRows.map(job => `
+                                <tr class="cursor-pointer copy-job-row" data-job-id="${job.job_id}">
                                     <td>
                                         <input class="form-check-input copy-job-select" type="checkbox" value="${job.job_id}" ${selectedJobs.has(job.job_id) ? 'checked' : ''}>
                                     </td>
@@ -8556,8 +8641,10 @@ router.on('/copy-jobs', async () => {
                         </tbody>
                     </table>
                 </div>
-            </div>
-        `;
+                    ${renderPaginationControls('copy-jobs', rows.length, pageInfo)}
+                </div>
+            `;
+        };
 
         const hydratedJobs = jobs.map(job => {
             const bundle = bundleMap.get(job.bundle_id);
@@ -8755,8 +8842,12 @@ router.on('/copy-jobs', async () => {
             });
         };
 
-        const renderAndBind = (rows, q = '', status = '', tenantId = '', envId = '', tab = 'copy') => {
-            content.innerHTML = renderJobs(rows, q, status, tenantId, envId, tab);
+        const renderAndBind = (rows, q = '', status = '', tenantId = '', envId = '', tab = 'copy', page = 1, pageSize = DEFAULT_PAGE_SIZE) => {
+            const pageInfo = getPageInfo(rows.length, page, pageSize);
+            copyJobsPage = pageInfo.page;
+            copyJobsPageSize = pageInfo.pageSize;
+
+            content.innerHTML = renderJobs(rows, q, status, tenantId, envId, tab, copyJobsPage, copyJobsPageSize);
 
             const tenantEl = document.getElementById('copy-jobs-tenant');
             const envEl = document.getElementById('copy-jobs-env');
@@ -8777,13 +8868,36 @@ router.on('/copy-jobs', async () => {
                     const tabOk = activeTab === 'release' ? job.is_release_job : !job.is_release_job;
                     return tenantOk && envOk && statusOk && searchOk && tabOk;
                 });
-                renderAndBind(filtered, qValue, statusValue, tenantValue, envValue, activeTab);
+                renderAndBind(filtered, qValue, statusValue, tenantValue, envValue, activeTab, 1, copyJobsPageSize);
             };
 
             tenantEl.addEventListener('change', applyFilters);
             envEl.addEventListener('change', applyFilters);
             statusEl.addEventListener('change', applyFilters);
             searchEl.addEventListener('input', applyFilters);
+
+            document.querySelectorAll('.copy-job-row').forEach(row => {
+                row.addEventListener('click', (event) => {
+                    if (event.target.closest('a, button, input, select, label')) {
+                        return;
+                    }
+                    const jobId = row.getAttribute('data-job-id');
+                    if (jobId) {
+                        router.navigate(`/copy-jobs/${jobId}`);
+                    }
+                });
+            });
+
+            document.getElementById('copy-jobs-page-size')?.addEventListener('change', (event) => {
+                const nextPageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
+                renderAndBind(rows, q, status, tenantId, envId, tab, 1, nextPageSize);
+            });
+            document.getElementById('copy-jobs-prev')?.addEventListener('click', () => {
+                renderAndBind(rows, q, status, tenantId, envId, tab, copyJobsPage - 1, copyJobsPageSize);
+            });
+            document.getElementById('copy-jobs-next')?.addEventListener('click', () => {
+                renderAndBind(rows, q, status, tenantId, envId, tab, copyJobsPage + 1, copyJobsPageSize);
+            });
 
             if (activeTab === 'copy') {
                 document.querySelectorAll('.copy-job-select').forEach(cb => {
@@ -8827,6 +8941,7 @@ router.on('/copy-jobs', async () => {
                     e.preventDefault();
                     activeTab = link.getAttribute('data-tab') || 'copy';
                     selectedJobs = new Set();
+                    copyJobsPage = 1;
                     applyFilters();
                 });
             });
@@ -8854,7 +8969,10 @@ router.on('/deployments', async () => {
             api.getBundles(),
         ]);
 
-        const renderDeployments = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedStatus = '') => {
+        let deploymentsPage = 1;
+        let deploymentsPageSize = DEFAULT_PAGE_SIZE;
+
+        const renderDeployments = (rows, searchQuery = '', selectedTenant = '', selectedBundle = '', selectedStatus = '', page = 1, pageSize = DEFAULT_PAGE_SIZE) => {
             const filteredBundles = bundles.filter(b => !selectedTenant || b.tenant_id === selectedTenant);
             const q = searchQuery.trim().toLowerCase();
 
@@ -8871,6 +8989,8 @@ router.on('/deployments', async () => {
                 }
                 return true;
             });
+            const pageInfo = getPageInfo(filtered.length, page, pageSize);
+            const visibleRows = filtered.slice(pageInfo.startIndex, pageInfo.endIndex);
 
             return `
                 ${renderScopeNotice()}
@@ -8937,7 +9057,7 @@ router.on('/deployments', async () => {
                                             No deployments found.
                                         </td>
                                     </tr>
-                                ` : filtered.map(row => `
+                                ` : visibleRows.map(row => `
                                     <tr>
                                         <td>
                                             <a href="#/releases/${row.release_db_id}"><strong>${row.release_id}</strong></a>
@@ -8969,32 +9089,73 @@ router.on('/deployments', async () => {
                             </tbody>
                         </table>
                     </div>
+                    ${renderPaginationControls('deployments', filtered.length, pageInfo)}
                 </div>
             `;
         };
 
-        content.innerHTML = renderDeployments(deployments);
+        content.innerHTML = renderDeployments(deployments, '', '', '', '', deploymentsPage, deploymentsPageSize);
 
-        const applyFilters = () => {
+        const applyFilters = (resetPage = false) => {
+            if (resetPage) {
+                deploymentsPage = 1;
+            }
+
             const searchEl = document.getElementById('deployments-search');
             const tenantEl = document.getElementById('deployments-tenant');
             const bundleEl = document.getElementById('deployments-bundle');
             const statusEl = document.getElementById('deployments-status');
+            const q = searchEl?.value || '';
+            const tenantId = tenantEl?.value || '';
+            const bundleId = bundleEl?.value || '';
+            const status = statusEl?.value || '';
+            const filteredCount = deployments.filter(row => {
+                if (tenantId && row.tenant_id !== tenantId) return false;
+                if (bundleId && row.bundle_id !== bundleId) return false;
+                if (status && row.status !== status) return false;
+                const query = q.trim().toLowerCase();
+                if (query) {
+                    return (
+                        row.bundle_name.toLowerCase().includes(query) ||
+                        row.release_id.toLowerCase().includes(query) ||
+                        row.target_name.toLowerCase().includes(query)
+                    );
+                }
+                return true;
+            }).length;
+            const pageInfo = getPageInfo(filteredCount, deploymentsPage, deploymentsPageSize);
+            deploymentsPage = pageInfo.page;
+
             content.innerHTML = renderDeployments(
                 deployments,
-                searchEl?.value || '',
-                tenantEl?.value || '',
-                bundleEl?.value || '',
-                statusEl?.value || ''
+                q,
+                tenantId,
+                bundleId,
+                status,
+                deploymentsPage,
+                deploymentsPageSize
             );
             attachFilterHandlers();
         };
 
         const attachFilterHandlers = () => {
-            document.getElementById('deployments-search')?.addEventListener('input', applyFilters);
-            document.getElementById('deployments-tenant')?.addEventListener('change', applyFilters);
-            document.getElementById('deployments-bundle')?.addEventListener('change', applyFilters);
-            document.getElementById('deployments-status')?.addEventListener('change', applyFilters);
+            document.getElementById('deployments-search')?.addEventListener('input', () => applyFilters(true));
+            document.getElementById('deployments-tenant')?.addEventListener('change', () => applyFilters(true));
+            document.getElementById('deployments-bundle')?.addEventListener('change', () => applyFilters(true));
+            document.getElementById('deployments-status')?.addEventListener('change', () => applyFilters(true));
+            document.getElementById('deployments-page-size')?.addEventListener('change', (event) => {
+                deploymentsPageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
+                deploymentsPage = 1;
+                applyFilters();
+            });
+            document.getElementById('deployments-prev')?.addEventListener('click', () => {
+                deploymentsPage = Math.max(1, deploymentsPage - 1);
+                applyFilters();
+            });
+            document.getElementById('deployments-next')?.addEventListener('click', () => {
+                deploymentsPage += 1;
+                applyFilters();
+            });
         };
 
         attachFilterHandlers();
