@@ -636,14 +636,6 @@ router.on('/', async () => {
             api.getGitRepos(),
         ]);
 
-        const environmentsByTenant = await Promise.all(
-            tenants.map(async tenant => ({
-                tenant_id: tenant.id,
-                environments: await api.getEnvironments(tenant.id),
-            }))
-        );
-        const environments = environmentsByTenant.flatMap(entry => entry.environments);
-
         // Spočítat registry podle rolí
         const sourceRegistries = registries.filter(r => r.role === 'source' || r.role === 'both').length;
         const targetRegistries = registries.filter(r => r.role === 'target' || r.role === 'both').length;
@@ -780,7 +772,7 @@ router.on('/', async () => {
                                 </div>
                                 <div class="col">
                                     <div class="font-weight-medium">${deployJobs.length}</div>
-                                    <div class="text-secondary">Build Jobs</div>
+                                    <div class="text-secondary">Manifest Builds</div>
                                 </div>
                             </div>
                         </div>
@@ -805,23 +797,6 @@ router.on('/', async () => {
                     </a>
                 </div>
 
-                <div class="col-sm-6 col-lg-3">
-                    <a href="#/tenants" class="card card-sm card-link">
-                        <div class="card-body">
-                            <div class="row align-items-center">
-                                <div class="col-auto">
-                                    <span class="bg-teal text-white avatar">
-                                        <i class="ti ti-planet"></i>
-                                    </span>
-                                </div>
-                                <div class="col">
-                                    <div class="font-weight-medium">${environments.length}</div>
-                                    <div class="text-secondary">Environments</div>
-                                </div>
-                            </div>
-                        </div>
-                    </a>
-                </div>
             </div>
 
             <!-- Quick Actions & Registry Stats -->
@@ -1078,7 +1053,7 @@ router.on('/', async () => {
                         <div class="card-header">
                             <h3 class="card-title">
                                 <i class="ti ti-rocket me-2"></i>
-                                Recent Build Jobs
+                                Recent Manifest Builds
                             </h3>
                             <div class="card-actions">
                                 <a href="#/deployments" class="btn btn-sm btn-outline-primary">View All</a>
@@ -5957,8 +5932,8 @@ router.on('/releases', async () => {
                                     <th>Tenant</th>
                                     <th>Bundle</th>
                                     <th>
-                                        Build Jobs
-                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of build jobs (success/failed/running/pending). Image release stays draft until first successful build job."></i>
+                                        Manifest Builds
+                                        <i class="ti ti-info-circle text-secondary ms-1" title="Counts of manifest builds (success/failed/running/pending). Image release stays draft until first successful manifest build."></i>
                                     </th>
                                     <th>Created</th>
                                 </tr>
@@ -6440,7 +6415,7 @@ router.on('/releases/:id', async (params) => {
 
             <div class="card">
                 <div class="card-header">
-                    <h3 class="card-title">Build Jobs</h3>
+                    <h3 class="card-title">Manifest Builds</h3>
                 </div>
                 <div class="table-responsive">
                     <table class="table table-vcenter card-table">
