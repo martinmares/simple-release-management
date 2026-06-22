@@ -1321,6 +1321,34 @@ router.on('/tenants/:id', async (params) => {
                 .tenant-config-accordion[open] .tenant-config-chevron {
                     transform: rotate(90deg);
                 }
+                .tenant-config-detail {
+                    display: grid;
+                    gap: 8px;
+                }
+                .tenant-config-detail-row {
+                    display: grid;
+                    grid-template-columns: 78px minmax(0, 1fr) auto auto;
+                    gap: 8px;
+                    align-items: baseline;
+                }
+                .tenant-config-detail-label {
+                    color: var(--tblr-secondary);
+                    white-space: nowrap;
+                }
+                .tenant-config-detail-main {
+                    min-width: 0;
+                }
+                .tenant-config-detail-main code {
+                    white-space: normal;
+                    word-break: break-all;
+                }
+                .tenant-config-detail-path-label {
+                    color: var(--tblr-secondary);
+                    white-space: nowrap;
+                }
+                .tenant-config-detail-path code {
+                    white-space: nowrap;
+                }
             </style>
             <div class="row mb-3">
                 <div class="col">
@@ -1419,32 +1447,40 @@ router.on('/tenants/:id', async (params) => {
                                                             </div>
                                                         </div>
                                                     </summary>
-                                                    <div class="text-secondary small mt-3 ps-4">
-                                                        <div class="d-flex flex-wrap gap-2">
-                                                            <span class="text-secondary small">Source Reg</span>
-                                                            <strong class="text-body">${sourceRegistry?.name || '-'}</strong>
-                                                            <code class="small text-wrap">${sourceRegistry?.base_url || '-'}</code>
-                                                            <span class="text-secondary small">path:</span>
-                                                            <code class="small text-wrap">${env.source_project_path || '-'}</code>
+                                                    <div class="tenant-config-detail text-secondary small mt-3 ps-4">
+                                                        <div class="tenant-config-detail-row">
+                                                            <div class="tenant-config-detail-label">Source Reg</div>
+                                                            <div class="tenant-config-detail-main">
+                                                                <strong class="text-body">${sourceRegistry?.name || '-'}</strong>
+                                                                <code class="small ms-1">${sourceRegistry?.base_url || '-'}</code>
+                                                            </div>
+                                                            <div class="tenant-config-detail-path-label">path:</div>
+                                                            <div class="tenant-config-detail-path"><code class="small">${env.source_project_path || '-'}</code></div>
                                                         </div>
-                                                        <div class="d-flex flex-wrap gap-2 mt-1">
-                                                            <span class="text-secondary small">Target Reg</span>
-                                                            <strong class="text-body">${targetRegistry?.name || '-'}</strong>
-                                                            <code class="small text-wrap">${targetRegistry?.base_url || '-'}</code>
-                                                            <span class="text-secondary small">path:</span>
-                                                            <code class="small text-wrap">${env.target_project_path || '-'}</code>
+                                                        <div class="tenant-config-detail-row">
+                                                            <div class="tenant-config-detail-label">Target Reg</div>
+                                                            <div class="tenant-config-detail-main">
+                                                                <strong class="text-body">${targetRegistry?.name || '-'}</strong>
+                                                                <code class="small ms-1">${targetRegistry?.base_url || '-'}</code>
+                                                            </div>
+                                                            <div class="tenant-config-detail-path-label">path:</div>
+                                                            <div class="tenant-config-detail-path"><code class="small">${env.target_project_path || '-'}</code></div>
                                                         </div>
-                                                        <div class="d-flex flex-wrap gap-2 mt-1">
-                                                            <span class="text-secondary small">Env Git</span>
-                                                            <code class="small text-wrap">${envRepo?.repo_url || '-'}</code>
-                                                            <span class="text-secondary small">path:</span>
-                                                            <code class="small text-wrap">${env.env_repo_path || '-'}</code>
+                                                        <div class="tenant-config-detail-row">
+                                                            <div class="tenant-config-detail-label">Env Git</div>
+                                                            <div class="tenant-config-detail-main">
+                                                                <code class="small">${envRepo?.repo_url || '-'}</code>
+                                                            </div>
+                                                            <div class="tenant-config-detail-path-label">path:</div>
+                                                            <div class="tenant-config-detail-path"><code class="small">${env.env_repo_path || '-'}</code></div>
                                                         </div>
-                                                        <div class="d-flex flex-wrap gap-2 mt-1">
-                                                            <span class="text-secondary small">Deploy Git</span>
-                                                            <code class="small text-wrap">${deployRepo?.repo_url || '-'}</code>
-                                                            <span class="text-secondary small">path:</span>
-                                                            <code class="small text-wrap">${env.deploy_repo_path || '-'}</code>
+                                                        <div class="tenant-config-detail-row">
+                                                            <div class="tenant-config-detail-label">Deploy Git</div>
+                                                            <div class="tenant-config-detail-main">
+                                                                <code class="small">${deployRepo?.repo_url || '-'}</code>
+                                                            </div>
+                                                            <div class="tenant-config-detail-path-label">path:</div>
+                                                            <div class="tenant-config-detail-path"><code class="small">${env.deploy_repo_path || '-'}</code></div>
                                                         </div>
                                                     </div>
                                                 </details>
