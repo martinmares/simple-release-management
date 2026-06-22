@@ -1383,14 +1383,11 @@ router.on('/tenants/:id', async (params) => {
                                         const deployRepo = env.deploy_repo_id ? gitRepoById.get(env.deploy_repo_id) : null;
                                         return `
                                         <a href="#/environments/${env.id}/edit" class="list-group-item list-group-item-action">
-                                            <div class="d-flex align-items-start">
-                                                <span class="avatar avatar-sm me-2" style="background-color:${envColor || 'transparent'} !important;border:1px solid rgba(98,105,118,0.4);" title="${envColor || 'no color'}"></span>
-                                                <div class="flex-fill">
-                                                    <div class="d-flex align-items-center gap-2">
-                                                        <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
-                                                        <span class="text-secondary small">${env.slug}</span>
-                                                    </div>
-                                                    <div class="text-secondary small mt-2">
+                                            <div class="d-flex align-items-center gap-2">
+                                                <span class="badge" style="${envColor ? `background:${envColor};color:#fff;` : ''}">${env.name}</span>
+                                                <span class="text-secondary small">${env.slug}</span>
+                                            </div>
+                                            <div class="text-secondary small mt-2">
                                                         <div class="d-flex flex-wrap gap-2">
                                                             <span class="text-secondary small">Source Reg</span>
                                                             <code class="small text-wrap">${sourceRegistry?.base_url || '-'}</code>
@@ -1415,8 +1412,6 @@ router.on('/tenants/:id', async (params) => {
                                                             <span class="text-secondary small">path:</span>
                                                             <code class="small text-wrap">${env.deploy_repo_path || '-'}</code>
                                                         </div>
-                                                    </div>
-                                                </div>
                                             </div>
                                         </a>
                                     `;
