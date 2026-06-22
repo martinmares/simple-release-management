@@ -461,6 +461,7 @@ pub struct DeployJob {
     pub commit_sha: Option<String>,
     pub tag_name: Option<String>,
     pub dry_run: bool,
+    pub release_image_url_mode: String,
     pub created_at: DateTime<Utc>,
 }
 

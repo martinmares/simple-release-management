@@ -6403,6 +6403,11 @@ router.on('/deploy-jobs/:id', async (params) => {
                         <dt class="col-4">Dry run:</dt>
                         <dd class="col-8">${job.dry_run ? '<span class="badge bg-azure-lt text-azure-fg">enabled</span>' : '<span class="badge bg-yellow-lt text-yellow-fg">disabled</span>'}</dd>
 
+                        <dt class="col-4">Image URL mode:</dt>
+                        <dd class="col-8">${job.release_image_url_mode === 'environment_registry'
+                            ? '<span class="badge bg-orange-lt text-orange-fg">retarget to environment registry</span>'
+                            : '<span class="badge bg-secondary-lt text-secondary-fg">release manifest URLs</span>'}</dd>
+
                         <dt class="col-4">Started:</dt>
                         <dd class="col-8">${new Date(job.started_at).toLocaleString('cs-CZ')}</dd>
 
@@ -9246,6 +9251,16 @@ async function runDeployFromRelease(release, environments) {
                                 `).join('')}
                             </select>
                         </div>
+                        <div class="mt-3">
+                            <label class="form-label">Image URL Mode</label>
+                            <select class="form-select" id="release-deploy-image-url-mode">
+                                <option value="manifest_urls" selected>Use release manifest image URLs</option>
+                                <option value="environment_registry">Retarget images to selected environment registry</option>
+                            </select>
+                            <div class="form-hint" id="release-deploy-image-url-mode-hint">
+                                Default: use exact image URLs stored in the Image Release manifest.
+                            </div>
+                        </div>
                         <div class="form-check mt-3">
                             <input class="form-check-input" type="checkbox" id="release-deploy-dry-run" checked>
                             <label class="form-check-label" for="release-deploy-dry-run">
@@ -9281,6 +9296,8 @@ async function runDeployFromRelease(release, environments) {
     const cancelBtn = document.getElementById('release-deploy-cancel');
     const dryRunCheckbox = document.getElementById('release-deploy-dry-run');
     const dryRunWarning = document.getElementById('release-deploy-warning');
+    const imageUrlModeSelect = document.getElementById('release-deploy-image-url-mode');
+    const imageUrlModeHint = document.getElementById('release-deploy-image-url-mode-hint');
 
     const cleanup = () => {
         modal.remove();
@@ -9305,6 +9322,19 @@ async function runDeployFromRelease(release, environments) {
         }
     };
 
+    const updateImageUrlModeHint = () => {
+        if (!imageUrlModeHint) return;
+        const target = eligible.find(t => t.id === select.value);
+        if (imageUrlModeSelect.value === 'environment_registry') {
+            const path = target?.target_project_path || '-';
+            imageUrlModeHint.innerHTML = target
+                ? `Build manifest will use the selected environment registry/path (<code>${escapeHtml(path)}</code>) and preserve release digests.`
+                : 'Select an environment to preview the target registry/path.';
+        } else {
+            imageUrlModeHint.textContent = 'Default: use exact image URLs stored in the Image Release manifest.';
+        }
+    };
+
     if (release?.environment_id) {
         const match = eligible.find(t => t.id === release.environment_id);
         if (match) {
@@ -9318,7 +9348,10 @@ async function runDeployFromRelease(release, environments) {
         const target = eligible.find(t => t.id === select.value);
         confirmBtn.disabled = !target;
         updateTitle(target);
+        updateImageUrlModeHint();
     });
+    imageUrlModeSelect.addEventListener('change', updateImageUrlModeHint);
+    updateImageUrlModeHint();
 
     if (dryRunCheckbox && dryRunWarning) {
         const syncWarning = () => {
@@ -9335,6 +9368,7 @@ async function runDeployFromRelease(release, environments) {
     confirmBtn.addEventListener('click', async () => {
         const targetEnvId = select.value;
         const dryRun = dryRunCheckbox?.checked ?? true;
+        const releaseImageUrlMode = imageUrlModeSelect?.value || 'manifest_urls';
         if (!targetEnvId) return;
         cleanup();
         try {
@@ -9342,6 +9376,7 @@ async function runDeployFromRelease(release, environments) {
                 release_id: release.id,
                 environment_id: targetEnvId,
                 dry_run: dryRun,
+                release_image_url_mode: releaseImageUrlMode,
             });
             getApp().showSuccess('Build job created');
             router.navigate(`/deploy-jobs/${response.job_id}`);

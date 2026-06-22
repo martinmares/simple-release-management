@@ -328,6 +328,7 @@ pub struct CreateDeployJobRequest {
     pub release_id: Uuid,
     pub environment_id: Uuid,
     pub dry_run: Option<bool>,
+    pub release_image_url_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +336,7 @@ pub struct AutoDeployFromCopyJobRequest {
     pub copy_job_id: Uuid,
     pub environment_id: Uuid,
     pub dry_run: Option<bool>,
+    pub release_image_url_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -561,6 +563,7 @@ pub struct DeployJobSummary {
     pub copy_job_id: Option<Uuid>,
     pub bundle_id: Option<Uuid>,
     pub dry_run: bool,
+    pub release_image_url_mode: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -591,6 +594,19 @@ pub struct DeployJobImageRow {
     pub file_path: String,
     pub container_name: String,
     pub image: String,
+}
+
+fn normalize_release_image_url_mode(mode: Option<String>) -> String {
+    match mode
+        .as_deref()
+        .unwrap_or("manifest_urls")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
+        "environment_registry" => "environment_registry".to_string(),
+        _ => "manifest_urls".to_string(),
+    }
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -2456,7 +2472,7 @@ async fn list_release_deploy_jobs(
         SELECT dj.id, dj.release_id, dj.environment_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name,
                e.name as target_name, e.slug AS env_name, e.color AS env_color,
-               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
+               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run, dj.release_image_url_mode
         FROM deploy_jobs dj
         JOIN environments e ON e.id = dj.environment_id
         JOIN releases r ON r.id = dj.release_id
@@ -2582,7 +2598,7 @@ async fn get_deploy_job(
         SELECT dj.id, dj.release_id, dj.environment_id, dj.status, dj.started_at, dj.completed_at,
                dj.error_message, dj.commit_sha, dj.tag_name,
                e.name as target_name, e.slug AS env_name, e.color AS env_color,
-               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run
+               r.is_auto, r.copy_job_id, b.id as bundle_id, dj.dry_run, dj.release_image_url_mode
         FROM deploy_jobs dj
         JOIN environments e ON e.id = dj.environment_id
         JOIN releases r ON r.id = dj.release_id
@@ -2756,6 +2772,7 @@ async fn create_deploy_job(
         payload.release_id,
         environment.id,
         payload.dry_run.unwrap_or(true),
+        normalize_release_image_url_mode(payload.release_image_url_mode),
     )
     .await?;
 
@@ -2922,7 +2939,14 @@ async fn auto_deploy_from_copy_job(
     };
 
     let dry_run = payload.dry_run.unwrap_or(true);
-    let job_id = create_deploy_job_record(&state, release.id, environment.id, dry_run).await?;
+    let job_id = create_deploy_job_record(
+        &state,
+        release.id,
+        environment.id,
+        dry_run,
+        normalize_release_image_url_mode(payload.release_image_url_mode),
+    )
+    .await?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -2938,16 +2962,18 @@ async fn create_deploy_job_record(
     release_id: Uuid,
     environment_id: Uuid,
     dry_run: bool,
+    release_image_url_mode: String,
 ) -> Result<Uuid, (StatusCode, Json<ErrorResponse>)> {
     let job_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO deploy_jobs (id, release_id, environment_id, status, dry_run)
-         VALUES ($1, $2, $3, 'pending', $4)",
+        "INSERT INTO deploy_jobs (id, release_id, environment_id, status, dry_run, release_image_url_mode)
+         VALUES ($1, $2, $3, 'pending', $4, $5)",
     )
     .bind(job_id)
     .bind(release_id)
     .bind(environment_id)
     .bind(dry_run)
+    .bind(release_image_url_mode)
     .execute(&state.pool)
     .await
     .map_err(|e| {
@@ -3382,6 +3408,16 @@ async fn run_deploy_job(state: DeployApiState, job_id: Uuid, log_tx: broadcast::
         Some(env_repo_subdir.as_str()),
     )
     .await?;
+
+    if job.release_image_url_mode == "environment_registry" {
+        retarget_release_manifest_to_environment(&state.pool, &mut release_manifest, &environment, &log_tx)
+            .await?;
+    } else {
+        let _ = log_tx.send(
+            "Release image URL mode: using image URLs from image release manifest".to_string(),
+        );
+    }
+
     let manifest_path = temp_dir.path().join("release-manifest.yml");
     let yaml = serde_yaml_ng::to_string(&release_manifest)?;
     tokio::fs::write(&manifest_path, yaml)
@@ -4186,6 +4222,97 @@ async fn apply_release_manifest_mode(
     }
 
     Ok(())
+}
+
+async fn retarget_release_manifest_to_environment(
+    pool: &PgPool,
+    manifest: &mut ReleaseManifest,
+    environment: &Environment,
+    log_tx: &broadcast::Sender<String>,
+) -> anyhow::Result<()> {
+    let target_registry_id = environment
+        .target_registry_id
+        .ok_or_else(|| anyhow::anyhow!("Target environment is missing target registry"))?;
+    let target_base_url = sqlx::query_scalar::<_, String>(
+        "SELECT base_url FROM registries WHERE id = $1",
+    )
+    .bind(target_registry_id)
+    .fetch_one(pool)
+    .await?;
+    let target_base = normalize_registry_base_for_manifest(&target_base_url);
+    let target_project_path = environment
+        .target_project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_matches('/').to_string());
+    let source_base = manifest.registry_base.clone();
+
+    let _ = log_tx.send(format!(
+        "Release image URL mode: retargeting image URLs to environment registry {}{}",
+        target_base,
+        target_project_path
+            .as_deref()
+            .map(|path| format!(" (path: {})", path))
+            .unwrap_or_default()
+    ));
+    let _ = log_tx.send(
+        "Release image digests are preserved from the image release manifest".to_string(),
+    );
+
+    for image in &mut manifest.images {
+        let relative_path = manifest_image_relative_path(&image.image, source_base.as_deref());
+        let target_path = apply_manifest_target_project_path(&relative_path, target_project_path.as_deref());
+        image.image = format!("{}/{}", target_base, target_path);
+    }
+    manifest.registry_base = Some(target_base);
+
+    Ok(())
+}
+
+fn normalize_registry_base_for_manifest(base_url: &str) -> String {
+    base_url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+fn manifest_image_relative_path(image: &str, source_registry_base: Option<&str>) -> String {
+    let normalized = normalize_registry_base_for_manifest(image);
+    if let Some(source_base) = source_registry_base {
+        let source_base = normalize_registry_base_for_manifest(source_base);
+        let prefix = format!("{}/", source_base);
+        if let Some(rest) = normalized.strip_prefix(&prefix) {
+            return rest.trim_start_matches('/').to_string();
+        }
+    }
+
+    let mut parts = normalized.splitn(2, '/');
+    let first = parts.next().unwrap_or_default();
+    let rest = parts.next();
+    if first.contains('.') || first.contains(':') || first == "localhost" {
+        rest.unwrap_or_default().trim_start_matches('/').to_string()
+    } else {
+        normalized.trim_start_matches('/').to_string()
+    }
+}
+
+fn apply_manifest_target_project_path(path: &str, target_project_path: Option<&str>) -> String {
+    let Some(target_project_path) = target_project_path else {
+        return path.trim_matches('/').to_string();
+    };
+    let target_project_path = target_project_path.trim_matches('/');
+    if target_project_path.is_empty() {
+        return path.trim_matches('/').to_string();
+    }
+    let trimmed = path.trim_matches('/');
+    if trimmed.is_empty() {
+        return target_project_path.to_string();
+    }
+    let rest = trimmed.split_once('/').map(|(_, rest)| rest).unwrap_or(trimmed);
+    format!("{}/{}", target_project_path, rest)
 }
 
 async fn load_env_app_container_pairs(
