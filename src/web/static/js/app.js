@@ -6523,11 +6523,43 @@ router.on('/releases/:id', async (params) => {
         document.getElementById('manifest-content').textContent = manifest;
 
         // Copy manifest handler
-        document.getElementById('copy-manifest-btn').addEventListener('click', () => {
-            const text = document.getElementById('manifest-content').textContent;
-            navigator.clipboard.writeText(text).then(() => {
-                getApp().showSuccess('Manifest copied to clipboard');
-            });
+        document.getElementById('copy-manifest-btn').addEventListener('click', async () => {
+            const text = document.getElementById('manifest-content').textContent || '';
+            if (!text.trim()) {
+                getApp().showError('Nothing to copy');
+                return;
+            }
+
+            try {
+                if (navigator.clipboard?.writeText) {
+                    await navigator.clipboard.writeText(text);
+                    getApp().showSuccess('Manifest copied to clipboard');
+                    return;
+                }
+            } catch (error) {
+                console.warn('Clipboard API failed, falling back to execCommand:', error);
+            }
+
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'absolute';
+                textarea.style.left = '-9999px';
+                document.body.appendChild(textarea);
+                textarea.select();
+                const success = document.execCommand('copy');
+                textarea.remove();
+                if (success) {
+                    getApp().showSuccess('Manifest copied to clipboard');
+                } else {
+                    window.prompt('Copy manifest:', text);
+                    getApp().showError('Clipboard unavailable. Copied to prompt.');
+                }
+            } catch (error) {
+                window.prompt('Copy manifest:', text);
+                getApp().showError('Clipboard unavailable. Copied to prompt.');
+            }
         });
 
         const buildDeployBtn = document.getElementById('build-deploy-btn');
